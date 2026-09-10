@@ -1,0 +1,5 @@
+# Optional SAM2 acceleration. Installed and verified on the current Windows PC.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+transformers==5.16.1

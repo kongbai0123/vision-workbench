@@ -1,0 +1,432 @@
+"""Loopback-only application service. All modules operate on ProjectStore."""
+from __future__ import annotations
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib.util
+import json
+import logging
+import mimetypes
+import os
+from pathlib import Path
+import secrets
+import threading
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from . import __version__
+from .jobs import JobManager
+from .store import ConflictError, ProjectStore, dump
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+
+
+class WorkbenchService:
+    def __init__(self, data_root=None, port=0, dialog=None):
+        self.data_root = Path(data_root or APP_ROOT / "data").resolve()
+        self.data_root.mkdir(parents=True, exist_ok=True)
+        self.store = ProjectStore(self.data_root / "projects")
+        self.exports = self.data_root / "exports"
+        self.exports.mkdir(exist_ok=True)
+        self.incoming = self.data_root / "incoming"
+        self.incoming.mkdir(exist_ok=True)
+        self.jobs = JobManager()
+        self.dialog = dialog
+        self._camera = None
+        self._camera_lock = threading.Lock()
+        self._ai_lock = threading.Lock()
+        self._cvat = None
+        self._cvat_lock = threading.Lock()
+        self._cvat_tickets = {}
+        self._cvat_session = []
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self.httpd.daemon_threads = True
+        self.httpd.service = self
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, name="workbench-http", daemon=True)
+        self.started = False
+
+    @property
+    def camera(self):
+        with self._camera_lock:
+            if self._camera is None:
+                from .acquisition import CameraService
+                self._camera = CameraService(self.incoming)
+            return self._camera
+
+    @property
+    def cvat(self):
+        with self._cvat_lock:
+            if self._cvat is None:
+                from cvat_setup import CvatSetup
+                self._cvat = CvatSetup(APP_ROOT)
+            return self._cvat
+
+    def issue_cvat_ticket(self, result):
+        ticket = secrets.token_urlsafe(32)
+        with self._cvat_lock:
+            self._cvat_tickets = {key:value for key,value in self._cvat_tickets.items() if value[0] > __import__('time').monotonic()}
+            self._cvat_tickets[ticket] = (__import__('time').monotonic()+120, dict(result))
+        return ticket
+
+    def consume_cvat_ticket(self, ticket):
+        with self._cvat_lock:
+            entry = self._cvat_tickets.pop(ticket, None)
+        if not entry or entry[0] < __import__('time').monotonic():
+            raise ValueError("CVAT 啟動連結已失效，請重新切換編輯器。")
+        return entry[1]
+
+    def start(self):
+        self.thread.start()
+        self.started = True
+        return self
+
+    def close(self):
+        if self.started:
+            self.httpd.shutdown()
+        self.httpd.server_close()
+        self.jobs.close()
+        if self._camera:
+            self._camera.close()
+        if self._cvat is not None:
+            self._cvat.stop()
+        if 'workbench.acquisition' in __import__('sys').modules:
+            from .acquisition import close_ai
+            close_ai()
+        if self.started:
+            self.thread.join(timeout=5)
+        self.started = False
+
+    def import_paths(self, pid, paths):
+        if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p.strip() for p in paths):
+            raise ValueError("請選擇有效的圖片或資料夾")
+        self.store.get_project(pid, include_assets=False)
+        def run(progress):
+            from .pipeline import import_sources
+            progress("檢查影像與標註配對")
+            parsed = import_sources(paths)
+            records = parsed.get("records", [])
+            issues = parsed.get("issues", [])
+            if not records:
+                details = "；".join(str(item.get("message", item)) if isinstance(item, dict) else str(item) for item in issues)
+                raise ValueError(details or "沒有找到可匯入的圖片")
+            result = self.store.add_assets(pid, records, progress=lambda n,total: progress(f"保存原圖 {n} / {total}",round(n/total*95)))
+            result["issues"] = issues
+            return result
+        return self.jobs.submit("import", run)
+
+    def pipeline_job(self, pid, action, payload):
+        snapshot = self.store.snapshot(pid)
+        format_key = payload.get("format", "native")
+        if format_key not in {"native", "coco", "yolo_detection", "yolo_segmentation", "labelme", "classification", "jsonl"}:
+            raise ValueError("匯出格式無效")
+        tolerance = float(payload.get("tolerance", 0))
+        import math
+        if not math.isfinite(tolerance) or not 0 <= tolerance <= 100:
+            raise ValueError("輪廓誤差必須為 0–100 像素")
+        def run(progress):
+            from .pipeline import export_project, validate_project
+            progress("檢查圖片雜湊、標註、審核與分組")
+            if action == "validate":
+                return validate_project(snapshot, format_key, tolerance)
+            output = Path(payload.get("output_dir") or self.exports).resolve()
+            # Never export over the source or inside its immutable image store.
+            if output.is_relative_to(self.store.root):
+                raise ValueError("匯出位置不能放在工作專案的原圖儲存區")
+            result = export_project(snapshot, output, format_key, payload.get("version", "v1"),
+                                    tolerance, payload.get("acknowledge_loss") is True)
+            result["project_revision"] = snapshot["revision"]
+            return self.store.record_export(pid, result)
+        return self.jobs.submit(action, run)
+
+    def ai_job(self, pid, payload):
+        asset = self.store.get_asset(pid, payload.get("asset_id"), internal=True)
+        label = self.store.require_class(pid, payload.get("label"))
+        if payload.get("revision") != asset["revision"]:
+            raise ConflictError("圖片已修改，請先儲存最新內容再執行 AI")
+        def run(progress):
+            from .acquisition import segment_image
+            progress("載入本機模型並執行分割")
+            with self._ai_lock:
+                result = segment_image(asset["image_path"], engine=payload.get("engine", "sam2"),
+                    points=payload.get("points"), negative_points=payload.get("negative_points"),
+                    box=payload.get("box"), label=label, model_dir=APP_ROOT/"models"/"sam2.1-hiera-tiny")
+            result.update(asset_id=asset["id"], revision=asset["revision"])
+            return result
+        return self.jobs.submit("ai", run)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "VisionWorkbench/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            # A closing Chromium image request is not an application failure.
+            pass
+
+    @property
+    def app(self):
+        return self.server.service
+
+    def log_message(self, fmt, *args):
+        logging.debug("HTTP %s", fmt % args)
+
+    def host_valid(self):
+        expected = urlsplit(self.app.url).netloc
+        return self.headers.get("Host", "") == expected
+
+    def body(self):
+        origin = self.headers.get("Origin")
+        if not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
+            raise PermissionError("僅接受軟體本機介面的操作")
+        if self.headers.get_content_type() != "application/json":
+            raise ValueError("請使用 JSON 請求")
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("請求長度無效")
+        if not 0 <= size <= 128*1024*1024:
+            raise ValueError("單次標註請求超過 128 MiB")
+        payload = json.loads(self.rfile.read(size) or b"{}")
+        if not isinstance(payload, dict):
+            raise ValueError("請求內容必須為物件")
+        return payload
+
+    def send_bytes(self, body, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def json(self, value, status=200):
+        self.send_bytes(dump(value).encode("utf-8"), "application/json; charset=utf-8", status)
+
+    def handle_error(self, exc):
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        status = 409 if isinstance(exc, ConflictError) else 403 if isinstance(exc, PermissionError) else 404 if isinstance(exc, FileNotFoundError) else 400 if isinstance(exc, (ValueError, TypeError, KeyError)) else 500
+        if status == 500:
+            logging.exception("Application API failure")
+        self.close_connection = True
+        try:
+            self.json({"error":str(exc), "message":str(exc)}, status)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def do_GET(self):
+        try:
+            if not self.host_valid():
+                raise PermissionError("本機 Host 無效")
+            path = unquote(urlsplit(self.path).path)
+            parts = path.strip("/").split("/")
+            if path == "/api/system":
+                return self.json({"name":"Vision Workbench", "version":__version__, "default_export_path":str(self.app.exports),
+                    "data_root":str(self.app.data_root), "desktop":self.app.dialog is not None,
+                    "capabilities":{"sam2":bool(importlib.util.find_spec("torch") and importlib.util.find_spec("transformers")),
+                                    "grabcut":True,"camera":True,"offline":True}})
+            if path == "/api/projects":
+                return self.json({"projects":self.app.store.list_projects()})
+            if parts[:2] == ["api", "jobs"] and len(parts) == 3:
+                return self.json(self.app.jobs.get(parts[2]))
+            if path == "/api/camera/devices":
+                return self.json({"devices":self.app.camera.devices()})
+            if path == "/api/camera/status":
+                return self.json(self.app.camera.status())
+            if path == "/api/camera/capabilities":
+                index=int(parse_qs(urlsplit(self.path).query).get("index",["0"])[0])
+                return self.json(self.app.camera.capabilities(index))
+            if path == "/api/cvat/status":
+                return self.json(self.app.cvat.status())
+            if path == "/api/camera/frame":
+                processed = parse_qs(urlsplit(self.path).query).get("processed", ["0"])[0] == "1"
+                return self.send_bytes(self.app.camera.frame_jpeg(processed=processed), "image/jpeg")
+            if parts[:2] == ["api", "projects"] and len(parts) >= 3:
+                pid = parts[2]
+                if len(parts) == 3:
+                    return self.json(self.app.store.get_project(pid))
+                if len(parts) == 4 and parts[3] == "classes":
+                    return self.json(self.app.store.class_usage(pid))
+                if len(parts) >= 5 and parts[3] == "assets":
+                    aid = parts[4]
+                    if len(parts) == 5:
+                        return self.json(self.app.store.get_asset(pid, aid))
+                    if len(parts) == 6 and parts[5] == "image":
+                        image = self.app.store.image_path(pid, aid)
+                        if parse_qs(urlsplit(self.path).query).get("thumbnail", ["0"])[0] == "1":
+                            from PIL import Image
+                            import io
+                            with Image.open(image) as source:
+                                source.thumbnail((320, 240))
+                                thumbnail = source.convert("RGB")
+                                buffer = io.BytesIO()
+                                thumbnail.save(buffer, "JPEG", quality=80)
+                            return self.send_bytes(buffer.getvalue(), "image/jpeg")
+                        from .acquisition import preview_image
+                        content, kind = preview_image(image)
+                        return self.send_bytes(content, kind)
+                    if len(parts) == 6 and parts[5] == "history":
+                        return self.json({"history":self.app.store.history(pid, aid)})
+            if path.startswith("/api/"):
+                raise FileNotFoundError("找不到 API")
+            relative = "index.html" if path == "/" else path.lstrip("/")
+            web = APP_ROOT / "web"
+            target = (web / relative).resolve()
+            if not target.is_relative_to(web.resolve()) or not target.is_file():
+                raise FileNotFoundError("找不到介面檔案")
+            kind = "text/javascript" if target.suffix in {".js", ".mjs"} else mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            self.send_bytes(target.read_bytes(), kind + ("; charset=utf-8" if kind.startswith("text/") else ""))
+        except Exception as exc:
+            self.handle_error(exc)
+
+    def do_POST(self):
+        self.mutate("POST")
+
+    def do_PUT(self):
+        self.mutate("PUT")
+
+    def do_PATCH(self):
+        self.mutate("PATCH")
+
+    def do_DELETE(self):
+        self.mutate("DELETE")
+
+    def mutate(self, method):
+        try:
+            payload = self.body()
+            path = urlsplit(self.path).path
+            parts = path.strip("/").split("/")
+            if path == "/api/projects" and method == "POST":
+                return self.json(self.app.store.create_project(payload.get("name")))
+            if parts[:2] == ["api", "jobs"] and len(parts) == 4 and method == "POST":
+                return self.json(self.app.jobs.control(parts[2], parts[3]))
+            if path == "/api/dialog":
+                if not self.app.dialog:
+                    raise ValueError("瀏覽器模式請輸入完整路徑；桌面版可使用原生檔案選擇器")
+                return self.json({"paths":self.app.dialog(payload.get("kind"))})
+            if path == "/api/cvat/setup":
+                return self.json(self.app.cvat.start())
+            if path == "/api/cvat/launch":
+                pid = payload.get("project_id")
+                snapshot = self.app.store.snapshot(pid)
+                def launch_cvat(progress):
+                    progress(f"啟動 CVAT · {snapshot['name']}")
+                    result = self.app.cvat.launch()
+                    self.app._cvat_session = list(result.get("auth_cookies", []))
+                    from .cvat_bridge import CvatProjectBridge
+                    linked = CvatProjectBridge(self.app.data_root).ensure_project(
+                        snapshot, result.get("auth_cookies", []), progress)
+                    result["url"] = linked["url"]
+                    return {"ticket":self.app.issue_cvat_ticket(result), "project_id":pid,
+                            "project_name":snapshot["name"], "url":result["url"]}
+                return self.json(self.app.jobs.submit("cvat", launch_cvat))
+            if path == "/api/cvat/import":
+                pid = payload.get("project_id")
+                snapshot = self.app.store.snapshot(pid)
+                if not self.app._cvat_session:
+                    raise ValueError("CVAT 工作階段已結束，請重新開啟後再讀回標註。")
+                def import_cvat(progress):
+                    from .cvat_bridge import CvatProjectBridge
+                    progress("讀取 CVAT 已儲存標註",20)
+                    updates = CvatProjectBridge(self.app.data_root).read_annotations(snapshot,self.app._cvat_session)
+                    for index,(asset,shapes) in enumerate(updates,1):
+                        self.app.store.save_asset(pid,asset["id"],shapes,asset["revision"])
+                        progress(f"更新工作台標註 {index} / {len(updates)}",round(index/max(1,len(updates))*95))
+                    return {"updated":len(updates)}
+                return self.json(self.app.jobs.submit("cvat-import", import_cvat))
+            if path == "/api/open-folder":
+                if payload.get("export_id"):
+                    project = self.app.store.get_project(payload.get("project_id"))
+                    item = next((e for e in project["exports"] if e["id"] == payload["export_id"]), None)
+                    if item is None:
+                        raise FileNotFoundError("找不到匯出記錄")
+                    folder = Path(item["path"])
+                elif payload.get("project_id"):
+                    folder = self.app.store.directory(payload["project_id"])
+                else:
+                    folder = self.app.exports
+                if not folder.is_dir():
+                    raise FileNotFoundError("找不到資料夾")
+                if os.name == "nt":
+                    os.startfile(folder)
+                return self.json({"path":str(folder)})
+            if path == "/api/camera/start":
+                return self.json(self.app.camera.start(index=int(payload.get("index", 0)),width=int(payload.get("width",1280)),
+                                  height=int(payload.get("height",720)),fps=float(payload.get("fps",30)),
+                                  pixel_format=payload.get("pixel_format","MJPG")))
+            if path == "/api/camera/stop":
+                return self.json(self.app.camera.stop())
+            if path == "/api/camera/processing":
+                return self.json(self.app.camera.set_processing(payload.get("mode", "original"), payload.get("settings")))
+            if path == "/api/camera/record/start":
+                self.app.store.get_project(payload.get("project_id"), include_assets=False)
+                return self.json(self.app.camera.start_recording(payload["project_id"]))
+            if path == "/api/camera/record/stop":
+                return self.json(self.app.camera.stop_recording())
+            if parts[:2] != ["api", "projects"] or len(parts) < 3:
+                raise FileNotFoundError("找不到 API")
+            pid = parts[2]
+            if len(parts) == 3 and method == "PATCH":
+                return self.json(self.app.store.update_project(pid,name=payload.get("name"),classes=payload.get("classes")))
+            if len(parts) == 3 and method == "DELETE":
+                return self.json(self.app.store.delete_project(pid,payload.get("revision")))
+            if len(parts) == 4 and parts[3] == "classes" and method == "POST":
+                return self.json(self.app.store.manage_classes(pid,payload.get("classes"),
+                    payload.get("replacements",{}),payload.get("revision"),payload.get("delete_objects",[])))
+            if len(parts) == 5 and parts[3] == "assets" and method == "PUT":
+                return self.json(self.app.store.save_asset(pid,parts[4],payload.get("shapes"),payload.get("revision")))
+            if len(parts) == 5 and parts[3] == "assets" and method == "DELETE":
+                return self.json(self.app.store.delete_asset(pid,parts[4],payload.get("revision")))
+            if len(parts) == 4 and parts[3] == "assets" and method == "DELETE":
+                return self.json(self.app.store.delete_assets(pid,payload.get("asset_ids"),payload.get("revisions")))
+            if len(parts) == 6 and parts[3] == "assets" and parts[5] == "restore":
+                return self.json(self.app.store.restore(pid,parts[4],payload.get("history_id"),payload.get("revision")))
+            if len(parts) != 4:
+                raise FileNotFoundError("找不到 API")
+            action = parts[3]
+            if action == "import":
+                return self.json(self.app.import_paths(pid,payload.get("paths")))
+            if action == "review":
+                return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions")))
+            if action == "assign":
+                return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
+            if action == "merge":
+                return self.json(self.app.jobs.submit("merge",lambda progress:self.app.store.merge(pid,payload.get("project_ids"))))
+            if action in {"validate", "export"}:
+                return self.json(self.app.pipeline_job(pid,action,payload))
+            if action == "ai":
+                return self.json(self.app.ai_job(pid,payload))
+            if action in {"capture", "screen"}:
+                from .acquisition import capture_screen
+                self.app.store.get_project(pid, include_assets=False)
+                record = self.app.camera.snapshot() if action == "capture" else capture_screen(self.app.incoming)
+                if action == "capture" and payload.get("target_shape") is not None:
+                    self.app.store.require_class(pid,payload["target_shape"].get("label"))
+                    record["shapes"] = [payload["target_shape"]]
+                if payload.get("batch_id"):
+                    record["batch_id"] = payload["batch_id"]
+                result = self.app.store.add_assets(pid,[record])
+                if result["asset_ids"]:
+                    return self.json(self.app.store.get_asset(pid,result["asset_ids"][0]))
+                return self.json(dict(result,message="相同原圖已存在，未重複加入"))
+            if action == "video":
+                self.app.store.get_project(pid, include_assets=False)
+                def run(progress):
+                    from .acquisition import extract_video
+                    progress("從影片擷取影格")
+                    records = extract_video(payload.get("path"),self.app.incoming,payload.get("interval_seconds",1),
+                                            progress=lambda percent:progress("從影片擷取影格",round(float(percent)*.8)))
+                    if payload.get("target_shape") is not None:
+                        self.app.store.require_class(pid,payload["target_shape"].get("label"))
+                        for record in records:
+                            record["shapes"] = [payload["target_shape"]]
+                    return self.app.store.add_assets(pid,records,progress=lambda n,total:progress(f"保存影格 {n} / {total}",round(n/total*95)))
+                return self.json(self.app.jobs.submit("video",run))
+            raise FileNotFoundError("找不到 API")
+        except Exception as exc:
+            self.handle_error(exc)
