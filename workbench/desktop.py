@@ -11,8 +11,8 @@ from PySide6.QtCore import QByteArray, QObject, QEvent, QLockFile, QTimer, QUrl,
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtNetwork import QNetworkCookie
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QPushButton, QStackedWidget, QToolBar, QVBoxLayout)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
+                               QMessageBox, QStackedWidget, QToolBar)
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -132,9 +132,13 @@ class WorkbenchBridge(QObject):
     def finishEditorSync(self,error):
         self.window.finish_editor_sync(error)
 
-    @Slot()
-    def openSettings(self):
-        self.window.open_settings()
+    @Slot(result=str)
+    def updateStatus(self):
+        return json.dumps(self.window.desktop_update_status(), ensure_ascii=False)
+
+    @Slot(result=str)
+    def applyUpdate(self):
+        return json.dumps(self.window.apply_update(), ensure_ascii=False)
 
 
 class MainWindow(QMainWindow):
@@ -318,50 +322,49 @@ class MainWindow(QMainWindow):
         self.page.runJavaScript(f"window.workbenchUpdateStatus?.({len(self.pending_source_changes)})")
         return list(self.pending_source_changes)
 
-    def open_settings(self):
-        dialog=QDialog(self);dialog.setWindowTitle("本機程式更新");dialog.setMinimumWidth(500)
-        layout=QVBoxLayout(dialog)
-        heading=QLabel("Vision Workbench 本機更新");heading.setStyleSheet("font-size:18px;font-weight:600;margin-bottom:6px")
-        info=QLabel(f"資料位置\n{self.service.data_root}\n\n更新會套用 Codex 已完成的本機程式修改，安全關閉後自動重新開啟。")
-        info.setWordWrap(True);layout.addWidget(heading);layout.addWidget(info)
-        update_status=QLabel();update_status.setWordWrap(True);layout.addWidget(update_status)
-        actions=QHBoxLayout();check=QPushButton("檢查更新");apply=QPushButton("更新並自動重新開啟")
-        actions.addWidget(check);actions.addWidget(apply);layout.addLayout(actions)
-        close=QPushButton("關閉");close.clicked.connect(dialog.accept);layout.addWidget(close)
-        def refresh():
-            changes=self.check_update_indicator()
-            if changes is None:
-                update_status.setText("暫時無法讀取程式檔案，請稍後重試。")
-                apply.setEnabled(False)
-            elif changes:
-                update_status.setText(f"偵測到 {len(changes)} 個程式檔案有新修改。\n"+"、".join(changes[:8])+("…" if len(changes)>8 else ""))
-                apply.setEnabled(True)
-            else:
-                update_status.setText("目前已是本次啟動時的版本，沒有待套用修改。")
-                apply.setEnabled(False)
-        check.clicked.connect(refresh);apply.clicked.connect(lambda:self.apply_update(dialog));refresh();dialog.exec()
-
-    def apply_update(self, dialog=None):
-        if self.update_pending or self.closing:return
+    def desktop_update_status(self):
+        if self.update_pending:
+            return {"state":"updating", "count":len(self.pending_source_changes),
+                    "changes":list(self.pending_source_changes), "blockers":[],
+                    "message":"正在保存工作內容並準備重新啟動。"}
         changes=self.check_update_indicator()
-        if not changes:return
+        if changes is None:
+            return {"state":"unavailable", "count":None, "changes":[], "blockers":[],
+                    "message":"暫時無法讀取程式檔案，請稍後再試。"}
+        if not changes:
+            return {"state":"current", "count":0, "changes":[], "blockers":[],
+                    "message":"目前執行中的程式已是最新狀態。"}
+        blockers=[]
         if any(name.startswith("requirements") for name in changes):
             missing=missing_runtime_requirements(APP_ROOT)
-            if missing:
-                QMessageBox.information(self,"需要更新執行環境","尚缺少下列套件：\n"+'\n'.join(missing)+"\n請執行 bootstrap.ps1 更新環境，再重新開啟工作台。")
-                return
+            if missing: blockers.append("需要先執行 bootstrap.ps1 安裝："+"、".join(missing))
         if self.external_mode:
-            QMessageBox.information(self,"請先返回工作台","請先在 CVAT 儲存標註並返回內建編輯器，完成讀回後再更新。")
-            return
+            blockers.append("請先從 CVAT 或 Labelme 儲存並返回工作台。")
         if self.service.jobs.active() or self.service.training.active_runs() or self.service._cvat is not None and self.service._cvat.status().get("busy"):
-            QMessageBox.information(self,"工作仍在執行","請等待匯入、AI、匯出、CVAT 同步或安裝工作完成後再更新。")
-            return
+            blockers.append("請等待匯入、AI、訓練、CVAT 同步或元件安裝工作完成。")
+        return {"state":"blocked" if blockers else "available", "count":len(changes),
+                "changes":changes, "blockers":blockers,
+                "message":f"偵測到 {len(changes)} 個程式檔案有新修改。"}
+
+    def notify_update_progress(self, state, message):
+        payload=json.dumps({"state":state,"message":message,"count":len(self.pending_source_changes)},ensure_ascii=False)
+        self.page.runJavaScript(f"window.workbenchUpdateProgress?.({payload})")
+
+    def apply_update(self):
+        if self.update_pending or self.closing:
+            return {"state":"updating", "message":"更新已在進行中，請稍候。"}
+        update=self.desktop_update_status()
+        if update["state"] != "available":
+            return update
+        changes=self.check_update_indicator()
         self.update_pending=True
-        if dialog:dialog.accept()
+        self.notify_update_progress("saving", "正在保存專案與介面狀態…")
         self.page.runJavaScript("""window.__workbenchUpdate={state:'saving'};
             Promise.resolve().then(()=>window.workbenchFlush()).then(()=>window.__workbenchUpdate={state:'ready'})
             .catch(e=>window.__workbenchUpdate={state:'error',message:String(e.message||e)});""")
         QTimer.singleShot(120,self.poll_update)
+        return {"state":"updating", "count":len(changes), "changes":changes,
+                "message":"正在保存專案與介面狀態…"}
 
     def poll_update(self):
         self.page.runJavaScript("JSON.stringify(window.__workbenchUpdate||{state:'error',message:'介面尚未就緒'})",self.finish_update)
@@ -372,15 +375,18 @@ class MainWindow(QMainWindow):
         if state.get("state")=="saving":QTimer.singleShot(150,self.poll_update);return
         if state.get("state")!="ready":
             self.update_pending=False
-            QMessageBox.warning(self,"更新尚未套用",state.get("message","請先完成並儲存目前工作。"));return
+            self.notify_update_progress("error",state.get("message","請先完成並儲存目前工作。"));return
         try:
             changes=changed_sources(self.source_baseline,source_snapshot(APP_ROOT))
-            if not changes:self.update_pending=False;return
+            if not changes:
+                self.update_pending=False
+                self.notify_update_progress("current","目前執行中的程式已是最新狀態。");return
             validate_sources(APP_ROOT);schedule_restart(APP_ROOT)
-            self.allow_close=True;QApplication.closeAllWindows()
+            self.notify_update_progress("restarting","更新已驗證，工作台正在重新啟動…")
+            self.allow_close=True;QTimer.singleShot(250,QApplication.closeAllWindows)
         except (OSError,SyntaxError,ValueError) as error:
             self.update_pending=False
-            QMessageBox.warning(self,"更新未完成","目前視窗會繼續保留。\n"+str(error))
+            self.notify_update_progress("error","更新未完成；目前視窗會繼續保留。"+str(error))
 
     def save_download(self, download):
         # The editor offers a recovery copy if an external revision conflicts.

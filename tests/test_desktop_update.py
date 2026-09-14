@@ -5,11 +5,53 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from workbench.desktop_update import changed_sources, source_snapshot, validate_sources, missing_runtime_requirements
 
 
 class DesktopUpdateTests(unittest.TestCase):
+    def test_in_page_update_status_and_start_do_not_open_a_dialog(self):
+        from workbench.desktop import MainWindow
+
+        class FakeWindow:
+            update_pending=False
+            closing=False
+            pending_source_changes=[]
+            external_mode=None
+            service=SimpleNamespace(
+                jobs=SimpleNamespace(active=lambda:False),
+                training=SimpleNamespace(active_runs=lambda:False),
+                _cvat=None,
+            )
+            page=SimpleNamespace(scripts=[],runJavaScript=lambda script,*args:FakeWindow.page.scripts.append(script))
+
+            def check_update_indicator(self):
+                self.pending_source_changes=["web/app.mjs","web/index.html"]
+                return list(self.pending_source_changes)
+
+            def desktop_update_status(self):
+                return MainWindow.desktop_update_status(self)
+
+            def notify_update_progress(self,state,message):
+                self.progress=(state,message)
+
+            def poll_update(self):
+                pass
+
+        window=FakeWindow()
+        status=window.desktop_update_status()
+        self.assertEqual(status["state"],"available")
+        self.assertEqual(status["count"],2)
+        with patch("workbench.desktop.QTimer.singleShot") as timer:
+            result=MainWindow.apply_update(window)
+        self.assertEqual(result["state"],"updating")
+        self.assertTrue(window.update_pending)
+        self.assertEqual(window.progress[0],"saving")
+        self.assertIn("window.workbenchFlush()",window.page.scripts[-1])
+        timer.assert_called_once()
+
     def test_already_installed_requirements_allow_restart(self):
         from importlib.metadata import version
         with tempfile.TemporaryDirectory() as folder:

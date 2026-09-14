@@ -10,7 +10,7 @@ const state = {projects:[],project:null,asset:null,stage:'library',acquireSource
   system:null,editorMode:'builtin',cvatPoll:null,cvatElapsedTimer:null,cvatPollStartedAt:null,cvatPollBaseText:'',cvatPollBusy:false,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null,
   splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
   training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,
-  settingsPage:'general',settingsFocus:null,settingsJob:null};
+  settingsPage:'general',settingsFocus:null,settingsJob:null,desktopUpdate:null};
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已退回'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
 const formatDescriptions = {
@@ -28,9 +28,18 @@ function toast(message,error=false) {
   toastTimer=setTimeout(()=>$('toast').hidden=true,error?9500:4500);
 }
 function status(message,error=false) {$('statusText').textContent=message;$('connectionDot').classList.toggle('error',error);}
-window.workbenchUpdateStatus=count=>{
-  $('updateDot').hidden=!Number.isInteger(count)||count<1;
+function setUpdateIndicators(count){
+  const visible=Number.isInteger(count)&&count>0;
+  for(const id of ['updateDot','settingsUpdateNavDot','settingsUpdateCardDot'])if($(id))$(id).hidden=!visible;
+  $('desktopUpdateCard')?.classList.toggle('has-update',visible);
   $('settings').title=count===null?'開啟設定中心；暫時無法檢查更新':count>0?`開啟設定中心；有新更新：${count} 個程式檔案已修改`:'開啟設定中心';
+}
+window.workbenchUpdateStatus=count=>{
+  setUpdateIndicators(count);
+  if(state.desktopUpdate?.state==='updating'||state.desktopUpdate?.state==='restarting')return;
+  if(count===null)renderDesktopUpdate({state:'unavailable',count:null,changes:[],blockers:[],message:'暫時無法讀取程式檔案，請稍後再試。'});
+  else if(count>0&&state.desktopUpdate?.count!==count)renderDesktopUpdate({state:'available',count,changes:[],blockers:[],message:`偵測到 ${count} 個程式檔案有新修改。`});
+  else if(count===0&&state.desktopUpdate?.state==='available')renderDesktopUpdate({state:'current',count:0,changes:[],blockers:[],message:'目前執行中的程式已是最新狀態。'});
 };
 async function api(path,method='GET',body) {
   let response;
@@ -78,6 +87,7 @@ function applySettings(){document.body.style.zoom=settingValue('scale');if($('se
 function showSettingsPage(page='general'){
   state.settingsPage=page;document.querySelectorAll('[data-settings-page]').forEach(item=>item.classList.toggle('active',item.dataset.settingsPage===page));
   document.querySelectorAll('[data-settings-panel]').forEach(item=>item.hidden=item.dataset.settingsPanel!==page);
+  if(page==='updates')void refreshDesktopUpdate().catch(error=>renderDesktopUpdate({state:'unavailable',count:null,changes:[],message:error.message}));
 }
 async function openSettings(page='general',modelKey=null){
   state.settingsFocus=document.activeElement;$('settingsShell').hidden=false;showSettingsPage(page);applySettings();
@@ -95,6 +105,42 @@ function renderSettingsSummary(){
   $('diagnosticSummary').textContent=[`Vision Workbench ${state.system.version||'—'}`,`模式：${state.system.desktop?'Windows 桌面版':'瀏覽器'}`,`資料：${state.system.data_root||'—'}`,`訓練 Python：${state.modelCatalog?.worker_python||'—'}`,
     ...((state.modelCatalog?.components||[]).map(component=>`${component.name}：${component.state} · ${component.message}`))].join('\n');
 }
+function parseNativeResult(value){
+  if(typeof value==='string'){try{return JSON.parse(value)}catch{return {state:'unavailable',count:null,changes:[],message:'桌面更新服務回應格式無效。'}}}
+  return value&&typeof value==='object'?value:{state:'unavailable',count:null,changes:[],message:'桌面更新服務沒有回應。'};
+}
+function invokeNativeUpdate(method){return new Promise(resolve=>state.nativeBridge[method](value=>resolve(parseNativeResult(value))))}
+function renderDesktopUpdate(snapshot){
+  if(!snapshot)return;
+  state.desktopUpdate={...(state.desktopUpdate||{}),...snapshot};const update=state.desktopUpdate;
+  setUpdateIndicators(update.count);
+  const statusNames={available:'有可用更新',blocked:'等待處理',updating:'正在更新',restarting:'正在重啟',current:'已是最新',unavailable:'無法檢查',error:'更新失敗'};
+  const badge=$('desktopUpdateBadge');badge.textContent=statusNames[update.state]||'尚未檢查';badge.className='settings-state '+(update.state==='current'?'ready':update.state==='available'||update.state==='blocked'?'warning':update.state==='unavailable'||update.state==='error'?'error':'ready');
+  $('desktopUpdateStatus').textContent=update.message||'尚未檢查更新。';
+  const changes=Array.isArray(update.changes)?update.changes:[],details=$('desktopUpdateDetails');
+  details.hidden=!(Number.isInteger(update.count)&&update.count>0);$('desktopUpdateCount').textContent=update.count>0?`${update.count} 個待套用程式檔案`:'';
+  $('desktopUpdateFiles').replaceChildren(...changes.map(path=>element('li',path)));
+  if(update.count>0&&!changes.length)$('desktopUpdateFiles').append(element('li','按下更新後會重新確認並列出檔案。'));
+  const blockers=Array.isArray(update.blockers)?update.blockers:[],blocker=$('desktopUpdateBlockers');blocker.hidden=!blockers.length;blocker.textContent=blockers.join('\n');
+  const action=$('openDesktopUpdater'),running=['updating','restarting'].includes(update.state);action.disabled=running;
+  action.textContent=update.state==='available'?'套用更新並重新啟動':update.state==='blocked'?'重新檢查':running?'更新中…':update.state==='current'?'再次檢查':'檢查更新';
+}
+async function refreshDesktopUpdate(){
+  if(!state.nativeBridge?.updateStatus){renderDesktopUpdate({state:'unavailable',count:null,changes:[],message:'本機程式更新只在 Windows 桌面版提供。'});return state.desktopUpdate}
+  const snapshot=await invokeNativeUpdate('updateStatus');renderDesktopUpdate(snapshot);return snapshot;
+}
+async function runDesktopUpdate(){
+  if(!state.nativeBridge?.applyUpdate)throw Error('本機程式更新只在 Windows 桌面版提供。');
+  const snapshot=await refreshDesktopUpdate();
+  if(snapshot.state!=='available'){
+    if(snapshot.state==='current')toast('目前執行中的程式已是最新狀態。');
+    else if(snapshot.state==='blocked')toast(snapshot.blockers?.[0]||snapshot.message,true);
+    else if(snapshot.state!=='updating')toast(snapshot.message||'目前無法開始更新。',true);
+    return;
+  }
+  renderDesktopUpdate(await invokeNativeUpdate('applyUpdate'));
+}
+window.workbenchUpdateProgress=snapshot=>{renderDesktopUpdate(snapshot);if(snapshot?.state==='error')toast(snapshot.message||'更新未完成。',true)};
 async function loadModelCatalog(refresh=false){
   state.modelCatalog=await api(`/api/model-catalog${refresh?'?refresh=1':''}`);renderModelCatalog();renderSettingsSummary();return state.modelCatalog;
 }
@@ -1627,7 +1673,7 @@ $('settings').onclick=()=>safe(()=>openSettings());$('closeSettings').onclick=cl
 document.querySelectorAll('[data-settings-page]').forEach(item=>item.onclick=()=>showSettingsPage(item.dataset.settingsPage));
 $('settingScale').onchange=event=>saveSetting('scale',event.target.value);$('settingDevice').onchange=event=>{saveSetting('device',event.target.value);$('trainingDevice').value=event.target.value;renderTraining()};
 $('modelCatalogSearch').oninput=renderModelCatalog;$('modelCatalogFilter').onchange=renderModelCatalog;$('refreshModelCatalog').onclick=()=>safe(()=>loadModelCatalog(true));
-$('goModelUpdates').onclick=()=>showSettingsPage('models');$('openDesktopUpdater').onclick=()=>{if(state.nativeBridge)state.nativeBridge.openSettings();else toast('本機程式更新工具需要 Windows 桌面版。',true)};
+$('goModelUpdates').onclick=()=>showSettingsPage('models');$('openDesktopUpdater').onclick=()=>safe(runDesktopUpdate);
 $('copyDiagnostics').onclick=()=>safe(async()=>{await navigator.clipboard.writeText($('diagnosticSummary').textContent);toast('診斷摘要已複製。')});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('settingsShell').hidden){event.preventDefault();closeSettings();return}if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
 
