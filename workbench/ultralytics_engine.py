@@ -1,6 +1,8 @@
 """RT-DETR and YOLO26 Seg adapters for an isolated Ultralytics runtime."""
 from __future__ import annotations
 
+from .learning_rates import measured_rates
+
 from hashlib import sha256
 import json
 import math
@@ -151,7 +153,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         epochs = int(run["config"]["epochs"])
         def on_epoch(trainer):
             epoch = int(getattr(trainer, "epoch", 0)) + 1
-            row = {"epoch": epoch, **_numeric_metrics(trainer, definition["kind"])}
+            row = {"epoch": epoch, **_numeric_metrics(trainer, definition["kind"]), **measured_rates(getattr(trainer, "optimizer", None))}
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{definition['name']} {epoch} / {epochs}", epoch=epoch,
@@ -161,9 +163,14 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         model.add_callback("on_fit_epoch_end", on_epoch)
         requested = run["config"].get("device", "auto")
         device = "0" if requested == "cuda" else "cpu" if requested == "cpu" else None
+        schedule = run["config"].get("scheduler", "linear")
+        initial_lr = float(run["config"].get("learning_rate", .0005))
         model.train(data=str(data_yaml), epochs=epochs, imgsz=int(run["config"].get("image_size", 640)),
                              batch=int(run["config"].get("batch_size", 1)), device=device, workers=0,
-                             lr0=float(run["config"].get("learning_rate", .0005)),
+                             lr0=initial_lr, cos_lr=schedule == "cosine",
+                             lrf=1.0 if schedule == "fixed" else float(run["config"].get("min_learning_rate", initial_lr*.01))/initial_lr,
+                             warmup_epochs=0 if schedule == "fixed" else int(run["config"].get("warmup_epochs", 0)),
+                             warmup_bias_lr=0.0,
                              weight_decay=float(run["config"].get("weight_decay", .0001)),
                              optimizer=run["config"].get("optimizer", "AdamW"),
                              **({"momentum": float(run["config"].get("momentum", .9))}

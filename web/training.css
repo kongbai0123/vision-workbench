@@ -1,5 +1,8 @@
 /* Training setup stays aligned; the monitor uses the full available width. */
 .training-layout {align-items:stretch}
+#prepareAutoSplit {margin-bottom:10px}
+.training-schedule{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px}
+.training-schedule summary{cursor:pointer;color:var(--accent);margin-bottom:14px}
 .training-layout > .panel {display:flex;flex-direction:column;min-width:0;margin:0}
 .training-layout .panel-title {min-height:49px;margin-bottom:18px}
 .training-layout input,.training-layout select,.training-readonly {min-height:42px;width:100%}

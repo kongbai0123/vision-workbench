@@ -93,6 +93,7 @@ class NewModelAdapterTests(unittest.TestCase):
                 self.callbacks[name] = callback
             def train(self, **options):
                 training_options.append(options)
+                self.trainer.optimizer = SimpleNamespace(param_groups=[{"lr":options["lr0"]}])
                 best = Path(options["project"]) / options["name"] / "weights" / "best.pt"
                 best.parent.mkdir(parents=True); best.write_bytes(b"checkpoint")
                 self.trainer.best = str(best)
@@ -129,12 +130,16 @@ class NewModelAdapterTests(unittest.TestCase):
             metrics = [json.loads(row) for row in (run_dir / "metrics.jsonl").read_text().splitlines()]
             for row in metrics:
                 self.assertEqual(row["val/box_map50"], .62)
+                self.assertEqual(row["train/learning_rate"], training_options[0]["lr0"])
                 self.assertNotIn("train/loss", row)
             data_yaml = json.loads((run_dir / "dataset/data.yaml").read_text(encoding="utf-8"))
             expected = extra_config or {}
             self.assertEqual(training_options[0]["lr0"], expected.get("learning_rate", .0005))
             self.assertEqual(training_options[0]["weight_decay"], expected.get("weight_decay", .0001))
             self.assertEqual(training_options[0]["optimizer"], expected.get("optimizer", "AdamW"))
+            self.assertEqual(training_options[0]["cos_lr"], expected.get("scheduler") == "cosine")
+            self.assertEqual(training_options[0]["warmup_epochs"], 0 if expected.get("scheduler") == "fixed" else expected.get("warmup_epochs", 0))
+            self.assertAlmostEqual(training_options[0]["lrf"], 1 if expected.get("scheduler") == "fixed" else expected.get("min_learning_rate", training_options[0]["lr0"]*.01)/training_options[0]["lr0"])
             if expected.get("optimizer") == "SGD":
                 self.assertEqual(training_options[0]["momentum"], .9)
             return result, record, data_yaml
@@ -142,6 +147,12 @@ class NewModelAdapterTests(unittest.TestCase):
     def test_ultralytics_custom_parameters_reach_training_call(self):
         self._run_fake_ultralytics(("train", "val", "test"),
                                    {"optimizer": "SGD", "learning_rate": .012, "weight_decay": .023})
+
+    def test_ultralytics_schedules_reach_native_trainer(self):
+        for strategy in ("fixed", "cosine", "linear"):
+            with self.subTest(strategy=strategy):
+                self._run_fake_ultralytics(("train", "val", "test"),
+                    {"scheduler":strategy,"learning_rate":.001,"min_learning_rate":.0001,"warmup_epochs":1})
 
     def test_ultralytics_worker_contract_writes_metrics_checkpoint_and_record(self):
         result, record, _data = self._run_fake_ultralytics(("train", "val", "test"))

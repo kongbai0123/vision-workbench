@@ -3,6 +3,7 @@ import {kind, decodeMask, encodeMask, brush} from './shapes.mjs';
 import {SaveQueue} from './save-queue.mjs';
 import {TrainingMonitor} from './training-monitor.mjs';
 import {TrainingParameters} from './training-parameters.mjs';
+import {SplitManager} from './split-manager.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
@@ -1374,6 +1375,13 @@ async function runAI() {
   }catch(error){$('aiMessage').textContent=error.message;throw error;}
 }
 
+const splitManager=new SplitManager({api,onApplied:async(result,pid,createVersion)=>{
+  if(state.project?.id!==pid)return;
+  state.project=result.project;renderBatchTable();renderReview();resetValidation('資料分割已更新，請重新驗證。');
+  if(createVersion)await createDatasetVersion();else await loadTraining();
+  toast(createVersion?'已建立新的固定資料版本。':'已套用專案分割；建立新資料版本後，後續訓練才會使用新分配。');
+}});
+async function openSplitManager(){await flushAllEdits();await splitManager.open(state.project.id)}
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device')});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
@@ -1422,7 +1430,7 @@ function renderReadiness(report){
   const stats=report?.stats||{},splits=stats.splits||{};
   if(report?.ready)root.append(element('div',`檢查通過 · 已核准 ${number(stats.approved)} 張 · Train ${number(splits.train)} / Val ${number(splits.val)} / Test ${number(splits.test)}`,'readiness-item'));
   for(const item of report?.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('div',`處理方式：${item.action}`));root.append(row)}
-  for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));root.append(row)}
+  for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));if(item.code==='source_group_leak'){const fix=element('button','查看並調整批次','text-button');fix.onclick=()=>safe(openSplitManager);row.append(fix)}root.append(row)}
 }
 function renderTraining(){
   if(!state.training)return;
@@ -1434,7 +1442,8 @@ function renderTraining(){
   datasetSelect.value=datasets.some(item=>item.id===remember)?remember:datasets[0]?.id||'';
   const dataset=selectedDataset();$('trainingDatasetCurrent').textContent=dataset?.id||'尚未建立';
   $('trainingDatasetHint').textContent=dataset?`${number(dataset.asset_count)} 張 · Train ${number(dataset.splits.train)} / Val ${number(dataset.splits.val)} / Test ${number(dataset.splits.test)}`:'只會固定已核准且完成分割的資料。';
-  $('prepareAutoSplit').hidden=readiness.ready;$('prepareAutoSplit').disabled=!!active;
+  if(dataset&&dataset.project_revision!==readiness.project_revision)$('trainingDatasetHint').textContent+=' · 目前專案已變動，建立新版本才會套用。';
+  $('prepareAutoSplit').hidden=false;$('prepareAutoSplit').disabled=false;
   $('createDatasetVersion').disabled=!readiness.ready||!!active;
   const engineSelect=$('trainingEngine'),engineRemember=engineSelect.value;engineSelect.replaceChildren();
   let currentTask='';for(const engine of capabilities.engines||[]){
@@ -1561,7 +1570,8 @@ $('reviewSelectAll').onchange=()=>{for(const asset of reviewPageItems())if($('re
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
 bind('prepareTraining',()=>switchStage('train'));
 bind('refreshTraining',()=>loadTraining());
-bind('prepareAutoSplit',async()=>{await autoSplitProject();await loadTraining()},{busy:true,task:'設定訓練資料分割'});
+bind('prepareAutoSplit',openSplitManager);
+bind('reviewSplitManager',openSplitManager);
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
 $('trainingDataset').onchange=renderTraining;$('trainingEngine').onchange=renderTraining;$('trainingDevice').onchange=renderTraining;
 $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));

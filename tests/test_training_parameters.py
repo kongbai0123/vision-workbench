@@ -69,7 +69,7 @@ class TrainingParameterTests(unittest.TestCase):
             manifest = workspace.datasets / "project" / "D001" / "manifest.json"
             manifest.parent.mkdir(parents=True); manifest.write_text("{}")
             for invalid in ({"device": "invalid"}, {"learning_rate": float("nan")}, {"batch_size": 200},
-                            {"seed": False}, {"image_size": 3.5}, {"weight_decay": -1}):
+                            {"seed": False}, {"image_size": 3.5}, {"weight_decay": -1}, {"scheduler":"plateau"}):
                 with self.subTest(config=invalid), patch("workbench.training.subprocess.Popen") as process:
                     with self.assertRaises(ValueError):
                         workspace.start_run("project", "D001", {"engine": "maskrcnn_resnet50_fpn", **invalid})
@@ -88,7 +88,8 @@ class TrainingParameterTests(unittest.TestCase):
             manifest = workspace.datasets / "project" / "D001" / "manifest.json"
             manifest.parent.mkdir(parents=True); manifest.write_text("{}")
             submitted = {"engine": "maskrcnn_resnet50_fpn", "epochs": 7, "seed": 9, "device": "cpu",
-                         "image_size": 512, "batch_size": 3, "learning_rate": .012, "weight_decay": .023, "optimizer": "SGD"}
+                         "image_size": 512, "batch_size": 3, "learning_rate": .012, "weight_decay": .023, "optimizer": "SGD",
+                         "scheduler":"cosine", "min_learning_rate":.00012, "warmup_epochs":2}
 
             def launch(*_args, **_kwargs):
                 persisted = json.loads((workspace.runs / "project/R001/run.json").read_text(encoding="utf-8"))

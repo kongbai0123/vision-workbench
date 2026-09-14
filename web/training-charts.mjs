@@ -2,6 +2,10 @@
 // Epoch table and keep plotting independent of desktop/browser rendering.
 const DEFINITIONS = {
   'train/loss': ['訓練損失 · Train Loss', false, 'lower'],
+  'train/learning_rate': ['實際學習率 · LR（每輪最後一步）', false, null],
+  'lr/group_0': ['學習率 · 參數組 0', false, null],
+  'lr/group_1': ['學習率 · 參數組 1', false, null],
+  'lr/group_2': ['學習率 · 參數組 2', false, null],
   'val/loss': ['驗證損失 · Validation Loss', false, 'lower'],
   'val/mean_iou': ['Validation · mIoU', true, 'higher'],
   'val/box_mean_iou': ['Validation · Box IoU', true, 'higher'],
@@ -177,9 +181,11 @@ export function buildChartModel(options, key) {
     finiteMetric(run.config?.epochs) ? run.config.epochs : 1), 1);
   const xMax = Math.max(1, Math.ceil(configuredEpoch), observedEpoch, prior?.xMax || 1);
   const values = domainSeries.flatMap(series => series.points.map(point => point.value));
-  const maximum = values.reduce((max, value) => Math.max(max, value), 1);
+  const isRate = key==='train/learning_rate'||key.startsWith('lr/');
+  const rateCeiling = isRate ? domainRuns.reduce((max,run)=>Math.max(max,run.config?.learning_rate||0),1e-12) : 1;
+  const maximum = values.reduce((max, value) => Math.max(max, value), rateCeiling);
   const minimum = values.reduce((min, value) => Math.min(min, value), 0);
-  const yMax = descriptor.unit ? 1 : Math.max(roundedBound(maximum), prior?.yMax || 1);
+  const yMax = descriptor.unit ? 1 : Math.max(roundedBound(maximum), prior?.yMax || rateCeiling);
   const yMin = descriptor.unit ? 0 : Math.min(-roundedBound(Math.min(0, minimum)), prior?.yMin || 0);
   const expanded = Boolean(prior?.expanded || (prior && (yMax > prior.yMax || yMin < prior.yMin || xMax > prior.xMax)));
   domains.set(domainKey, {xMax, yMax, yMin, expanded});

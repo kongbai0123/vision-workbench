@@ -48,6 +48,26 @@ def parameter_schema(definition):
          "options": [{"value": "AdamW", "label": "AdamW"}, {"value": "SGD", "label": "SGD"}],
          "advanced": True, "description": "SGD 使用固定動量 0.9（Nesterov）。" if ultralytics else "選擇參數更新演算法；SGD 不使用動量。"},
     ]
+    strategies = [("fixed", "固定"), ("cosine", "暖身＋餘弦下降"), ("linear", "暖身＋線性下降")]
+    if not ultralytics: strategies.append(("plateau", "Validation 停滯時下降"))
+    parameters += [
+        {"key":"scheduler", "label":"學習率策略", "type":"select", "default":"cosine", "advanced":True,
+         "section":"schedule", "options":[{"value":v,"label":n} for v,n in strategies],
+         "description":"固定不進行暖身或衰減；其他策略依訓練進度或驗證結果調整。"},
+        {"key":"min_learning_rate", "label":"最低學習率", "type":"number", "default":.000005,
+         "min":1e-12, "max":1, "advanced":True, "section":"schedule", "when":["cosine","linear","plateau"]},
+        {"key":"warmup_epochs", "label":"暖身輪數", "type":"integer", "default":0,
+         "min":0, "max":199, "advanced":True, "section":"schedule", "when":["cosine","linear"],
+         "description":"0 表示不暖身；必須小於總訓練輪數。"},
+    ]
+    if not ultralytics:
+        parameters += [
+            {"key":"lr_patience", "label":"允許未改善輪數", "type":"integer", "default":3,
+             "min":0, "max":199, "advanced":True, "section":"schedule", "when":["plateau"]},
+            {"key":"lr_factor", "label":"下降倍率", "type":"number", "default":.5,
+             "min":.001, "max":.999, "advanced":True, "section":"schedule", "when":["plateau"],
+             "description":"監控 Validation 主要分數（越高越好），不使用 Test 調整。"},
+        ]
     return parameters
 
 
@@ -66,6 +86,9 @@ def validate_config(definition, supplied):
             for key in legacy:
                 supplied.pop(key)
     schema = parameter_schema(definition)
+    if definition["key"] != "pixel_prototype_v1" and "min_learning_rate" not in supplied:
+        rate = supplied.get("learning_rate", .0005)
+        if type(rate) in (int, float): supplied["min_learning_rate"] = rate * .01
     allowed = {field["key"] for field in schema} | {"engine"}
     unknown = set(supplied) - allowed
     if unknown:
@@ -102,6 +125,17 @@ def validate_config(definition, supplied):
     elif definition.get("component") == "ultralytics" and result.get("optimizer") == "SGD":
         # Ultralytics builds Nesterov SGD, which requires positive momentum.
         result["momentum"] = .9
+    if not definition["key"] == "pixel_prototype_v1":
+        schedule = result["scheduler"]
+        if schedule != "fixed" and result["min_learning_rate"] > result["learning_rate"]:
+            raise ValueError("最低學習率不得大於初始學習率")
+        if schedule in {"cosine","linear"} and result["warmup_epochs"] >= result["epochs"]:
+            raise ValueError("暖身輪數必須小於總訓練輪數")
+        if schedule == "fixed":
+            result["min_learning_rate"] = result["learning_rate"]
+        if schedule not in {"cosine","linear"}: result["warmup_epochs"] = 0
+        if schedule != "plateau":
+            result.pop("lr_patience", None); result.pop("lr_factor", None)
     return result
 
 

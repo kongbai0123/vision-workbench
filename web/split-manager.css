@@ -1,0 +1,11 @@
+.smart-split-dialog{width:min(1120px,94vw);max-width:94vw;max-height:90vh;overflow:auto;background:#17242e;color:#dce9f0;border:1px solid #38515e;border-radius:8px;padding:24px}
+.smart-split-dialog::backdrop{background:#050b12bb}
+.smart-split-layout{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2.5fr);gap:24px}
+.smart-split-settings{display:flex;flex-direction:column;gap:10px}.smart-split-settings .check-label{margin:8px 0}
+.smart-split-content{min-width:0}.smart-split-summary{display:flex;gap:12px;flex-wrap:wrap;color:#67d8c6}
+.smart-split-dialog table img,.smart-split-asset img{width:48px;height:36px;object-fit:contain;margin-right:8px;vertical-align:middle}
+.smart-split-dialog td{white-space:normal}.smart-split-dialog td:first-child{max-width:240px;overflow-wrap:anywhere}
+.smart-split-dialog td select{min-width:100px}.smart-split-footer{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:24px}
+.smart-split-assets{max-height:330px;overflow:auto}.smart-split-asset{display:grid;grid-template-columns:48px minmax(0,1fr) minmax(120px,1fr);align-items:center;gap:10px;margin:10px 0}
+.smart-split-asset span{overflow-wrap:anywhere}.split-manager-message{padding:12px;border-left:3px solid #52cbb8;background:#10212a;line-height:1.7}
+@media(max-width:760px){.smart-split-layout{grid-template-columns:1fr}.smart-split-dialog{padding:16px}.smart-split-asset{grid-template-columns:48px minmax(0,1fr)}.smart-split-asset input{grid-column:1/-1}}

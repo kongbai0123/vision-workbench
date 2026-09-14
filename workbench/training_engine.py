@@ -48,7 +48,14 @@ def atomic_json(path: Path, value) -> None:
 
 
 def read_json(path: Path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    for attempt in range(8):
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except PermissionError:
+            # Atomic replacement can briefly deny new readers on Windows.
+            if attempt == 7:
+                raise
+            time.sleep(.015 * (attempt + 1))
 
 
 def annotation_mask(shape: dict, width: int, height: int) -> np.ndarray:
