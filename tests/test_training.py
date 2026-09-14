@@ -47,6 +47,11 @@ class TrainingWorkflowTests(unittest.TestCase):
         while time.monotonic() < deadline:
             run = self.workspace.run(self.pid, run_id)
             if run["status"] in {"completed", "failed", "stopped"}:
+                # The worker persists its terminal state just before Python exits.
+                # Wait for the reaper to close inherited Windows log handles so
+                # TemporaryDirectory cleanup cannot race the child process.
+                while (self.pid, run_id) in self.workspace.processes and time.monotonic() < deadline:
+                    time.sleep(.02)
                 return run
             time.sleep(.04)
         self.fail("training worker timed out")
