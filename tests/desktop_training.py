@@ -204,13 +204,19 @@ def main():
             wait("typeof window.workbenchState==='function'")
             click(".project-card-open")
             wait("!document.querySelector('[data-stage=train]').disabled")
-            click("[data-stage=train]")
+            click("[data-stage=split]")
+            wait("document.querySelector('#splitFlowStats').innerText.includes('獨立來源群組')")
+            capture("29-data-split-stage", target="#split")
+            click("#continueToTraining")
+            wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             wait("document.querySelectorAll('#trainingPlots svg').length===2")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
             # The split manager stays accessible even when readiness is already true.
             old_manifest = service.training.datasets / pid / "D001" / "manifest.json"
             old_bytes = old_manifest.read_bytes()
             click("#prepareAutoSplit")
+            wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
+            click("#openSplitFlowManager")
             wait("document.querySelectorAll('#smartSplitDialog tbody tr').length===6")
             click("#previewSmartSplit")
             wait("!document.querySelector('#applySmartSplitVersion').disabled")
@@ -224,6 +230,8 @@ def main():
             wait("document.querySelector('#trainingDataset').value==='D002'")
             assert old_manifest.read_bytes() == old_bytes
             assert service.store.get_project(pid)['split_plan']['current']
+            click("#continueToTraining")
+            wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             # Parameter forms expose the selected engine's actual supported schema.
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")

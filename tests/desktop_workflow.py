@@ -189,8 +189,11 @@ def main():
             assert service.store.get_project(pid)['stats']['approved']==4
             capture("04-review-approved")
             # Build and run a real immutable training version from the same UI.
-            click("[data-stage='train']")
-            click("#prepareAutoSplit")
+            click("#prepareTraining")
+            wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
+            assert js("document.querySelector('[data-stage=split]').classList.contains('active')")
+            capture("05-data-split")
+            click("#openSplitFlowManager")
             wait("document.querySelector('#smartSplitDialog').open")
             # This fixture contains independent imported drawings, so use the
             # explicit class-balanced option rather than splitting camera footage.
@@ -199,15 +202,17 @@ def main():
             wait("!document.querySelector('#applySmartSplit').disabled")
             click("#applySmartSplit")
             wait("!document.querySelector('#smartSplitDialog').open")
-            wait("document.querySelector('#trainingReadiness').innerText.includes('檢查通過')")
+            wait("document.querySelector('#splitFlowStatus').innerText.includes('符合建立固定資料版本')")
             split_assets=service.store.snapshot(pid)['assets']
             changed_split=next(asset['split'] for asset in split_assets if asset['id']==changed_id)
             if changed_split=='train':
                 replacement=next(asset for asset in split_assets if asset['split'] in {'val','test'})
                 service.store.assign(pid,[changed_id],split=replacement['split'])
                 service.store.assign(pid,[replacement['id']],split='train')
-                click("#refreshTraining")
-                wait("document.querySelector('#trainingReadiness').innerText.includes('檢查通過')")
+                click("#refreshSplitPage")
+                wait("document.querySelector('#splitFlowStatus').innerText.includes('符合建立固定資料版本')")
+            click("#continueToTraining")
+            wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             click("#createDatasetVersion")
             wait("document.querySelector('#trainingDatasetCurrent').innerText==='D001'")
             fill("#trainingEngine","pixel_prototype_v1");fill("#trainingEpochs","4");click("#startTraining")
