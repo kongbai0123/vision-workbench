@@ -13,6 +13,7 @@ import numpy as np
 
 from composer_core.geometry import encode_rle
 from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, _iou, _status, _stopping
+from .training_parameters import create_optimizer
 
 
 ENGINE_KEY = "maskrcnn_resnet50_fpn"
@@ -129,8 +130,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             raise RuntimeError("Mask R-CNN 需要非空的 Train 與 Validation/Test 資料")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
-        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                                      lr=float(run["config"].get("learning_rate", 0.0005)), weight_decay=0.0001)
+        optimizer = create_optimizer(torch, [p for p in model.parameters() if p.requires_grad], run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"載入 Mask R-CNN · {device}", progress=3)

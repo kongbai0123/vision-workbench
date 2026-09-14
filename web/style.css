@@ -78,6 +78,7 @@
 .readiness-item.warning{border-color:var(--warn);background:#2a271e;color:#dfc798}
 .training-data-panel>label,.prediction-panel>label{margin-top:17px}
 .training-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin-top:17px}
+.training-parameter-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:14px}.training-parameter-heading h3{font-size:13px;margin:0}.training-parameter-heading button{font-size:12px}#trainingAdvancedFields{margin-top:12px}#trainingAdvancedFields .field-note{font-size:11px;margin:6px 0 0}#trainingParameterHint{margin:0 0 17px}.training-form-grid [hidden]{display:none}
 .training-form-grid label{margin-top:0}
 .training-readonly{display:flex;align-items:center;min-height:39px;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:#111c24;color:#b9ccd4;font-size:12px}
 .training-details{margin-top:21px;padding-top:14px;border-top:1px solid var(--line)}

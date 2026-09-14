@@ -82,7 +82,8 @@ class NewModelAdapterTests(unittest.TestCase):
         self.assertEqual(_result_metrics(result, "segment", "val", 2),
                          {"split": "val", "images": 2, "mask_map50": 0.})
 
-    def _run_fake_ultralytics(self, splits):
+    def _run_fake_ultralytics(self, splits, extra_config=None):
+        training_options = []
         class FakeModel:
             def __init__(self, architecture):
                 self.architecture = architecture; self.callbacks = {}
@@ -91,6 +92,7 @@ class NewModelAdapterTests(unittest.TestCase):
             def add_callback(self, name, callback):
                 self.callbacks[name] = callback
             def train(self, **options):
+                training_options.append(options)
                 best = Path(options["project"]) / options["name"] / "weights" / "best.pt"
                 best.parent.mkdir(parents=True); best.write_bytes(b"checkpoint")
                 self.trainer.best = str(best)
@@ -117,7 +119,7 @@ class NewModelAdapterTests(unittest.TestCase):
             run_dir, model_dir = root / "run", root / "model"; run_dir.mkdir(); model_dir.mkdir()
             atomic_json(run_dir / "run.json", {"run_id": "R001", "model_version_id": "M001",
                 "engine": "rt_detr_r50", "config": {"epochs": 2, "device": "cpu", "image_size": 128,
-                "batch_size": 1, "seed": 42}})
+                "batch_size": 1, "seed": 42, **(extra_config or {})}})
             result = train_ultralytics(manifest, run_dir, model_dir)
             self.assertEqual(result["status"], "completed")
             self.assertEqual(len((run_dir / "metrics.jsonl").read_text().splitlines()), 2)
@@ -129,7 +131,17 @@ class NewModelAdapterTests(unittest.TestCase):
                 self.assertEqual(row["val/box_map50"], .62)
                 self.assertNotIn("train/loss", row)
             data_yaml = json.loads((run_dir / "dataset/data.yaml").read_text(encoding="utf-8"))
+            expected = extra_config or {}
+            self.assertEqual(training_options[0]["lr0"], expected.get("learning_rate", .0005))
+            self.assertEqual(training_options[0]["weight_decay"], expected.get("weight_decay", .0001))
+            self.assertEqual(training_options[0]["optimizer"], expected.get("optimizer", "AdamW"))
+            if expected.get("optimizer") == "SGD":
+                self.assertEqual(training_options[0]["momentum"], .9)
             return result, record, data_yaml
+
+    def test_ultralytics_custom_parameters_reach_training_call(self):
+        self._run_fake_ultralytics(("train", "val", "test"),
+                                   {"optimizer": "SGD", "learning_rate": .012, "weight_decay": .023})
 
     def test_ultralytics_worker_contract_writes_metrics_checkpoint_and_record(self):
         result, record, _data = self._run_fake_ultralytics(("train", "val", "test"))

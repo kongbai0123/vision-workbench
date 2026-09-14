@@ -14,6 +14,7 @@ import numpy as np
 from composer_core.geometry import encode_rle
 from .maskrcnn_engine import NativeMaskDataset, _collate, _device
 from .training_engine import annotation_mask, atomic_json, load_rgb, read_json, _iou, _status, _stopping
+from .training_parameters import create_optimizer
 
 
 DETECTION_ENGINES = {
@@ -136,6 +137,16 @@ def _evaluate_semantic(model, dataset, device, torch):
             "per_class_iou": per_class, "per_class_dice": per_dice}
 
 
+def _semantic_training_mode(model, torch, batch_size):
+    model.train()
+    if batch_size == 1:
+        # DeepLab's pooled branch has a 1x1 BatchNorm input. Keep every image,
+        # using running statistics for singleton batches while training affine weights.
+        for layer in model.modules():
+            if isinstance(layer, torch.nn.BatchNorm2d):
+                layer.eval()
+
+
 def _artifacts(run_dir, model_dir, run_id, checkpoint):
     paths = (run_dir / "metrics.jsonl", run_dir / "evaluation.json", model_dir / "model.json", checkpoint)
     rows = []
@@ -169,8 +180,7 @@ def train_detection(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         if not training.assets or not validation.assets: raise RuntimeError("Faster R-CNN 需要非空的 Train 與 Validation/Test 資料")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
-        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                                      lr=float(run["config"].get("learning_rate", .0005)), weight_decay=.0001)
+        optimizer = create_optimizer(torch, [p for p in model.parameters() if p.requires_grad], run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8"); _status(run_dir, run, status="preparing", message=f"載入 {ENGINE_NAMES[run['engine']]} · {device}", progress=3)
         for epoch in range(1, epochs + 1):
@@ -214,13 +224,14 @@ def train_semantic(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         testing = SemanticDataset(manifest, dataset_manifest.parent, "test", torch, image_size)
         if not training.assets or not validation.assets: raise RuntimeError("DeepLabV3 需要非空的 Train 與 Validation/Test 資料")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True, num_workers=0)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=float(run["config"].get("learning_rate", .0005)), weight_decay=.0001)
+        optimizer = create_optimizer(torch, model.parameters(), run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8"); _status(run_dir, run, status="preparing", message=f"載入 {ENGINE_NAMES[run['engine']]} · {device}", progress=3)
         for epoch in range(1, epochs + 1):
             model.train(); losses = []
             for images, targets, _assets in loader:
                 if _stopping(run_dir): return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
+                _semantic_training_mode(model, torch, len(images))
                 output = model(images.to(device))["out"]
                 loss = torch.nn.functional.cross_entropy(output, targets.to(device)); optimizer.zero_grad(set_to_none=True); loss.backward(); optimizer.step()
                 losses.append(float(loss.detach().cpu()))

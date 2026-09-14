@@ -89,7 +89,8 @@ export function defaultMetricKeys(descriptors = []) {
 export function runAppearance(run, index = 0) {
   const appearance = Number.isInteger(run?.appearanceIndex) && run.appearanceIndex >= 0 ? run.appearanceIndex : index;
   const slot = Number.isInteger(appearance) && appearance >= 0 ? appearance : 0;
-  return {color: PALETTE[slot % PALETTE.length], dash: DASHES[slot % DASHES.length]};
+  return {color: slot < PALETTE.length ? PALETTE[slot] : `hsl(${Math.round(slot * 137.508) % 360} 65% 68%)`,
+    dash: DASHES[slot % DASHES.length]};
 }
 
 function engineFamily(run) {
@@ -157,27 +158,32 @@ export function buildChartModel(options, key) {
   const {runs = [], reports = new Map(), visibleRunIds = new Set(runs.map(run => run.run_id)),
     comparison = false, domains = new Map()} = options;
   const descriptor = displayDefinition(key, runs);
-  const allSeries = runs.map((run, index) => {
+  const collectSeries = (run, index) => {
     const rows = reportRows(reports, run);
     const points = rows.filter(row => finiteMetric(row[key])).map(row => ({epoch: row.epoch, value: row[key]}));
     return {run, ...runAppearance(run, index), rows, points, segments: pointSegments(points)};
-  });
+  };
+  const allSeries = runs.map(collectSeries);
+  // Comparison candidates hold the coordinate range while the checked Runs alone
+  // determine plotted data and whether their metric definitions are compatible.
+  const domainRuns = options.domainRuns || runs;
+  const domainSeries = domainRuns === runs ? allSeries : domainRuns.map(collectSeries);
   const metricRuns = allSeries.filter(series => series.points.length).map(series => series.run);
   const incompatible = comparison && new Set(metricRuns.map(run => metricMeaning(run, key))).size > 1;
-  const domainKey = JSON.stringify([runs.map(run => run.run_id).sort(), key]);
+  const domainKey = JSON.stringify([domainRuns.map(run => run.run_id).sort(), key]);
   const prior = domains.get(domainKey);
-  const observedEpoch = allSeries.reduce((maximum, series) => Math.max(maximum, series.rows.at(-1)?.epoch || 1), 1);
-  const configuredEpoch = runs.reduce((maximum, run) => Math.max(maximum,
+  const observedEpoch = domainSeries.reduce((maximum, series) => Math.max(maximum, series.rows.at(-1)?.epoch || 1), 1);
+  const configuredEpoch = domainRuns.reduce((maximum, run) => Math.max(maximum,
     finiteMetric(run.config?.epochs) ? run.config.epochs : 1), 1);
   const xMax = Math.max(1, Math.ceil(configuredEpoch), observedEpoch, prior?.xMax || 1);
-  const values = allSeries.flatMap(series => series.points.map(point => point.value));
+  const values = domainSeries.flatMap(series => series.points.map(point => point.value));
   const maximum = values.reduce((max, value) => Math.max(max, value), 1);
   const minimum = values.reduce((min, value) => Math.min(min, value), 0);
   const yMax = descriptor.unit ? 1 : Math.max(roundedBound(maximum), prior?.yMax || 1);
   const yMin = descriptor.unit ? 0 : Math.min(-roundedBound(Math.min(0, minimum)), prior?.yMin || 0);
   const expanded = Boolean(prior?.expanded || (prior && (yMax > prior.yMax || yMin < prior.yMin || xMax > prior.xMax)));
   domains.set(domainKey, {xMax, yMax, yMin, expanded});
-  const outOfRange = descriptor.unit && values.some(value => value < 0 || value > 1);
+  const outOfRange = descriptor.unit && allSeries.some(series => series.points.some(point => point.value < 0 || point.value > 1));
   const visible = allSeries.filter(series => visibleRunIds.has(series.run.run_id));
   const series = (incompatible ? [] : visible).map(item => {
     const points = descriptor.unit ? item.points.filter(point => point.value >= 0 && point.value <= 1) : item.points;
@@ -209,9 +215,11 @@ function svgNode(document, tag, attributes = {}, text) {
   return node;
 }
 
-function format(value) {
-  return Math.abs(value) >= 100000 || (value !== 0 && Math.abs(value) < .00001) ? value.toExponential(3) : value.toFixed(4);
+export function formatMetric(value) {
+  if (!finiteMetric(value)) return '—';
+  return Math.abs(value) >= 100000 || (value !== 0 && Math.abs(value) < .0001) ? value.toExponential(3) : value.toFixed(4);
 }
+const format = formatMetric;
 
 /**
  * Owns container contents. Destroy before replacing the view to disconnect its
