@@ -16,7 +16,7 @@ import zipfile
 import numpy as np
 from PIL import Image
 
-from composer_core.geometry import bounds, decode_rle, shape_polygons
+from composer_core.geometry import bounds, decode_rle
 from .store import dump, timestamp
 from .training_engine import ENGINE_KEY, ENGINE_NAME, atomic_json, predict, read_json
 from .maskrcnn_engine import ENGINE_KEY as MASKRCNN_KEY, ENGINE_NAME as MASKRCNN_NAME
@@ -25,6 +25,7 @@ from .torchvision_engines import DETECTION_ENGINES, SEMANTIC_ENGINES
 from .classification_engine import CLASSIFICATION_ENGINES
 from .ultralytics_engine import ULTRALYTICS_ENGINES
 from .training_parameters import parameter_schema, validate_config
+from .yolo_compatibility import analyze_manifest, blocker_message
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -292,12 +293,11 @@ class TrainingWorkspace:
             missing_classes = [name for name in immutable["classes"] if name not in train_labels]
             if missing_classes:
                 raise ValueError(f"Train 缺少分類樣本：{'、'.join(missing_classes)}")
+        compatibility = None
         if engine.startswith("yolo26"):
-            for asset in immutable["assets"]:
-                for shape in asset.get("shapes", []):
-                    polygons, diagnostics = shape_polygons(shape, int(asset["width"]), int(asset["height"]), tolerance=0)
-                    if diagnostics.get("holes_omitted") or len(polygons) != 1 or diagnostics.get("pixel_iou", 1) < .999:
-                        raise ValueError(f"{asset['name']} 含有 YOLO Seg 無法無損表示的複合遮罩")
+            compatibility = analyze_manifest(immutable, effective_config)
+            if not compatibility["compatible"]:
+                raise ValueError(blocker_message(compatibility))
         project_runs = self.runs / project_id
         project_models = self.models / project_id
         project_runs.mkdir(parents=True, exist_ok=True)
@@ -314,6 +314,8 @@ class TrainingWorkspace:
                    "config": effective_config,
                    "status": "queued", "message": "等待訓練程序", "progress": 0,
                    "created_at": time.time(), "updated_at": time.time()}
+            if compatibility is not None:
+                run["yolo_compatibility"] = compatibility
             atomic_json(run_dir / "run.json", run)
             worker_python = str(self.registry.component_python(definition["component"]))
             run["runtime"] = {"component": definition["component"], "python": worker_python}
@@ -339,6 +341,20 @@ class TrainingWorkspace:
             threading.Thread(target=self._reap, args=(project_id, run_id, process),
                              name=f"training-{run_id}", daemon=True).start()
         return current
+
+    def yolo_compatibility(self, project_id, dataset_id, config):
+        dataset_id = _safe_id(dataset_id, "D")
+        manifest = self.datasets / project_id / dataset_id / "manifest.json"
+        if not manifest.is_file():
+            raise FileNotFoundError("找不到訓練資料版本")
+        if not isinstance(config, dict):
+            raise ValueError("訓練參數必須是物件")
+        engine = str(config.get("engine") or "")
+        definition = self.registry.model(engine)
+        if definition is None or not engine.startswith("yolo26"):
+            raise ValueError("相容檢查只適用於 YOLO Seg")
+        effective = validate_config(definition, config)
+        return analyze_manifest(read_json(manifest), effective)
 
     def _reap(self, project_id, run_id, process):
         return_code = process.wait()

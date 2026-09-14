@@ -157,6 +157,12 @@ function pointSegments(points) {
   return segments;
 }
 
+function epochRanges(values) {
+  const ranges=[];
+  for(const value of values){const last=ranges.at(-1);if(last&&last[1]+1===value)last[1]=value;else ranges.push([value,value])}
+  return ranges.map(([start,end])=>start===end?String(start):`${start}–${end}`).join('、');
+}
+
 /** Retain `domains` across refreshes, clearing it when changing projects. */
 export function buildChartModel(options, key) {
   const {runs = [], reports = new Map(), visibleRunIds = new Set(runs.map(run => run.run_id)),
@@ -199,6 +205,12 @@ export function buildChartModel(options, key) {
   if (incompatible) warnings.push(`${descriptor.label} 的計算定義、模型設定或評估分割不同，無法疊圖比較。請選擇相容的 Run，或改看共同的評估指標。`);
   if (outOfRange) warnings.push('部分指標超出 0–1 範圍，未繪製異常值；請查看數值表與訓練日誌。');
   if (expanded) warnings.push('新資料超出原座標範圍，已擴大座標以完整顯示；之後不會自動縮小。');
+  for(const item of series){
+    if(item.points.length<2)continue;
+    const present=new Set(item.points.map(point=>point.epoch)),first=item.points[0].epoch,last=item.points.at(-1).epoch,missing=[];
+    for(let epoch=first;epoch<=last;epoch++)if(!present.has(epoch))missing.push(epoch);
+    if(missing.length)warnings.push(`${item.run.run_id} 的 ${descriptor.label} 缺少 Epoch ${epochRanges(missing)}；折線保留缺口，表示該輪沒有有效指標，不代表訓練程序中斷。請查看 Epoch 明細或技術日誌。`);
+  }
   return {...descriptor, xMax, yMin, yMax, expanded, incompatible, outOfRange, series, allSeries, warnings};
 }
 

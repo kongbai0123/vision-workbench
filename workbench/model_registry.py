@@ -97,10 +97,10 @@ MODELS = (
      "component": "ultralytics", "integration": "ready", "description": "以套件內建架構從零訓練，不會自動下載預訓練權重。",
      "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
     {"key": "yolo26n_seg", "name": "YOLO26n Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
-     "component": "ultralytics", "integration": "ready", "description": "YOLO26 nano 實例分割；轉換前會阻擋無法無損表示的複合遮罩。",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 nano 實例分割；可嚴格檢查，或只在 Run 副本修補通過門檻的微小封閉孔洞。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
     {"key": "yolo26s_seg", "name": "YOLO26s Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
-     "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 實例分割；轉換前會阻擋無法無損表示的複合遮罩。",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 實例分割；可嚴格檢查，或只在 Run 副本修補通過門檻的微小封閉孔洞。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
 )
 

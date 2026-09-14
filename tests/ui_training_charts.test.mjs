@@ -144,6 +144,7 @@ test('missing Epochs split line segments and exact Epoch comparison never substi
     [second, [{epoch: 1, 'train/loss': 1.2}, {epoch: 3, 'train/loss': .7}]]);
   const model = buildChartModel({runs: [first, second], reports, comparison: true}, 'train/loss');
   assert.deepEqual(model.series[0].segments.map(segment => segment.map(point => point.epoch)), [[1, 2], [4, 5], [7]]);
+  assert.ok(model.warnings.some(message=>message.includes('Epoch 3、6')&&message.includes('不代表訓練程序中斷')));
   assert.deepEqual(valuesAtEpoch(model, 3).map(item => [item.runId, item.value]), [['R1', null], ['R2', .7]]);
   assert.deepEqual(valuesAtEpoch(model, 8).map(item => item.value), [null, null]);
 });

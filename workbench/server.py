@@ -466,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.training.create_dataset_version(pid))
             if action == "training-runs":
                 return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
+            if action == "training-compatibility":
+                return self.json(self.app.training.yolo_compatibility(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
             if action == "model-exports":
                 model_id = payload.get("model_version_id")
                 return self.json(self.app.jobs.submit("model-export", lambda progress:

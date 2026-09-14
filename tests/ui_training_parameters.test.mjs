@@ -36,3 +36,9 @@ test('hidden schedule controls do not leak into the submitted configuration',()=
   assert.deepEqual(parameterPayload(schema,{scheduler:'fixed',warmup_epochs:'invalid'}),{scheduler:'fixed'});
   assert.throws(()=>parameterPayload(schema,{scheduler:'cosine',warmup_epochs:'invalid'}));
 });
+test('YOLO compatibility fields follow their policy selector',()=>{
+  const schema=[{key:'yolo_mask_policy',label:'policy',type:'select',options:[{value:'strict'},{value:'repair_tiny_holes'}]},
+    {key:'tiny_hole_max_pixels',label:'pixels',type:'integer',min:1,max:16,depends_on:{key:'yolo_mask_policy',values:['repair_tiny_holes']}}];
+  assert.deepEqual(parameterPayload(schema,{yolo_mask_policy:'strict',tiny_hole_max_pixels:'invalid'}),{yolo_mask_policy:'strict'});
+  assert.deepEqual(parameterPayload(schema,{yolo_mask_policy:'repair_tiny_holes',tiny_hole_max_pixels:'4'}),{yolo_mask_policy:'repair_tiny_holes',tiny_hole_max_pixels:4});
+});

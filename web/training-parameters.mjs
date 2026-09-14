@@ -15,7 +15,8 @@ export function parseParameter(field, raw) {
 
 export function parameterPayload(schema, values) {
   if(!Array.isArray(schema)||!schema.length)throw Error('此模型尚無可用的訓練參數；請確認模型已準備完成。');
-  const result=Object.fromEntries(schema.filter(field=>!field.when||field.when.includes(values.scheduler)).map(field=>[field.key,parseParameter(field,values[field.key])]));
+  const visible=field=>(!field.when||field.when.includes(values.scheduler))&&(!field.depends_on||field.depends_on.values.includes(values[field.depends_on.key]));
+  const result=Object.fromEntries(schema.filter(visible).map(field=>[field.key,parseParameter(field,values[field.key])]));
   if(result.threshold_min!==undefined&&result.threshold_max!==undefined&&result.threshold_min>=result.threshold_max)throw Error('閾值下限必須小於閾值上限。');
   if(result.min_learning_rate>result.learning_rate)throw Error('最低學習率不得大於初始學習率。');
   if(result.warmup_epochs>=result.epochs)throw Error('暖身輪數必須小於總訓練輪數。');
@@ -35,11 +36,12 @@ export function plannedRates(config){
 }
 
 export class TrainingParameters {
-  constructor({preferredDevice=()=> 'auto'}={}){
+  constructor({preferredDevice=()=> 'auto',onChange=()=>{}}={}){
     this.preferredDevice=preferredDevice;this.drafts=new Map();this.engine=null;this.signature='';this.fields=[];this.bound=new WeakSet();
+    this.onChange=onChange;
     this.advanced=document.getElementById('trainingAdvancedFields');this.hint=document.getElementById('trainingParameterHint');
     this.resetButton=document.getElementById('resetTrainingParameters');
-    this.resetButton.onclick=()=>{if(!this.engine)return;this.drafts.delete(this.engine.key);this.signature='';this.render(this.engine,{discardCurrent:true})};
+    this.resetButton.onclick=()=>{if(!this.engine)return;this.drafts.delete(this.engine.key);this.signature='';this.render(this.engine,{discardCurrent:true});this.onChange('reset')};
   }
   reset(){this.drafts.clear();this.engine=null;this.signature='';this.fields=[]}
   inputs(){return [...document.querySelectorAll('[data-training-param]')]}
@@ -55,18 +57,22 @@ export class TrainingParameters {
       wrapper.hidden=!field;input.disabled=!field;
       if(field){wrapper.querySelector('label').textContent=field.label;this.configure(input,field,draft[key])}
     }
-    const wasOpen=this.advanced.querySelector('details')?.open||false;
+    const openSections=new Set([...this.advanced.querySelectorAll('details[open]')].map(item=>item.dataset.section));
     this.advanced.replaceChildren();
-    const schedule=document.createElement('details'),summary=document.createElement('summary'),scheduleFields=document.createElement('div');
-    schedule.id='trainingSchedule';schedule.className='training-schedule';schedule.open=wasOpen;summary.textContent='學習率策略';scheduleFields.className='training-form-grid';schedule.append(summary,scheduleFields);
+    const sections={};
+    for(const [key,title] of [['schedule','學習率策略'],['compatibility','YOLO Seg 相容處理']]){
+      const details=document.createElement('details'),summary=document.createElement('summary'),container=document.createElement('div');
+      details.dataset.section=key;details.id=key==='schedule'?'trainingSchedule':'trainingCompatibilitySettings';details.className='training-schedule';details.open=openSections.has(key);summary.textContent=title;container.className='training-form-grid';details.append(summary,container);sections[key]={details,summary,container,title};
+    }
     for(const field of fields.filter(field=>field.advanced)){
       const wrap=document.createElement('div'),label=document.createElement('label'),input=document.createElement(field.type==='select'?'select':'input');
       input.id=`trainingParam-${field.key}`;label.htmlFor=input.id;label.textContent=field.label;
       this.configure(input,field,draft[field.key]);wrap.append(label,input);
       if(field.description){const note=document.createElement('p');note.className='field-note';note.id=`${input.id}-hint`;note.textContent=field.description;input.setAttribute('aria-describedby',note.id);wrap.append(note)}
-      (field.section==='schedule'?scheduleFields:this.advanced).append(wrap);
+      (sections[field.section]?.container||this.advanced).append(wrap);
     }
-    if(scheduleFields.childElementCount){const preview=document.createElement('div');preview.id='learningRatePreview';schedule.append(preview);this.advanced.append(schedule)}
+    if(sections.schedule.container.childElementCount){const preview=document.createElement('div');preview.id='learningRatePreview';sections.schedule.details.append(preview);this.advanced.append(sections.schedule.details)}
+    if(sections.compatibility.container.childElementCount)this.advanced.append(sections.compatibility.details);
     this.updateVisibility();
     document.getElementById('trainingAdvancedSection').hidden=!this.advanced.childElementCount;
     this.resetButton.disabled=!fields.length;
@@ -82,12 +88,13 @@ export class TrainingParameters {
       input.step=field.type==='integer'?String(field.step||1):'any';
     }
     input.value=remembered??String(field.key==='device'?this.preferredDevice():field.default);
-    if(!this.bound.has(input)){const change=()=>{this.remember();this.updateVisibility()};input.addEventListener('input',change);if(input.tagName==='SELECT')input.addEventListener('change',change);this.bound.add(input)}
+    if(!this.bound.has(input)){const change=()=>{this.remember();this.updateVisibility();this.onChange(field.key)};input.addEventListener('input',change);if(input.tagName==='SELECT')input.addEventListener('change',change);this.bound.add(input)}
   }
   updateVisibility(){
     const strategy=document.getElementById('trainingParam-scheduler');
-    for(const field of this.fields)if(field.when){const input=document.getElementById(`trainingParam-${field.key}`);if(input)input.parentElement.hidden=!field.when.includes(strategy?.value)}
-    const summary=this.advanced.querySelector('details summary');if(summary)summary.textContent=`學習率策略 · ${strategy?.selectedOptions[0]?.textContent||''}`;
+    for(const field of this.fields){const input=document.getElementById(`trainingParam-${field.key}`);if(!input)continue;const dependent=field.depends_on,controller=dependent&&document.getElementById(`trainingParam-${dependent.key}`);input.parentElement.hidden=!!((field.when&&!field.when.includes(strategy?.value))||(dependent&&!dependent.values.includes(controller?.value)))}
+    const scheduleSummary=this.advanced.querySelector('[data-section="schedule"] summary');if(scheduleSummary)scheduleSummary.textContent=`學習率策略 · ${strategy?.selectedOptions[0]?.textContent||''}`;
+    const policy=document.getElementById('trainingParam-yolo_mask_policy'),compatibilitySummary=this.advanced.querySelector('[data-section="compatibility"] summary');if(compatibilitySummary)compatibilitySummary.textContent=`YOLO Seg 相容處理 · ${policy?.selectedOptions[0]?.textContent||''}`;
     const preview=document.getElementById('learningRatePreview');if(!preview)return;
     const config=Object.fromEntries(this.inputs().map(input=>[input.dataset.trainingParam,input.value]));const rates=plannedRates(config);preview.replaceChildren();
     const note=document.createElement('p');note.className='field-note';note.textContent=config.scheduler==='plateau'?'依 Validation 分數決定下降時機，無預定曲線。':this.engine?.component==='ultralytics'?'排程趨勢示意；套件逐步暖身，實際值以訓練紀錄為準。':'預定每輪學習率；正式訓練另記錄實際使用值。';preview.append(note);

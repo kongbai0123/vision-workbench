@@ -16,6 +16,7 @@ import numpy as np
 
 from composer_core.geometry import encode_rle, shape_polygons
 from .training_engine import atomic_json, read_json, _status, _stopping
+from .yolo_compatibility import analyze_manifest, blocker_message, compatible_shape
 
 
 ULTRALYTICS_ENGINES = {
@@ -32,17 +33,19 @@ def _label_path(root, split, asset):
     return root / "labels" / split / f"{asset['asset_id']}.txt"
 
 
-def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str) -> Path:
+def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, config=None) -> Path:
     """Create a deterministic YOLO dataset from an immutable Workbench manifest.
 
-    Segmentation refuses holes and multi-component masks because the YOLO text
-    format cannot preserve them as one native instance.  This prevents silent
-    geometry loss.
+    Segmentation may fill only policy-approved enclosed holes in this output
+    copy. Source annotations and the immutable DatasetVersion are never edited.
     """
     dataset_manifest, output_dir = Path(dataset_manifest), Path(output_dir)
     manifest = read_json(dataset_manifest)
     if task not in {"object_detection", "instance_segmentation"}:
         raise ValueError("Ultralytics 資料轉接器不支援此任務")
+    compatibility = analyze_manifest(manifest, config) if task == "instance_segmentation" else None
+    if compatibility and not compatibility["compatible"]:
+        raise ValueError(blocker_message(compatibility))
     if output_dir.exists():
         shutil.rmtree(output_dir)
     class_ids = {name: index for index, name in enumerate(manifest["classes"])}
@@ -57,7 +60,7 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str) ->
         destination = output_dir / "images" / split / f"{asset['asset_id']}{source.suffix.lower()}"
         shutil.copy2(source, destination)
         lines = []
-        for shape, obj in zip(asset.get("shapes", []), asset.get("objects", [])):
+        for shape_index, (shape, obj) in enumerate(zip(asset.get("shapes", []), asset.get("objects", []))):
             class_id = class_ids.get(shape.get("label"))
             if class_id is None:
                 raise ValueError(f"{asset['name']} 含有未知類別：{shape.get('label')}")
@@ -67,7 +70,11 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str) ->
                           box_width / width, box_height / height)
                 lines.append(str(class_id) + " " + " ".join(f"{max(0., min(1., value)):.8f}" for value in values))
             else:
-                polygons, diagnostics = shape_polygons(shape, int(width), int(height), tolerance=0)
+                converted_shape, _repair, blocker = compatible_shape(asset, shape, shape_index, config)
+                if blocker:
+                    raise ValueError(blocker_message({"compatible": False, "blockers": [blocker],
+                        "summary": {"blocked_assets": 1}}))
+                polygons, diagnostics = shape_polygons(converted_shape, int(width), int(height), tolerance=0)
                 if diagnostics.get("holes_omitted") or len(polygons) != 1 or diagnostics.get("pixel_iou", 1) < .999:
                     raise ValueError(f"{asset['name']} 的 {shape.get('label')} 是含孔洞或多區塊遮罩，無法無損轉成 YOLO Seg")
                 points = polygons[0]
@@ -84,6 +91,8 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str) ->
     path = output_dir / "data.yaml"
     # JSON is a valid YAML subset and avoids another dependency in the main app.
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    if compatibility is not None:
+        atomic_json(output_dir / "yolo-compatibility.json", compatibility)
     return path
 
 
@@ -144,7 +153,9 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
     try:
         os.environ.setdefault("YOLO_OFFLINE", "true")
         from ultralytics import RTDETR, YOLO
-        data_yaml = prepare_yolo_dataset(dataset_manifest, run_dir / "dataset", definition["task"])
+        data_yaml = prepare_yolo_dataset(dataset_manifest, run_dir / "dataset", definition["task"], run.get("config"))
+        compatibility = (read_json(run_dir / "dataset" / "yolo-compatibility.json")
+                         if definition["task"] == "instance_segmentation" else None)
         validation_split = "val" if any(asset["split"] == "val" for asset in manifest["assets"]) else "test"
         metrics_path = run_dir / "metrics.jsonl"; metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3,
@@ -198,11 +209,16 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                   "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
                   "image_size": int(run["config"].get("image_size", 640)), "score_threshold": .5,
                   "validation": validation, "test": test, "created_at": time.time(), "checkpoint": "checkpoint.pt"}
+        if compatibility is not None:
+            record["yolo_compatibility"] = compatibility
         atomic_json(model_dir / "model.json", record)
-        atomic_json(run_dir / "evaluation.json", {"validation": validation, "test": test})
+        evaluation = {"validation": validation, "test": test}
+        if compatibility is not None:
+            evaluation["yolo_compatibility"] = compatibility
+        atomic_json(run_dir / "evaluation.json", evaluation)
         _artifact_manifest(run_dir, model_dir, run["run_id"], checkpoint)
         return _status(run_dir, run, status="completed", message=f"{definition['name']} 訓練與評估完成", progress=100,
-                       completed_at=time.time(), evaluation={"validation": validation, "test": test})
+                       completed_at=time.time(), evaluation=evaluation)
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())
         raise

@@ -3,6 +3,19 @@
 #prepareAutoSplit {margin-bottom:10px}
 .training-schedule{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px}
 .training-schedule summary{cursor:pointer;color:var(--accent);margin-bottom:14px}
+.yolo-compatibility{margin:2px 0 18px;padding:16px;border:1px solid #3d5965;border-radius:6px;background:#101e27}
+.yolo-compatibility-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.yolo-compatibility-heading p{margin:5px 0 0;color:var(--muted);font-size:12px}
+.yolo-compatibility .badge{white-space:nowrap}
+.yolo-compatibility .badge.approved{color:#84e4cf;border-color:#3d8c7e}
+.yolo-compatibility .badge.error{color:#ff9c99;border-color:#a95353}
+.yolo-compatibility-summary{margin:12px 0 0;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;font-size:12px;line-height:1.6}
+.yolo-compatibility-summary.error{border-color:#e36c68;background:#302020}
+.yolo-issue-list{display:grid;gap:8px;max-height:260px;overflow:auto;margin-top:10px}
+.yolo-issue{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#13232d;font-size:12px}
+.yolo-issue p{grid-column:1/-1;margin:0;color:var(--muted)}
+.yolo-location-canvas{display:block;width:100%;max-height:430px;margin:12px 0;background:#080d11;image-rendering:pixelated;border:1px solid var(--line)}
+.yolo-coordinate-list{max-height:160px;overflow:auto;font:12px/1.7 Consolas,monospace}
 .training-layout > .panel {display:flex;flex-direction:column;min-width:0;margin:0}
 .training-layout .panel-title {min-height:49px;margin-bottom:18px}
 .training-layout input,.training-layout select,.training-readonly {min-height:42px;width:100%}

@@ -15,6 +15,7 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-bac
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image
+import numpy as np
 from PySide6.QtCore import QEventLoop, QTimer, QUrl
 from PySide6.QtTest import QTest
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 
 from workbench.server import WorkbenchService
 from workbench.training_engine import atomic_json
+from composer_core.geometry import encode_rle
 
 
 class Page(QWebEnginePage):
@@ -43,11 +45,15 @@ def seed_reports(service, folder):
     for index, split in enumerate(("train", "train", "val", "val", "test", "test")):
         source = folder / f"sample-{index}.png"
         Image.new("RGB", (48, 36), (30 + index * 20, 50, 80)).save(source)
+        shape = {"id": f"part-{index}", "type": "rectangle", "label": "工件" if index % 2 else "配件",
+                 "x": 8, "y": 6, "width": 25, "height": 24}
+        if index == 0:
+            mask = np.zeros((36, 48), np.uint8); mask[6:30, 8:33] = 1; mask[15, 20] = 0
+            shape = {"id": f"part-{index}", "type": "mask", "label": "配件", "x": 0, "y": 0,
+                     "width": 48, "height": 36, "counts": encode_rle(mask)}
         assets.append({"path": str(source), "name": source.name, "split": split,
                        "batch_id": f"{split}-{index}", "review_state": "approved",
-                       "source": {"kind": "test"}, "shapes": [{"id": f"part-{index}",
-                       "type": "rectangle", "label": "工件" if index % 2 else "配件",
-                       "x": 8, "y": 6, "width": 25, "height": 24}]})
+                       "source": {"kind": "test"}, "shapes": [shape]})
     service.store.add_assets(pid, assets)
     snapshot = service.training.create_dataset_version(pid)
     assert snapshot["splits"] == {"train": 2, "val": 2, "test": 2}, snapshot
@@ -250,6 +256,24 @@ def main():
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             for key, value in values.items():
                 assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
+            # YOLO Seg exposes an explicit full-dataset compatibility preflight.
+            fill("#trainingEngine", "yolo26n_seg")
+            wait("!document.querySelector('#yoloCompatibilityPanel').hidden")
+            assert js("document.querySelector('#trainingParam-yolo_mask_policy').value") == "repair_tiny_holes"
+            click("#trainingCompatibilitySettings summary")
+            fill("#trainingParam-yolo_mask_policy", "strict")
+            assert js("document.querySelector('#trainingParam-tiny_hole_max_pixels').getClientRects().length===0")
+            fill("#trainingParam-yolo_mask_policy", "repair_tiny_holes")
+            fill("#trainingParam-tiny_hole_max_ratio", "0.01")
+            click("#checkYoloCompatibility")
+            wait("document.querySelector('#yoloCompatibilityBadge').textContent==='檢查通過'")
+            capture("32-yolo-compatibility-preflight", target="#yoloCompatibilityPanel")
+            click("#yoloCompatibilityReport .yolo-issue .text-button")
+            wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
+            capture("33-yolo-hole-location", target="#formDialog")
+            click("#cancelDialog")
+            fill("#trainingEngine", "maskrcnn_resnet50_fpn")
+            wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             click("#trainingSchedule summary")
             fill("#trainingParam-scheduler","plateau")
             assert js("document.querySelector('#trainingParam-lr_patience').getClientRects().length>0")

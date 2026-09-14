@@ -48,6 +48,30 @@ def parameter_schema(definition):
          "options": [{"value": "AdamW", "label": "AdamW"}, {"value": "SGD", "label": "SGD"}],
          "advanced": True, "description": "SGD 使用固定動量 0.9（Nesterov）。" if ultralytics else "選擇參數更新演算法；SGD 不使用動量。"},
     ]
+    if definition["key"].startswith("yolo26"):
+        repair_only = {"key": "yolo_mask_policy", "values": ["repair_tiny_holes"]}
+        parameters += [
+            {"key": "yolo_mask_policy", "label": "YOLO Seg 遮罩相容方式", "type": "select",
+             "default": "repair_tiny_holes", "advanced": True, "section": "compatibility",
+             "options": [{"value": "repair_tiny_holes", "label": "修補微小封閉孔洞（Run 副本）"},
+                         {"value": "strict", "label": "嚴格無損（偵測孔洞即阻擋）"}],
+             "description": "只修改本次 Run 的 YOLO 訓練副本；專案 Mask 與固定資料版本不變。"},
+            {"key": "tiny_hole_max_pixels", "label": "單一孔洞上限（px）", "type": "integer",
+             "default": 4, "min": 1, "max": 16, "step": 1, "advanced": True,
+             "section": "compatibility", "depends_on": repair_only,
+             "description": "單一封閉孔洞超過此面積仍會阻擋訓練。"},
+            {"key": "tiny_hole_total_pixels", "label": "單一實例修補總上限（px）", "type": "integer",
+             "default": 16, "min": 1, "max": 128, "step": 1, "advanced": True,
+             "section": "compatibility", "depends_on": repair_only},
+            {"key": "tiny_hole_max_ratio", "label": "修補占 Mask 比例上限", "type": "number",
+             "default": .0001, "min": .000001, "max": .01, "step": .00001, "advanced": True,
+             "section": "compatibility", "depends_on": repair_only,
+             "description": "0.0001 等於 0.01%；像素與比例門檻必須同時通過。"},
+            {"key": "tiny_hole_max_dimension", "label": "孔洞寬／高上限（px）", "type": "integer",
+             "default": 4, "min": 1, "max": 16, "step": 1, "advanced": True,
+             "section": "compatibility", "depends_on": repair_only,
+             "description": "避免細長裂縫被當成雜點填補。"},
+        ]
     strategies = [("fixed", "固定"), ("cosine", "暖身＋餘弦下降"), ("linear", "暖身＋線性下降")]
     if not ultralytics: strategies.append(("plateau", "Validation 停滯時下降"))
     parameters += [
@@ -125,6 +149,9 @@ def validate_config(definition, supplied):
     elif definition.get("component") == "ultralytics" and result.get("optimizer") == "SGD":
         # Ultralytics builds Nesterov SGD, which requires positive momentum.
         result["momentum"] = .9
+    if definition["key"].startswith("yolo26"):
+        if result["tiny_hole_total_pixels"] < result["tiny_hole_max_pixels"]:
+            raise ValueError("單一實例修補總上限不得小於單一孔洞上限")
     if not definition["key"] == "pixel_prototype_v1":
         schedule = result["scheduler"]
         if schedule != "fixed" and result["min_learning_rate"] > result["learning_rate"]:

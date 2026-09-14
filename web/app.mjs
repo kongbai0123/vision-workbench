@@ -9,7 +9,7 @@ const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
   system:null,editorMode:'builtin',cvatPoll:null,cvatElapsedTimer:null,cvatPollStartedAt:null,cvatPollBaseText:'',cvatPollBusy:false,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null,
   splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
-  training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,
+  training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,yoloCompatibility:null,yoloCompatibilitySignature:'',
   settingsPage:'general',settingsFocus:null,settingsJob:null,desktopUpdate:null};
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已退回'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
@@ -391,7 +391,7 @@ async function openProject(id) {
   try {
     await flushAllEdits();
     const project=await api(`/api/projects/${id}`);
-    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;trainingMonitor.reset();trainingParameters.reset();
+    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';trainingMonitor.reset();trainingParameters.reset();
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -1458,7 +1458,8 @@ async function renderSplitPage(){
   $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
 }
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
-const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device')});
+function invalidateYoloCompatibility(){state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining();else renderYoloCompatibility()}
+const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device'),onChange:invalidateYoloCompatibility});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
 let trainingLoadGeneration=0;
 function trainingStatusName(value){return {queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value||'未知'}
@@ -1507,6 +1508,38 @@ function renderReadiness(report){
   for(const item of report?.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('div',`處理方式：${item.action}`));root.append(row)}
   for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));if(item.code==='source_group_leak'){const fix=element('button','前往資料分割','text-button');fix.onclick=()=>safe(()=>switchStage('split'));row.append(fix)}root.append(row)}
 }
+function yoloCompatibilitySignature(dataset,config){return JSON.stringify([state.project?.id,dataset?.id,$('trainingEngine').value,config])}
+function renderYoloCompatibility(){
+  const panel=$('yoloCompatibilityPanel');if(!panel)return;
+  const yolo=$('trainingEngine')?.value?.startsWith('yolo26');panel.hidden=!yolo;if(!yolo)return;
+  const report=state.yoloCompatibility,badge=$('yoloCompatibilityBadge'),root=$('yoloCompatibilityReport');root.replaceChildren();
+  badge.className='badge';
+  if(!report){badge.textContent='尚未檢查';return}
+  const summary=report.summary||{};badge.textContent=report.compatible?'檢查通過':'需要處理';badge.classList.add(report.compatible?'approved':'error');
+  const message=report.compatible
+    ?`已掃描 ${number(summary.assets_scanned)} 張、${number(summary.shapes_scanned)} 個標註；${summary.pixels_repaired?`Run 副本將修補 ${number(summary.affected_assets)} 張圖片中的 ${number(summary.holes_repaired)} 個孔洞，共 ${number(summary.pixels_repaired)} px。`:'不需要相容修補。'} 原始標註不會變更。`
+    :`已掃描 ${number(summary.assets_scanned)} 張；${number(summary.blocked_assets)} 張超過安全門檻，尚不能開始 YOLO Seg 訓練。`;
+  root.append(element('div',message,`yolo-compatibility-summary${report.compatible?'':' error'}`));
+  const issues=[...(report.blockers||[]),...(report.repairs||[])];if(!issues.length)return;
+  const list=element('div',undefined,'yolo-issue-list');
+  for(const issue of issues){const row=element('div',undefined,'yolo-issue'),copy=element('div');copy.append(element('b',`${issue.name} · ${issue.label||'未命名標註'}`),element('p',issue.message));const locate=button('放大位置','text-button',()=>safe(()=>showYoloLocation(issue)));row.append(copy,locate);const coords=(issue.holes||[]).map(hole=>{const [x,y,w,h]=hole.bbox;return `X=${x}${w>1?`～${x+w-1}`:''}、Y=${y}${h>1?`～${y+h-1}`:''} · ${hole.pixels} px`}).join('；');if(coords)row.append(element('p',coords));list.append(row)}
+  root.append(list);
+}
+async function showYoloLocation(issue){
+  const body=element('div'),lead=element('p',`${issue.name}／${issue.label||'未命名標註'}。紅框與十字標出孔洞；畫面已放大，因此 1 px 也清楚可見。`),canvas=document.createElement('canvas');canvas.width=760;canvas.height=420;canvas.className='yolo-location-canvas';body.append(lead,canvas);
+  const coords=element('div',undefined,'yolo-coordinate-list');for(const [index,hole] of (issue.holes||[]).entries()){const [x,y,w,h]=hole.bbox;coords.append(element('div',`孔洞 ${index+1}：X=${x}${w>1?`～${x+w-1}`:''}，Y=${y}${h>1?`～${y+h-1}`:''}，${hole.pixels} px`))}body.append(coords);
+  const jump=button('前往內建編輯器中的圖片','secondary',()=>safe(async()=>{$('cancelDialog').click();await selectAsset(issue.asset_id);await switchStage('annotate')}));body.append(jump);
+  const showing=formDialog({title:'YOLO Seg 孔洞位置',body,eyebrow:'MASK DIAGNOSTIC'}),image=new Image();
+  image.onload=async()=>{const holes=issue.holes||[],precise=holes.length>0,boxes=precise?holes.map(item=>item.bbox):[[0,0,image.naturalWidth,image.naturalHeight]],minX=Math.min(...boxes.map(b=>b[0])),minY=Math.min(...boxes.map(b=>b[1])),maxX=Math.max(...boxes.map(b=>b[0]+b[2])),maxY=Math.max(...boxes.map(b=>b[1]+b[3]));let sw=precise?Math.max(96,maxX-minX+64):image.naturalWidth,sh=precise?Math.max(64,maxY-minY+64):image.naturalHeight,sx=precise?(minX+maxX-sw)/2:0,sy=precise?(minY+maxY-sh)/2:0;sx=Math.max(0,Math.min(image.naturalWidth-sw,sx));sy=Math.max(0,Math.min(image.naturalHeight-sh,sy));sw=Math.min(sw,image.naturalWidth);sh=Math.min(sh,image.naturalHeight);const context=canvas.getContext('2d');context.imageSmoothingEnabled=false;context.drawImage(image,sx,sy,sw,sh,0,0,canvas.width,canvas.height);try{const asset=await api(`/api/projects/${state.project.id}/assets/${issue.asset_id}`),shape=asset.shapes?.find(item=>item.id===issue.shape_id);if(shape?.type==='mask'){const mask=decodeMask(shape.counts,asset.width,asset.height),scaleX=canvas.width/sw,scaleY=canvas.height/sh;context.fillStyle='#37dbc066';for(let y=Math.max(0,Math.floor(sy));y<Math.min(asset.height,Math.ceil(sy+sh));y++)for(let x=Math.max(0,Math.floor(sx));x<Math.min(asset.width,Math.ceil(sx+sw));x++)if(mask[y*asset.width+x])context.fillRect((x-sx)*scaleX,(y-sy)*scaleY,Math.max(1,scaleX),Math.max(1,scaleY))}}catch{}if(precise)for(const [index,[x,y,w,h]] of boxes.entries()){const dx=(x-sx)/sw*canvas.width,dy=(y-sy)/sh*canvas.height,dw=Math.max(10,w/sw*canvas.width),dh=Math.max(10,h/sh*canvas.height),cx=dx+(w/sw*canvas.width)/2,cy=dy+(h/sh*canvas.height)/2;context.fillStyle='#ff2f42aa';context.strokeStyle='#fff';context.lineWidth=2;context.fillRect(cx-dw/2,cy-dh/2,dw,dh);context.strokeRect(cx-dw/2,cy-dh/2,dw,dh);context.beginPath();context.moveTo(cx-18,cy);context.lineTo(cx+18,cy);context.moveTo(cx,cy-18);context.lineTo(cx,cy+18);context.stroke();context.fillStyle='#fff';context.font='bold 16px sans-serif';context.fillText(String(index+1),cx+10,cy-10)}canvas.dataset.ready='true'};
+  image.onerror=()=>{const context=canvas.getContext('2d');context.fillStyle='#d9e8ed';context.font='16px sans-serif';context.fillText('無法載入圖片預覽；請依下方座標前往編輯器。',24,50);canvas.dataset.ready='true'};image.src=`/api/projects/${state.project.id}/assets/${issue.asset_id}/image`;await showing;
+}
+async function checkYoloCompatibility(){
+  const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
+  const config=trainingParameters.collect(),signature=yoloCompatibilitySignature(dataset,config);$('checkYoloCompatibility').disabled=true;$('yoloCompatibilityBadge').textContent='掃描中…';
+  try{const report=await api(projectPath('/training-compatibility'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...config}});state.yoloCompatibility=report;state.yoloCompatibilitySignature=signature;renderYoloCompatibility();return report}
+  catch(error){$('yoloCompatibilityBadge').textContent='檢查失敗';$('yoloCompatibilityBadge').className='badge error';throw error}
+  finally{$('checkYoloCompatibility').disabled=false}
+}
 function renderTraining(){
   if(!state.training)return;
   const {readiness,datasets=[],runs=[],capabilities}=state.training,active=activeTrainingRun();
@@ -1529,12 +1562,14 @@ function renderTraining(){
   else engineSelect.value=(capabilities.engines||[]).find(engine=>engine.train)?.key||(capabilities.engines||[])[0]?.key||'';
   const engine=(capabilities.engines||[]).find(item=>item.key===engineSelect.value);$('trainingEngineHint').textContent=engine?.description||'沒有可用的訓練引擎。';
   trainingParameters.render(engine);
+  renderYoloCompatibility();
   $('trainingTaskLabel').textContent=engine?`${engine.task_name||capabilities.tasks?.[engine.task]||engine.task} · ${engine.annotation||'依模型需求'}`:'尚未選擇模型';
   const notice=$('trainingModelNotice');notice.hidden=!!engine?.train;if(!notice.hidden){$('trainingModelNoticeTitle').textContent=engine?.integration==='ready'?'此模型尚未準備完成':'此模型已納入開發待辦';$('trainingModelNoticeText').textContent=engine?.unavailable_reason||'完成必要元件與 Workbench adapter 後即可使用。'}
   const summary=$('trainingSummary');summary.replaceChildren();
   const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
   for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
   $('startTraining').disabled=!dataset||!engine?.train||!engine?.parameters?.length||!!active;
+  if(engine?.key?.startsWith('yolo26')&&state.yoloCompatibility&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true;
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
   trainingMonitor.render();
@@ -1543,6 +1578,7 @@ async function createDatasetVersion(){await flushAllEdits();const created=await 
 async function startTrainingRun(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
   const config=trainingParameters.collect();
+  if($('trainingEngine').value.startsWith('yolo26')){const signature=yoloCompatibilitySignature(dataset,config),report=state.yoloCompatibilitySignature===signature?state.yoloCompatibility:await checkYoloCompatibility();if(!report?.compatible)throw Error('YOLO Seg 相容檢查未通過；請查看標出的圖片與孔洞位置。')}
   const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...config}});
   state.selectedRun=run.run_id;trainingMonitor.mode='single';await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
 }
@@ -1561,6 +1597,7 @@ function renderModelDetail(model){const root=$('modelDetail');root.replaceChildr
   const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),title=element('div',undefined,'model-title'),copy=element('div');copy.append(element('span','MODEL VERSION','eyebrow'),element('h2',`${model.model_version_id} · ${model.engine_name}`));title.append(copy,element('span',definition?.task_name||'模型版本','badge approved'));root.append(title);
   const test=model.test||model.validation||{},values=test.accuracy!==undefined?[['Test Accuracy',Number(test.accuracy).toFixed(3)],['Test Macro F1',Number(test.macro_f1).toFixed(3)],['Test Macro Recall',Number(test.macro_recall).toFixed(3)]]:test.mask_map50_95!==undefined?[['Test Mask mAP50–95',Number(test.mask_map50_95).toFixed(3)],['Test Mask mAP50',Number(test.mask_map50).toFixed(3)]]:test.box_map50_95!==undefined?[['Test Box mAP50–95',Number(test.box_map50_95).toFixed(3)],['Test Box mAP50',Number(test.box_map50).toFixed(3)]]:test.box_mean_iou!==undefined?[['Test Box IoU',Number(test.box_mean_iou).toFixed(3)],['Recall@0.5',Number(test.recall_50).toFixed(3)]]:test.mean_dice!==undefined?[['Test mIoU',Number(test.mean_iou).toFixed(3)],['Test Dice',Number(test.mean_dice).toFixed(3)]]:[['Test Mean IoU',Number(test.mean_iou||0).toFixed(3)]];values.push(['測試圖片',number(test.images)],['類別數',number(model.classes?.length)]);const score=element('div',undefined,'run-metrics');for(const [label,value]of values){const item=element('div',undefined,'run-metric');item.append(element('span',label),element('b',value));score.append(item)}root.append(score);
   const abilities=['訓練','評估',...(definition?.predict?['預標註']:[]),'匯出'].join('／'),facts=element('dl',undefined,'model-facts');for(const [label,value]of [['來源 Run',model.run_id],['訓練資料',model.dataset_version_id],['類別',(model.classes||[]).join('、')],['模型能力',abilities],['建立時間',date(model.created_at)]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',model.task==='image_classification'?'分類結果保留為圖片層級評估，不會建立覆蓋整張圖片的 Bounding Box。':'模型與資料版本、類別映射和評估結果一起保存；專案後續修改不會回寫此模型。','readiness-item'));
+  if(model.yolo_compatibility){const report=model.yolo_compatibility,summary=report.summary||{},audit=element('details',undefined,'training-monitor-details'),heading=document.createElement('summary');heading.textContent=`YOLO Seg 相容稽核 · 修補 ${number(summary.pixels_repaired)} px`;const copy=element('p',`已掃描 ${number(summary.assets_scanned)} 張；${number(summary.affected_assets)} 張的 Run 副本修補 ${number(summary.holes_repaired)} 個微小孔洞。原始標註與固定資料版本未變更，模型內部評估使用相容副本。`,'readiness-item');audit.append(heading,copy);for(const issue of report.repairs||[]){const row=element('div',undefined,'yolo-issue');row.append(element('b',`${issue.name} · ${issue.label||'未命名標註'}`),button('放大位置','text-button',()=>safe(()=>showYoloLocation(issue))),element('p',issue.message));audit.append(row)}root.append(audit)}
   const actions=element('div',undefined,'model-export-actions'),exportButton=button('匯出模型封裝','primary',()=>safe(()=>exportSelectedModel(model.model_version_id)));actions.append(exportButton);const exports=(state.training?.model_exports||[]).filter(item=>item.model_version_id===model.model_version_id);if(exports.length){const latest=exports[0],open=button('開啟最近匯出資料夾','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:latest.export_id})));actions.append(open);root.append(actions,element('p',`最近匯出：${latest.export_id} · ${date(latest.created_at)} · ${number(latest.bytes)} bytes`,'field-note'))}else root.append(actions,element('p','封裝包含模型、checkpoint、評估、Epoch 指標、來源 Run 與 SHA-256 manifest，不包含訓練圖片。','field-note'))}
 async function exportSelectedModel(modelId){const job=await api(projectPath('/model-exports'),'POST',{model_version_id:modelId}),result=await pollJob(job);await loadTraining();toast(`${result.model_version_id} 已匯出為 ${result.export_id}。`);await api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:result.export_id})}
 async function generatePredictions(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先完成一個模型版本。');let assetIds;if($('predictionTarget').value==='current'){if(!state.asset)throw Error('請先在標註頁選擇圖片。');assetIds=[state.asset.id]}const job=await api(projectPath('/predictions'),'POST',{model_version_id:model.model_version_id,...(assetIds?{asset_ids:assetIds}:{})});await pollJob(job);await loadTraining();toast('預標註候選已產生，接受後會進入待審核。')}
@@ -1651,7 +1688,8 @@ bind('refreshSplitPage',async()=>{await refreshProject();await loadTraining();aw
 bind('backToReview',()=>switchStage('review'));
 bind('continueToTraining',()=>switchStage('train'));
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
-$('trainingDataset').onchange=renderTraining;$('trainingEngine').onchange=renderTraining;$('trainingDevice').onchange=renderTraining;
+$('trainingDataset').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingEngine').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingDevice').onchange=renderTraining;
+$('checkYoloCompatibility').onclick=()=>safe(checkYoloCompatibility);
 $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));
 bind('startTraining',startTrainingRun,{busy:true,task:'啟動獨立訓練程序'});
 bind('stopTraining',stopTrainingRun,{busy:true});
