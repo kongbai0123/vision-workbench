@@ -385,7 +385,11 @@ class Handler(BaseHTTPRequestHandler):
                     return {"updated":updated}
                 return self.json(self.app.jobs.submit("cvat-import", import_cvat))
             if path == "/api/open-folder":
-                if payload.get("export_id"):
+                if payload.get("model_export_id"):
+                    pid, export_id = payload.get("project_id"), payload["model_export_id"]
+                    self.app.training.model_export(pid, export_id)
+                    folder = (self.app.training.model_exports / pid / export_id).resolve()
+                elif payload.get("export_id"):
                     project = self.app.store.get_project(payload.get("project_id"))
                     item = next((e for e in project["exports"] if e["id"] == payload["export_id"]), None)
                     if item is None:
@@ -456,6 +460,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.training.create_dataset_version(pid))
             if action == "training-runs":
                 return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
+            if action == "model-exports":
+                model_id = payload.get("model_version_id")
+                return self.json(self.app.jobs.submit("model-export", lambda progress:
+                    self.app.training.export_model(pid, model_id, progress)))
             if action == "predictions":
                 model_id = payload.get("model_version_id")
                 return self.json(self.app.jobs.submit("prediction", lambda progress: (

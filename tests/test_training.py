@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 
 import numpy as np
 from PIL import Image
@@ -75,6 +76,16 @@ class TrainingWorkflowTests(unittest.TestCase):
         model_id = finished["model_version_id"]
         model = self.workspace.model(self.pid, model_id)
         self.assertEqual(model["dataset_version_id"], "D001")
+        exported = self.workspace.export_model(self.pid, model_id)
+        self.assertEqual(exported["format"], "vision-workbench-model-bundle")
+        self.assertEqual(exported["model_version_id"], model_id)
+        self.assertEqual(len(exported["sha256"]), 64)
+        with zipfile.ZipFile(exported["path"]) as archive:
+            self.assertIn("export-manifest.json", archive.namelist())
+            self.assertIn("model/model.json", archive.namelist())
+            manifest = json.loads(archive.read("export-manifest.json"))
+        self.assertEqual(manifest["dataset_version_id"], "D001")
+        self.assertEqual(self.workspace.list_model_exports(self.pid)[0]["export_id"], "E001")
         target_image = np.full((36, 48, 3), (24, 28, 32), np.uint8)
         target_image[9:30, 11:33] = (185, 72, 48)
         target = self.root / "predict.png"

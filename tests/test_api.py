@@ -188,6 +188,12 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(run['status'],'completed',run)
         metrics=self.call(f"/api/projects/{pid}/training-runs/{run['run_id']}/metrics")
         self.assertEqual(len(metrics['metrics']),5)
+        exported=self.job(self.call(f'/api/projects/{pid}/model-exports',{
+            'model_version_id':run['model_version_id']}))
+        self.assertEqual(exported['format'],'vision-workbench-model-bundle')
+        self.assertTrue(Path(exported['path']).is_file())
+        overview=self.call(f'/api/projects/{pid}/training')
+        self.assertEqual(overview['model_exports'][0]['export_id'],exported['export_id'])
         target=self.root/'unreviewed.png';target_pixels=pixels.copy();target_pixels[0,0]=(21,25,30);Image.fromarray(target_pixels).save(target)
         aid=self.service.store.add_assets(pid,[{'path':str(target),'name':'unreviewed.png',
             'batch_id':'new','source':{'kind':'api-test'}}])['asset_ids'][0]

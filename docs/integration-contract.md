@@ -12,14 +12,14 @@ DatasetVersion: immutable `{dataset_version_id,project_id,project_revision,class
 
 TrainingRun: persistent `{run_id,project_id,dataset_version_id,model_version_id,engine,config,status,progress,metrics?,evaluation?}`. Active states are `queued|preparing|running|stopping`; terminal states are `completed|failed|stopped`. A worker writes metrics, logs, evaluation and artifact manifest below `data/runs/{pid}/{run_id}`.
 
-ModelVersion: immutable model metadata and artifacts below `data/models/{pid}/{model_id}`. PredictionCandidate keeps model/run lineage, the source asset revision and native shapes. Accepting a candidate uses the normal revision check and resets the image to `pending` only when shapes changed.
+ModelVersion: immutable model metadata and artifacts below `data/models/{pid}/{model_id}`. A ModelExport is an atomic ZIP below `data/model-exports/{pid}/{export_id}` containing model artifacts, run/evaluation/metric lineage and SHA-256 metadata, without dataset images. PredictionCandidate keeps model/run lineage, the source asset revision and native shapes. Accepting a candidate uses the normal revision check and resets the image to `pending` only when shapes changed.
 
 ## HTTP API for web UI
 
 GET `/api/projects` => `{projects:[{id,name,...stats}]}`
 POST `/api/projects` `{name}` => full project (asset metadata only)
 GET `/api/projects/{pid}` => project
-GET `/api/projects/{pid}/training` => readiness, DatasetVersions, Runs, ModelVersions, PredictionCandidates and engine capabilities
+GET `/api/projects/{pid}/training` => readiness, DatasetVersions, Runs, ModelVersions, ModelExports, PredictionCandidates and engine capabilities
 GET `/api/projects/{pid}/training-runs/{rid}/metrics` => persistent run and metric rows
 PATCH `/api/projects/{pid}` `{name?,classes?}` => project
 POST `/api/projects/{pid}/import` `{paths:[absolute paths]}` => job
@@ -34,6 +34,7 @@ POST `/api/projects/{pid}/ai` `{asset_id,revision,engine:'sam2'|'grabcut',label,
 POST `/api/projects/{pid}/dataset-versions` => create immutable approved training snapshot
 POST `/api/projects/{pid}/training-runs` `{dataset_version_id,config:{engine,epochs,seed,device}}` => start isolated worker
 POST `/api/projects/{pid}/training-runs/{rid}/stop` => request safe stop
+POST `/api/projects/{pid}/model-exports` `{model_version_id}` => atomic portable model-bundle job
 POST `/api/projects/{pid}/predictions` `{model_version_id,asset_ids?}` => prediction job
 POST `/api/predictions/{candidate_id}/accept` `{asset_ids?}` => append candidates through revision-checked project store
 GET `/api/jobs/{id}` => `{id,kind,state:'queued'|'running'|'succeeded'|'failed',message,progress:0..100|null,result?,error?}`
@@ -50,7 +51,7 @@ POST `/api/projects/{pid}/screen` => asset
 POST `/api/camera/record/start` `{project_id}` => status
 POST `/api/camera/record/stop` => status
 POST `/api/projects/{pid}/video` `{path,interval_seconds:1}` => job extracting frames.
-POST `/api/dialog` `{kind:'images'|'folder'|'video'|'output'}` => `{paths:[...]}` native chooser (desktop only; browser UI supports path entry fallback). POST `/api/open-folder` `{project_id? ,export_id?}` opens app-owned output/project folder.
+POST `/api/dialog` `{kind:'images'|'folder'|'video'|'output'}` => `{paths:[...]}` native chooser (desktop only; browser UI supports path entry fallback). POST `/api/open-folder` `{project_id?,export_id?,model_export_id?}` opens an app-owned project, dataset export, or model export folder.
 
 All requests with JSON body use Content-Type application/json and X-Workbench: 1. Responses are direct objects, errors `{error,message}` with non-2xx status. UI must show failures, await autosave before asset/project/stage switches, and disable repeated in-flight actions. Saved state remains authoritative. Poll jobs ~500ms, do not refresh canvas during editing. API only binds loopback.
 

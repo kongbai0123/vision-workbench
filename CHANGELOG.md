@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0 — 2026-09-14
+
+- Renamed the top-level “設定／更新” entry to “設定”; program and component updates remain organized inside the settings center.
+- Added live per-epoch training plots with exact point values, a fixed full-run X range, and stable 0–1 validation axes instead of a sliding viewport.
+- Added portable model bundle export with model/checkpoint files, run configuration, metrics, evaluation, lineage, and SHA-256 verification metadata; training images are excluded.
+- Added model export history and direct access to the generated local folder from each ModelVersion.
+
 ## 2.1.0 — 2026-09-14
 
 - Added a unified settings sidebar with general preferences, model components, compute/storage, editor status, updates, and diagnostics.

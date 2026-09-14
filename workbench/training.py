@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 
 import numpy as np
 from PIL import Image
@@ -57,8 +58,9 @@ class TrainingWorkspace:
         self.datasets = self.root / "datasets"
         self.runs = self.root / "runs"
         self.models = self.root / "models"
+        self.model_exports = self.root / "model-exports"
         self.predictions = self.root / "predictions"
-        for folder in (self.datasets, self.runs, self.models, self.predictions):
+        for folder in (self.datasets, self.runs, self.models, self.model_exports, self.predictions):
             folder.mkdir(parents=True, exist_ok=True)
         self.registry = ModelRegistry(Path(__file__).resolve().parents[1], python_executable)
         self.python = str(self.registry.training_python)
@@ -368,6 +370,75 @@ class TrainingWorkspace:
             raise FileNotFoundError("找不到模型版本")
         return read_json(path)
 
+    def export_model(self, project_id, model_id, progress=lambda _message, _percent=None: None):
+        """Create a self-describing, checksummed model bundle without dataset images."""
+        model = self.model(project_id, model_id)
+        project = self.store.get_project(project_id, include_assets=False)
+        model_dir = self._model_path(project_id, model_id).parent
+        run_id = _safe_id(model.get("run_id"), "R")
+        run_dir = self._run_path(project_id, run_id).parent
+        parent = self.model_exports / project_id
+        parent.mkdir(parents=True, exist_ok=True)
+        with self.lock:
+            export_id = _next_id(parent, "E")
+            target = parent / export_id
+            temporary = parent / f".{export_id}-{uuid.uuid4().hex}.tmp"
+            temporary.mkdir()
+            try:
+                progress("整理模型、評估與訓練來源", 15)
+                sources = []
+                for path in sorted(model_dir.iterdir()):
+                    if path.is_file() and not path.is_symlink():
+                        sources.append((path, f"model/{path.name}"))
+                for name in ("run.json", "metrics.jsonl", "evaluation.json", "artifact-manifest.json"):
+                    path = run_dir / name
+                    if path.is_file() and not path.is_symlink():
+                        sources.append((path, f"run/{name}"))
+                if not any(name == "model/model.json" for _path, name in sources):
+                    raise FileNotFoundError("模型描述檔不存在")
+                artifacts = []
+                for path, archive_name in sources:
+                    raw = path.read_bytes()
+                    artifacts.append({"path": archive_name, "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
+                created_at = timestamp()
+                manifest = {"schema_version": 1, "format": "vision-workbench-model-bundle",
+                            "export_id": export_id, "created_at": created_at,
+                            "project_id": project_id, "project_name": project["name"],
+                            "model_version_id": model_id, "run_id": run_id,
+                            "dataset_version_id": model.get("dataset_version_id"),
+                            "engine": model.get("engine"), "engine_name": model.get("engine_name"),
+                            "classes": model.get("classes", []), "artifacts": artifacts}
+                bundle = temporary / f"{project_id}-{model_id}-model.zip"
+                progress("建立可攜式模型封裝", 55)
+                with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                    for source, archive_name in sources:
+                        archive.write(source, archive_name)
+                    archive.writestr("export-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                    archive.writestr("README.txt", "Vision Workbench model bundle\nOpen export-manifest.json to verify lineage and SHA-256 values.\n")
+                raw = bundle.read_bytes()
+                record = {**manifest, "path": str((target / bundle.name).resolve()),
+                          "directory": str(target.resolve()), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+                atomic_json(temporary / "record.json", record)
+                temporary.replace(target)
+                progress("模型封裝已完成並驗證", 100)
+            except BaseException:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+        return self.model_export(project_id, export_id)
+
+    def model_export(self, project_id, export_id):
+        export_id = _safe_id(export_id, "E")
+        path = self.model_exports / project_id / export_id / "record.json"
+        if not path.is_file():
+            raise FileNotFoundError("找不到模型匯出版本")
+        return read_json(path)
+
+    def list_model_exports(self, project_id):
+        parent = self.model_exports / project_id
+        rows = [read_json(item / "record.json") for item in parent.iterdir()
+                if item.is_dir() and (item / "record.json").is_file()] if parent.is_dir() else []
+        return sorted(rows, key=lambda row: row.get("created_at", ""), reverse=True)
+
     def create_predictions(self, project_id, model_id, asset_ids=None):
         model = self.model(project_id, model_id)
         project = self.store.snapshot(project_id)
@@ -456,6 +527,7 @@ class TrainingWorkspace:
     def overview(self, project_id):
         return {"readiness": self.readiness(project_id), "datasets": self.list_datasets(project_id),
                 "runs": self.list_runs(project_id), "models": self.list_models(project_id),
+                "model_exports": self.list_model_exports(project_id),
                 "predictions": self.list_predictions(project_id), "capabilities": self.capabilities()}
 
     def close(self):

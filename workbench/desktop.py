@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
         return list(self.pending_source_changes)
 
     def open_settings(self):
-        dialog=QDialog(self);dialog.setWindowTitle("設定／更新");dialog.setMinimumWidth(500)
+        dialog=QDialog(self);dialog.setWindowTitle("本機程式更新");dialog.setMinimumWidth(500)
         layout=QVBoxLayout(dialog)
         heading=QLabel("Vision Workbench 本機更新");heading.setStyleSheet("font-size:18px;font-weight:600;margin-bottom:6px")
         info=QLabel(f"資料位置\n{self.service.data_root}\n\n更新會套用 Codex 已完成的本機程式修改，安全關閉後自動重新開啟。")
