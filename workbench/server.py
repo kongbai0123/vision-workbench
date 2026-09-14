@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import __version__
 from .jobs import JobManager
 from .store import ConflictError, ProjectStore, dump
+from .training import TrainingWorkspace
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +30,7 @@ class WorkbenchService:
         self.incoming = self.data_root / "incoming"
         self.incoming.mkdir(exist_ok=True)
         self.jobs = JobManager()
+        self.training = TrainingWorkspace(self.data_root, self.store)
         self.dialog = dialog
         self._camera = None
         self._camera_lock = threading.Lock()
@@ -37,6 +39,7 @@ class WorkbenchService:
         self._cvat_lock = threading.Lock()
         self._cvat_tickets = {}
         self._cvat_session = []
+        self._cvat_baseline = None
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.httpd.daemon_threads = True
         self.httpd.service = self
@@ -84,6 +87,7 @@ class WorkbenchService:
             self.httpd.shutdown()
         self.httpd.server_close()
         self.jobs.close()
+        self.training.close()
         if self._camera:
             self._camera.close()
         if self._cvat is not None:
@@ -155,7 +159,7 @@ class WorkbenchService:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VisionWorkbench/1.0"
+    server_version = "VisionWorkbench/2.0"
     protocol_version = "HTTP/1.1"
 
     def handle(self):
@@ -179,6 +183,15 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         origin = self.headers.get("Origin")
         if not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
+            # Drain a bounded small body so Windows does not replace the 403
+            # with a TCP reset when the connection closes with unread input.
+            try:
+                size=int(self.headers.get('Content-Length','0'))
+                if 0<size<=65536:
+                    previous=self.connection.gettimeout();self.connection.settimeout(.5)
+                    try:self.rfile.read(size)
+                    finally:self.connection.settimeout(previous)
+            except (ValueError,OSError):pass
             raise PermissionError("僅接受軟體本機介面的操作")
         if self.headers.get_content_type() != "application/json":
             raise ValueError("請使用 JSON 請求")
@@ -229,9 +242,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"name":"Vision Workbench", "version":__version__, "default_export_path":str(self.app.exports),
                     "data_root":str(self.app.data_root), "desktop":self.app.dialog is not None,
                     "capabilities":{"sam2":bool(importlib.util.find_spec("torch") and importlib.util.find_spec("transformers")),
-                                    "grabcut":True,"camera":True,"offline":True}})
+                                    "grabcut":True,"camera":True,"offline":True,
+                                    "training":self.app.training.capabilities()}})
             if path == "/api/projects":
                 return self.json({"projects":self.app.store.list_projects()})
+            if path == "/api/model-catalog":
+                refresh = parse_qs(urlsplit(self.path).query).get("refresh", ["0"])[0] == "1"
+                return self.json(self.app.training.refresh_components() if refresh else self.app.training.capabilities())
             if parts[:2] == ["api", "jobs"] and len(parts) == 3:
                 return self.json(self.app.jobs.get(parts[2]))
             if path == "/api/camera/devices":
@@ -252,6 +269,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json(self.app.store.get_project(pid))
                 if len(parts) == 4 and parts[3] == "classes":
                     return self.json(self.app.store.class_usage(pid))
+                if len(parts) == 4 and parts[3] == "training":
+                    self.app.store.get_project(pid, include_assets=False)
+                    return self.json(self.app.training.overview(pid))
+                if len(parts) == 6 and parts[3] == "training-runs":
+                    self.app.store.get_project(pid, include_assets=False)
+                    if parts[5] == "metrics":
+                        run = self.app.training.run(pid, parts[4])
+                        metrics = self.app.training._run_path(pid, parts[4]).parent / "metrics.jsonl"
+                        rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines() if line.strip()] if metrics.is_file() else []
+                        return self.json({"run":run, "metrics":rows})
                 if len(parts) >= 5 and parts[3] == "assets":
                     aid = parts[4]
                     if len(parts) == 5:
@@ -303,6 +330,10 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.strip("/").split("/")
             if path == "/api/projects" and method == "POST":
                 return self.json(self.app.store.create_project(payload.get("name")))
+            if parts[:2] == ["api", "model-components"] and len(parts) == 4 and parts[3] == "install" and method == "POST":
+                component_id = parts[2]
+                return self.json(self.app.jobs.submit("model-install", lambda progress:
+                    self.app.training.install_component(component_id, progress)))
             if parts[:2] == ["api", "jobs"] and len(parts) == 4 and method == "POST":
                 return self.json(self.app.jobs.control(parts[2], parts[3]))
             if path == "/api/dialog":
@@ -311,6 +342,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"paths":self.app.dialog(payload.get("kind"))})
             if path == "/api/cvat/setup":
                 return self.json(self.app.cvat.start())
+            if path == "/api/cvat/reboot":
+                if payload.get("confirm") is not True:
+                    raise ValueError("重新啟動需要明確確認。")
+                return self.json(self.app.cvat.request_reboot())
+            if path == "/api/cvat/reboot/cancel":
+                return self.json(self.app.cvat.cancel_reboot())
             if path == "/api/cvat/launch":
                 pid = payload.get("project_id")
                 snapshot = self.app.store.snapshot(pid)
@@ -320,27 +357,39 @@ class Handler(BaseHTTPRequestHandler):
                     self.app._cvat_session = list(result.get("auth_cookies", []))
                     from .cvat_bridge import CvatProjectBridge
                     linked = CvatProjectBridge(self.app.data_root).ensure_project(
-                        snapshot, result.get("auth_cookies", []), progress)
-                    result["url"] = linked["url"]
+                        snapshot, result.get("auth_cookies", []), progress, store=self.app.store)
+                    self.app._cvat_baseline = self.app.store.snapshot(pid)
+                    asset_ids=linked.get('asset_ids',[])
+                    frame=asset_ids.index(payload.get('asset_id')) if payload.get('asset_id') in asset_ids else 0
+                    result.update(url=linked['url']+f'?frame={frame}',job_id=linked['job_id'],asset_ids=asset_ids,project_id=pid)
                     return {"ticket":self.app.issue_cvat_ticket(result), "project_id":pid,
-                            "project_name":snapshot["name"], "url":result["url"]}
+                            "project_name":snapshot["name"], "url":result["url"],
+                            "skipped_masks":linked.get("skipped_masks",0)}
                 return self.json(self.app.jobs.submit("cvat", launch_cvat))
             if path == "/api/cvat/import":
                 pid = payload.get("project_id")
-                snapshot = self.app.store.snapshot(pid)
+                snapshot = self.app._cvat_baseline
+                if snapshot is None or snapshot['id']!=pid:
+                    raise ValueError('CVAT 工作階段與目前專案不一致，請重新開啟。')
                 if not self.app._cvat_session:
                     raise ValueError("CVAT 工作階段已結束，請重新開啟後再讀回標註。")
                 def import_cvat(progress):
                     from .cvat_bridge import CvatProjectBridge
+                    from .editor_sync import commit_updates
                     progress("讀取 CVAT 已儲存標註",20)
-                    updates = CvatProjectBridge(self.app.data_root).read_annotations(snapshot,self.app._cvat_session)
-                    for index,(asset,shapes) in enumerate(updates,1):
-                        self.app.store.save_asset(pid,asset["id"],shapes,asset["revision"])
-                        progress(f"更新工作台標註 {index} / {len(updates)}",round(index/max(1,len(updates))*95))
-                    return {"updated":len(updates)}
+                    bridge=CvatProjectBridge(self.app.data_root)
+                    updates = bridge.read_annotations(snapshot,self.app._cvat_session)
+                    updated=commit_updates(self.app.store,pid,updates,source='cvat')
+                    self.app._cvat_baseline=self.app.store.snapshot(pid)
+                    bridge.mark_synced(self.app._cvat_baseline,self.app._cvat_session)
+                    return {"updated":updated}
                 return self.json(self.app.jobs.submit("cvat-import", import_cvat))
             if path == "/api/open-folder":
-                if payload.get("export_id"):
+                if payload.get("model_export_id"):
+                    pid, export_id = payload.get("project_id"), payload["model_export_id"]
+                    self.app.training.model_export(pid, export_id)
+                    folder = (self.app.training.model_exports / pid / export_id).resolve()
+                elif payload.get("export_id"):
                     project = self.app.store.get_project(payload.get("project_id"))
                     item = next((e for e in project["exports"] if e["id"] == payload["export_id"]), None)
                     if item is None:
@@ -368,6 +417,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.camera.start_recording(payload["project_id"]))
             if path == "/api/camera/record/stop":
                 return self.json(self.app.camera.stop_recording())
+            if parts[:2] == ["api", "predictions"] and len(parts) == 4 and parts[3] == "accept" and method == "POST":
+                return self.json(self.app.training.accept_predictions(parts[2], payload.get("asset_ids")))
             if parts[:2] != ["api", "projects"] or len(parts) < 3:
                 raise FileNotFoundError("找不到 API")
             pid = parts[2]
@@ -386,6 +437,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.store.delete_assets(pid,payload.get("asset_ids"),payload.get("revisions")))
             if len(parts) == 6 and parts[3] == "assets" and parts[5] == "restore":
                 return self.json(self.app.store.restore(pid,parts[4],payload.get("history_id"),payload.get("revision")))
+            if len(parts) == 5 and parts[3] == "training-runs" and parts[4] and method == "POST":
+                raise FileNotFoundError("找不到訓練操作")
+            if len(parts) == 6 and parts[3] == "training-runs" and parts[5] == "stop" and method == "POST":
+                return self.json(self.app.training.stop_run(pid, parts[4]))
             if len(parts) != 4:
                 raise FileNotFoundError("找不到 API")
             action = parts[3]
@@ -395,10 +450,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions")))
             if action == "assign":
                 return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
+            if action == "auto-split":
+                return self.json(self.app.store.auto_split(pid,payload.get("ratios") or {"train":70,"val":20,"test":10}))
             if action == "merge":
                 return self.json(self.app.jobs.submit("merge",lambda progress:self.app.store.merge(pid,payload.get("project_ids"))))
             if action in {"validate", "export"}:
                 return self.json(self.app.pipeline_job(pid,action,payload))
+            if action == "dataset-versions":
+                return self.json(self.app.training.create_dataset_version(pid))
+            if action == "training-runs":
+                return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
+            if action == "model-exports":
+                model_id = payload.get("model_version_id")
+                return self.json(self.app.jobs.submit("model-export", lambda progress:
+                    self.app.training.export_model(pid, model_id, progress)))
+            if action == "predictions":
+                model_id = payload.get("model_version_id")
+                return self.json(self.app.jobs.submit("prediction", lambda progress: (
+                    progress("使用模型產生候選標註", 20),
+                    self.app.training.create_predictions(pid, model_id, payload.get("asset_ids"))
+                )[1]))
             if action == "ai":
                 return self.json(self.app.ai_job(pid,payload))
             if action in {"capture", "screen"}:

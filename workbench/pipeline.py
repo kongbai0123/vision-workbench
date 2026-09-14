@@ -609,22 +609,12 @@ def _split_plan(assets, required=False):
         raise ValueError('split 僅可為 train / val / test')
     if explicit and len(explicit) != len(assets):
         raise ValueError('split 資訊不完整：不可混用已分組與未分組圖片')
-    groups = defaultdict(list)
     for asset in assets:
-        batch = asset.get('batch_id')
-        if not batch:
-            raise ValueError('每張圖片必須有 batch_id，才能檢查批次跨組')
-        groups[batch].append(asset['id'])
-    if explicit:
-        if any(len({assigned[aid] for aid in ids}) != 1 for ids in groups.values()):
-            raise ValueError('同一拍攝批次不可跨 train / val / test；請修正 split 或批次')
-    elif required:
-        if len(groups) < 2:
-            raise ValueError('YOLO 至少需要 2 個獨立批次以建立 train / val；請補充批次或明確分組')
-        ranked = sorted(groups, key=lambda value: (hashlib.sha256(value.encode()).hexdigest(), value))
-        val_count = max(1, min(len(ranked)-1, round(len(ranked)*0.2)))
-        val_batches = set(ranked[:val_count])
-        assigned = {a['id']: 'val' if a['batch_id'] in val_batches else 'train' for a in assets}
+        if not asset.get('batch_id'):
+            raise ValueError('每張圖片必須有 batch_id，才能保留來源追溯資訊')
+    if not explicit and required:
+        from .splitting import stratified_split
+        assigned, _ = stratified_split(assets, {'train': 80, 'val': 20, 'test': 0})
     if required and not {'train', 'val'}.issubset(set(assigned.values())):
         raise ValueError('YOLO 必須同時有 train 與 val')
     hashes = defaultdict(set)

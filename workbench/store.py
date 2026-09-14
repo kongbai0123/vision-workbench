@@ -5,6 +5,7 @@ events together. Each operation opens its own connection for worker safety.
 """
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -218,6 +219,9 @@ class ProjectStore:
         shapes = json.loads(asset.pop("shapes"))
         asset["source"] = json.loads(asset["source"])
         asset["shape_count"] = len(shapes)
+        asset["class_counts"] = dict(Counter(
+            str(shape.get("label")) for shape in shapes if shape.get("label")
+        ))
         asset["url"] = f"/api/projects/{pid}/assets/{asset['id']}/image"
         image_file = asset.pop("image_file")
         if detail:
@@ -611,6 +615,36 @@ class ProjectStore:
                               "review_state":row["review_state"],"batch_id":batch,"split":group})
             self._touch(db)
         return self.get_project(project_id)
+
+    def auto_split(self, project_id, ratios):
+        from .splitting import stratified_split
+
+        with self.connection(project_id, write=True) as db:
+            rows = list(db.execute("SELECT * FROM assets WHERE review_state='approved' ORDER BY created_at,rowid"))
+            assets = [dict(id=row["id"], sha256=row["sha256"], shapes=json.loads(row["shapes"])) for row in rows]
+            assignments, report = stratified_split(assets, ratios)
+            project_classes = json.loads(db.execute("SELECT classes FROM project").fetchone()["classes"])
+            for class_name in project_classes:
+                if not report["class_totals"].get(class_name):
+                    report["warnings"].append(f"類別「{class_name}」沒有已核准標註，無法參與平衡分割")
+            changed = 0
+            now = timestamp()
+            for row in rows:
+                split = assignments[row["id"]]
+                if row["split"] == split:
+                    continue
+                revision = row["revision"] + 1
+                db.execute("UPDATE assets SET split=?,revision=?,updated_at=? WHERE id=?",
+                           (split, revision, now, row["id"]))
+                self._history(db, row["id"], revision, "auto_split", {
+                    "shapes": json.loads(row["shapes"]), "review_state": row["review_state"],
+                    "batch_id": row["batch_id"], "split": split,
+                })
+                changed += 1
+            if changed:
+                self._touch(db)
+        report["changed"] = changed
+        return {"project": self.get_project(project_id), "report": report}
 
     def merge(self, project_id, source_ids):
         if not isinstance(source_ids, list) or not source_ids or project_id in source_ids:

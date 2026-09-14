@@ -47,6 +47,11 @@ STEP_LABELS = [
 ]
 ACTIVE_PHASES = {"checking", "uac", "wsl", "downloading_docker", "installing_docker",
                  "waiting_docker", "download", "services", "account"}
+# Must match $stateSchema in setup_cvat.ps1. A state file written by an older build
+# keeps its wording forever while can_setup is False, so its text/step are not trusted.
+STATE_SCHEMA = 2
+REBOOT_PENDING_TEXT = "Windows 有其他更新待重新啟動，必須先重新啟動，才能繼續安裝 WSL 2。"
+REBOOT_DELAY = 20  # Seconds of grace before Windows restarts; cancellable via shutdown /a.
 
 
 class SetupPause(RuntimeError):
@@ -203,8 +208,12 @@ class CvatSetup:
             if phase in ACTIVE_PHASES and not busy:
                 phase, description = "interrupted", "上次準備尚未完成，可按繼續準備。"
             rebooted = state.get("boot_id") and probe.get("boot_id") and probe["boot_id"] != state["boot_id"]
-            if phase == "reboot_required" and rebooted:
+            reboot_cleared = rebooted or not probe.get("reboot_pending", True)
+            stale_state = state.get("schema") != STATE_SCHEMA
+            if phase == "reboot_required" and reboot_cleared:
                 phase, description = "resume_required", "已重新啟動 Windows，按繼續準備即可完成 CVAT。"
+            elif phase == "reboot_required" and stale_state:
+                description = REBOOT_PENDING_TEXT
             if phase == "blocked" and probe.get("supported"):
                 phase, description = "resume_required", "系統已符合需求，可以繼續準備 CVAT。"
             if not probe.get("supported", True):
@@ -217,6 +226,8 @@ class CvatSetup:
                 phase = "ready"
                 description = "已備妥 · 進入時自動啟動" if not self.owned_running else "執行中 · 可直接進入"
             current_step = state.get("step", "system")
+            if phase == "reboot_required" and stale_state:
+                current_step = "system"
             if installed and not prerequisites_present:
                 current_step = "docker" if probe.get("wsl_ready") and probe.get("features_ready") else "wsl"
             ids = [row[0] for row in STEP_LABELS]
@@ -230,6 +241,7 @@ class CvatSetup:
                     "busy": busy, "running": self.owned_running,
                     "can_setup": not busy and phase not in ("blocked", "reboot_required"),
                     "reboot_required": phase == "reboot_required", "version": CVAT_VERSION,
+                    "can_reboot": phase == "reboot_required" and os.name == "nt" and not busy,
                     "resume": phase in ("resume_required", "interrupted", "error", "waiting_action"),
                     "requirements": probe, "installed": installed,
                     "notice": "首次下載需要網路；Windows 可能要求管理員確認或重新啟動。Docker 首次啟動可能要求同意授權條款。"}
@@ -254,6 +266,24 @@ class CvatSetup:
             return bool(kernel.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259
         finally:
             kernel.CloseHandle(ctypes.c_void_p(handle))
+
+    def request_reboot(self):
+        """Only ever reached from an explicit confirmation dialog in the hub UI."""
+        if os.name != "nt":
+            raise RuntimeError("僅 Windows 桌面版可由中心觸發重新啟動。")
+        snapshot = self.status()
+        if not snapshot["can_reboot"]:
+            raise RuntimeError("目前不需要重新啟動，或仍有準備作業進行中。")
+        # A delay (not /t 0) keeps this reversible: cancel_reboot runs shutdown /a.
+        self._run(["shutdown.exe", "/r", "/t", str(REBOOT_DELAY), "/c",
+                   "標註中心：重新啟動以完成 Windows 更新，回來後可繼續準備 CVAT。"], timeout=20)
+        return {"scheduled": True, "seconds": REBOOT_DELAY}
+
+    def cancel_reboot(self):
+        if os.name != "nt":
+            raise RuntimeError("僅 Windows 桌面版可取消重新啟動。")
+        self._run(["shutdown.exe", "/a"], timeout=20, check=False)
+        return {"scheduled": False}
 
     def start(self):
         with self.lock:
@@ -409,11 +439,35 @@ class CvatSetup:
                 with client.open(request, timeout=3) as response:
                     data = json.load(response)
                 if data.get("version") == CVAT_VERSION.lstrip("v"):
-                    return
+                    break
             except (OSError, ValueError):
                 pass
             self.stopping.wait(1)
-        raise RuntimeError("CVAT 尚未完成初始化；已保留環境與資料，請重試。")
+        else:
+            raise RuntimeError("CVAT 尚未完成初始化；已保留環境與資料，請重試。")
+        self._wait_authorization()
+
+    def _wait_authorization(self):
+        # /api/server/about and login work before OPA activates its policy bundle.
+        # Creating projects in that interval raises HTTP 500 (missing OPA result).
+        # Probe from the server container; OPA stays private to the Compose network.
+        self._set("services", "正在等待 CVAT 權限規則載入…", "services")
+        script = ("from urllib.request import build_opener, ProxyHandler; "
+                  "client=build_opener(ProxyHandler({})); "
+                  "response=client.open('http://opa:8181/health?bundles=true', timeout=3); "
+                  "response.read()")
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            self._check_closing()
+            try:
+                result = self._compose("exec", "--no-TTY", "cvat_server", "python", "-c", script,
+                                       timeout=10, check=False)
+                if result.returncode == 0:
+                    return
+            except (OSError, RuntimeError):
+                pass
+            self.stopping.wait(1)
+        raise RuntimeError("CVAT 權限規則尚未就緒；已保留環境與資料，請重試啟動。")
 
     def _login(self):
         # A dedicated local account is persistent; its generated password is never

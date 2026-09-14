@@ -113,6 +113,26 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(merged["shapes"][0]["metadata"]["source_instance"],42)
         self.assertNotEqual(merged["image_path"],str(self.store.image_path(self.pid,asset["id"])))
 
+    def test_auto_split_balances_class_counts_and_preserves_source_batch(self):
+        self.define("A", "B")
+        records = []
+        for index in range(12):
+            path = self.root / f"balanced-{index}.png"
+            Image.new("RGB", (80, 60), (index * 13, 80, 120)).save(path)
+            records.append(dict(path=path, batch_id="one-source-batch", shapes=[
+                dict(self.shape, id=f"shape-{index}", label="A" if index < 6 else "B")
+            ]))
+        added = self.store.add_assets(self.pid, records)
+        self.store.review(self.pid, added["asset_ids"], "approved")
+        result = self.store.auto_split(self.pid, {"train": 60, "val": 20, "test": 20})
+        self.assertEqual(result["report"]["class_counts"], {
+            "train": {"A": 4, "B": 4}, "val": {"A": 1, "B": 1}, "test": {"A": 1, "B": 1},
+        })
+        project = self.store.get_project(self.pid)
+        self.assertEqual({asset["split"] for asset in project["assets"]}, {"train", "val", "test"})
+        self.assertEqual({asset["batch_id"] for asset in project["assets"]}, {"one-source-batch"})
+        self.assertTrue(all(asset["class_counts"] for asset in project["assets"]))
+
     def test_invalid_paths_and_nan_cannot_be_saved(self):
         for value in ("../outside", "", "a"*31, "z"*32):
             with self.assertRaises(ValueError): self.store.directory(value)

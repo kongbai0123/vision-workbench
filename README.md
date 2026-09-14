@@ -1,13 +1,13 @@
 # Vision Workbench
 
-Vision Workbench 是以 Windows 為主要平台的本地影像資料工作站，將影像採集、資料匯入、AI 輔助標註、人工修正、審核、整併、驗證與資料集匯出整合在同一套桌面軟體中。
+Vision Workbench 是以 Windows 為主要平台的本地視覺資料與模型工作站，將影像採集、資料匯入、三種標註編輯器、人工審核、固定訓練資料、模型訓練、評估、預標註與外部交換整合在同一套桌面軟體中。
 
 軟體不需要帳號或遠端服務，影像、標註、修訂紀錄與模型皆保存在使用者電腦。專案資料由 SQLite 交易管理，原始影像以內容雜湊保存，避免不同流程間反覆包裝及交換中間檔案。
 
 ## 主要流程
 
 ```text
-建立專案 → 擷取／匯入影像 → AI 輔助標註 → 人工修正與核准 → 整併與驗證 → 匯出資料集
+建立專案 → 擷取／匯入 → 標註 → 人工核准 → 建立 DatasetVersion → 訓練與評估 → 模型預標註 → 人工修正與再次審核
 ```
 
 ## 功能
@@ -21,7 +21,22 @@ Vision Workbench 是以 Windows 為主要平台的本地影像資料工作站，
 - 圖片審核、退回、修訂歷史、衝突檢查及待審狀態追蹤。
 - 原生、COCO、YOLO Detection、YOLO Segmentation、LabelMe、圖片分類及 JSONL 匯出。
 - 匯出前檢查圖片雜湊、幾何座標、類別、審核狀態、資料分組及格式轉換損失。
-- 選用的本機 CVAT 整合；內建編輯器仍為預設工作方式。
+- 同一視窗切換內建編輯器、Labelme 7.4.1 與本機 CVAT，共用專案圖片、標註及審核狀態。
+- 已核准資料直接建立不可變的 `D001`、`D002` 訓練資料版本，不需要先匯出再匯入另一套訓練程式。
+- 訓練由獨立程序執行；離開訓練頁或關閉工作台不會改寫進行中的資料版本，Run 狀態、指標、日誌及產物會持久保存。
+- 正式 TorchVision Mask R-CNN 路徑支援原生 RLE 遮罩、CUDA／CPU、checkpoint、mask IoU 評估與隔離推論。
+- Faster R-CNN MobileNet V3／320 與 ResNet50 FPN V2 可直接由現有實例遮罩推導緊密框，完成偵測訓練、框評估與候選回填。
+- DeepLabV3 MobileNet V3／ResNet50 可由原生面積標註建立語意 class map，完成訓練、mIoU／Dice 評估與遮罩候選回填。
+- MobileNet V3、EfficientNet-B0 與 ResNet18 可直接訓練圖片分類；每張圖片需只有一個標註類別，結果提供 Accuracy／Macro F1／Recall，不會被轉成覆蓋整張圖片的框。
+- RT-DETR ResNet50 與 YOLO26n/s Seg 使用獨立 Ultralytics 環境；由固定資料版本建立訓練資料、持續寫入 Epoch 指標、保存 checkpoint，並將框或遮罩候選送回同一審核流程。
+- YOLO Seg 遇到含孔洞或多區塊的原生遮罩會在訓練前阻擋並指出圖片，不會靜默丟失幾何內容。
+- 設定中心羅列可用及規劃中的模型、所需標註、元件狀態與授權；選取未安裝模型只顯示說明，使用者按下安裝後才準備元件。
+- 內建像素原型分割可在未安裝 PyTorch 時立即完成資料到模型的快速基準驗證。
+- 模型輸出先保存為候選；接受後才加入圖片並回到待審核，不會直接覆蓋或核准人工標註。
+- 訓練頁上方三個設定框等高對齊，下方使用完整寬度顯示摘要及雙欄圖表；執行紀錄移至側欄。
+- 訓練頁依實際紀錄提供 Loss、IoU／Dice、Accuracy／F1 或 mAP 等圖表；可疊圖比較最多 4 個相同資料版本的 Run，並同步顯示／隱藏各 Run。
+- X 軸涵蓋完整 Run，比例指標維持 0–1；隱藏曲線不改變座標，缺值不補零。滑鼠、點選或方向鍵可查看同一 Epoch 各 Run 的數值，並提供數值明細與各類別評估。
+- 完成的 ModelVersion 可匯出成獨立 ZIP，包含 checkpoint、設定、評估、指標、來源 lineage 與 SHA-256 manifest，不包含訓練圖片。
 
 ## 系統需求
 
@@ -34,8 +49,8 @@ Vision Workbench 是以 Windows 為主要平台的本地影像資料工作站，
 ## 安裝
 
 ```powershell
-git clone https://github.com/kongbai0123/graph_catch.git
-cd graph_catch
+git clone https://github.com/kongbai0123/vision-workbench.git
+cd vision-workbench
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
@@ -55,6 +70,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 
 首次準備需要網路。模型下載完成後，推論可在本機執行。GrabCut 不需要額外模型權重。
 
+### TorchVision 訓練環境
+
+正式實例分割使用獨立的 `.venv-training`，避免 Torch／CUDA 依賴影響桌面介面。首次安裝執行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
+```
+
+此設定會安裝鎖定的 Torch 2.7.1、TorchVision 0.22.1 與 CUDA 12.8 runtime，供 Mask R-CNN、Faster R-CNN、DeepLabV3 與圖片分類模型共用。也可以從「設定 → 模型與元件」選擇支援模型後按需安裝；工作台會在安裝後重新執行載入與 CUDA 檢查。未安裝時仍可使用內建基準引擎。
+
+RT-DETR 與 YOLO26 Seg 使用 `.venv-models/ultralytics`。請先閱讀模型頁顯示的授權資訊，再於「設定 → 模型與元件」按「安裝必要元件」；選取模型本身不會建立環境或下載權重。Workbench 從套件內建 YAML 架構開始訓練，不會自動套用預訓練 checkpoint。
+
 ## 使用方式
 
 1. 建立本地專案。新專案不會自動建立任何物件類別。
@@ -63,7 +90,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 4. 選擇下一個新物件的類別，再使用標註工具建立物件；該選擇在建立完成後自動清除。
 5. 既有物件可在物件清單中逐一修改 `cls`，不會影響其他物件。
 6. 完成人工檢查並核准影像。修改已核准標註後，影像會回到待審狀態。
-7. 指定拍攝批次與 train／val／test 分組，執行驗證後建立匯出版本。
+7. 在「資料審核」核准可用圖片，於「模型訓練」檢查或自動設定 train／val／test。
+8. 建立固定資料版本，選擇實例分割、物件偵測、語意分割或圖片分類模型並啟動 Run；未安裝及規劃中的模型仍可查看用途與準備方式。
+9. 在「評估與模型」查看任務對應指標、匯出模型封裝，或產生預標註候選；接受候選後回到人工審核。
+10. 模型封裝位於 `data/model-exports/{project_id}/{export_id}`；需要資料集備份或外部交換時，再開啟「備份與外部交換」。
+
+### 訓練監控與 Run 比較（2.4）
+
+「單次訓練」先顯示評估摘要、固定執行設定，再顯示 Loss 與主要驗證指標。勾選「顯示圖表」可增加模型已實際記錄的指標；沒有紀錄的 Validation Loss、學習率或硬體數值不會被推測產生。
+
+按「Run 疊圖比較」會選入相同資料版本的近期 Run；從「執行紀錄」可加入或移除比較項目，最多 4 個。點選摘要中的 Run 開關，該 Run 在所有圖表一起顯示或隱藏，顏色與線型保持一致。Epoch 明細跟隨顯示開關；詳細評估與設定仍可查閱每個已選 Run。
+
+比較使用相同資料版本與評估分割。不同引擎的 Loss、Mask IoU 與語意 IoU 可能有不同定義，無法直接比較時會停用該指標疊圖並顯示原因，其餘可比較的指標繼續顯示。未設定 Validation 時，訓練期間使用 Test 的曲線會明確標示；詳細評估提供已記錄的各類別 IoU／Dice／Recall 或分類混淆矩陣。
+
+曲線不會左右掃視，隱藏 Run 不會縮放座標。若新數值超出原 Loss 範圍，座標只擴大到能完整呈現資料並顯示提示，不會持續自動縮小。停止的 Run 或缺少某個 Epoch 指標時保留缺口；數值表以「—」表示缺值。
+
+執行中的桌面程式可從「設定 → 更新與版本 → 檢查本機程式更新」，再按「更新並自動重新開啟」載入 2.4.0。本版未新增套件需求；更新不需要重新安裝模型。
 
 ### 類別管理規則
 
@@ -72,6 +114,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 - 刪除使用中類別時，必須明確選擇將全部相關物件改為另一類，或刪除相關標註物件。
 - 每個物件的類別彼此獨立；新物件類別與既有物件類別不會互相連動。
 - 匯入資料本身含有標註類別時，會保留來源資料定義的類別。
+
+### 三個編輯器共用專案
+
+在「標註編輯」上方選擇內建編輯器、Labelme 或 CVAT。Labelme 使用原生嵌入介面；CVAT 使用同視窗中的本機網頁介面。兩者會載入目前專案與所選圖片，無須另行匯入或匯出標註。
+
+Labelme／CVAT 上方可直接切換編輯器，或選擇「儲存並前往審核」。切換會等待存檔、讀回專案完成，下一個編輯器才會開啟。新標註、座標修改、類別修改及刪除都會同步；實際變更的影像回到待審核，沒有修改的影像保留原審核狀態。原始圖片內容保持不變。
+
+共用標註支援矩形、旋轉框、多邊形、折線、點與像素遮罩（包含孔洞）。Labelme 圓形會以像素遮罩保存。Labelme 物件的群組、描述與旗標保存在專案 metadata。CVAT 的影片軌跡、整張標籤及尚無共用表示的形狀會阻止同步並保留原編輯器，避免悄悄捨棄資料。
+
+若同一張影像在兩邊同時改動，會提示版本衝突並保留修改。Labelme 復原 JSON 位於 `data/labelme/{project_id}/`；CVAT 推送前的備份位於 `data/cvat/annotation-backups/`。圖片匯入、刪除及專案管理統一由工作台操作。
+
+Labelme 編輯整合需要桌面版；`--serve` 瀏覽器模式仍可使用內建編輯器。Labelme 的選用 AI 功能由其模型設定決定，首次使用可能需要下載模型。
 
 ## 支援格式
 
@@ -93,6 +147,10 @@ YOLO Polygon 無法精確表達遮罩孔洞，Detection 也不保留物件輪廓
 data/
 ├─ projects/   專案資料庫、標註、修訂及原圖副本
 ├─ incoming/   相機、錄影、影片及螢幕擷取素材
+├─ datasets/   不可變的訓練資料版本與 lineage manifest
+├─ runs/       訓練狀態、指標、評估、日誌與 artifact manifest
+├─ models/     模型版本、checkpoint 與能力資訊
+├─ predictions/模型預標註候選及接受狀態
 ├─ exports/    驗證完成的資料集版本與 ZIP
 └─ logs/       本機輪替紀錄
 
@@ -124,13 +182,24 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 node --test tests\ui_editor.test.mjs
+node --test tests\ui_cvat.test.mjs
+node --test tests\ui_training_charts.test.mjs
 ```
 
 執行隔離的桌面工作流程驗證：
 
 ```powershell
 .\.venv\Scripts\python.exe tests\desktop_workflow.py
+.\.venv\Scripts\python.exe tests\desktop_training.py
 ```
+
+安裝獨立訓練環境後，可執行一輪真實 CUDA／CPU Mask R-CNN 煙霧測試：
+
+```powershell
+.\.venv\Scripts\python.exe tests\maskrcnn_smoke.py
+```
+
+已準備本機 CVAT 時，可執行 `.\.venv\Scripts\python.exe tests\desktop_editors.py` 驗證三個編輯器與審核的完整往返；它會建立並清除獨立的 CVAT 測試專案。
 
 測試會使用暫存資料夾，不會操作使用者的正式專案或相機，除非明確執行 `tests\hardware_camera.py`。
 
@@ -143,6 +212,9 @@ node --test tests\ui_editor.test.mjs
 | `workbench/server.py` | 本機 API、背景工作與流程協調 |
 | `workbench/acquisition.py` | 相機、錄影、畫格擷取、即時處理與 AI 呼叫 |
 | `workbench/pipeline.py` | 格式解析、整併、驗證與原子化匯出 |
+| `workbench/training.py` | DatasetVersion、Run、ModelVersion、PredictionCandidate 與獨立程序管理 |
+| `workbench/training_engine.py` | 內建原生遮罩基準訓練、評估與推論 |
+| `workbench/maskrcnn_engine.py` | TorchVision Mask R-CNN 原生遮罩訓練、mask IoU、checkpoint 與推論 |
 | `composer_core/` | 共用幾何資料結構與驗證 |
 | `classical_segmentation/` | 傳統影像分割與背景處理 |
 | `sam2_segmentation/` | SAM2 分割、後處理與資料集轉換 |
@@ -155,11 +227,13 @@ node --test tests\ui_editor.test.mjs
 - 每次修改都有明確修訂版本；過期寫入會被拒絕。
 - AI 只產生候選，不直接核准或覆蓋人工標註。
 - 資料集只有在驗證完成後才會發佈，既有版本不會被覆寫。
-- 來源批次保持在同一資料分組，降低相近影格跨組造成的資料洩漏。
+- 自動分割固定相同 SHA-256 圖片；來源批次跨組會在建立訓練資料前顯示資料洩漏提醒。
 
 ## 目前範圍
 
-本專案聚焦影像資料製作、審核與匯出。模型訓練、產線推論部署及毫米級量測校正仍需依實際相機、鏡頭、治具、光源與標定流程另外驗證。
+2.0 版已交付影像採集至實例分割模型預標註的本機閉環。正式產線部署、模型服務監控及毫米級量測校正仍需依實際相機、鏡頭、治具、光源與標定流程另外驗證。
+
+2.1 版已交付設定中心、模型目錄、TorchVision 按需準備，以及 Faster R-CNN 與 DeepLabV3 完整訓練／評估／候選流程。影像分類、EfficientAD／PatchCore、RT-DETR、YOLO26 Seg 已顯示於目錄並明確標示整合開發中；安裝入口會在對應 adapter 完成後開放。範圍、介面與驗收清單見 [模型中心與設定中心規劃](docs/model-center-settings-plan.md)。
 
 ## 授權
 
