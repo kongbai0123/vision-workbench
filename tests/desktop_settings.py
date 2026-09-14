@@ -65,7 +65,7 @@ def main():
             assert js("[...document.querySelectorAll('#trainingEngine option')].every(option=>!option.disabled)")
             js("document.querySelector('#trainingEngine').value='yolo26n_seg';document.querySelector('#trainingEngine').dispatchEvent(new Event('change'))")
             wait("!document.querySelector('#trainingModelNotice').hidden")
-            assert js("document.querySelector('#trainingModelNotice').innerText.includes('開發待辦')")
+            assert js("document.querySelector('#trainingModelNotice').innerText.includes('尚未準備')")
             assert not js("document.documentElement.scrollWidth>innerWidth+2")
             print("DESKTOP_SETTINGS_OK", json.dumps({"models": count}, ensure_ascii=False))
         finally:

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.3.0 — 2026-09-14
+
+- Added trainable MobileNet V3, EfficientNet-B0, and ResNet18 image-classification adapters with immutable input validation, per-epoch Accuracy/Macro F1/Macro Recall, evaluation, checkpoints, and model bundles.
+- Classification labels are derived only from approved images with exactly one distinct annotation class; classification never creates a full-image bounding box candidate.
+- Added RT-DETR ResNet50 and YOLO26n/s Seg adapters with an isolated, on-demand Ultralytics environment, deterministic Workbench-to-YOLO data preparation, per-epoch metrics, evaluation, checkpoints, and review candidates.
+- Added strict YOLO Seg geometry checks that block hole-bearing or multi-component masks instead of silently discarding geometry.
+- Added per-model runtime selection so TorchVision and Ultralytics workers execute in separate environments; selecting a catalog item still performs no installation or weight download.
+- EfficientAD and PatchCore remain visible as Anomalib integration work in progress.
+
 ## 2.2.0 — 2026-09-14
 
 - Renamed the top-level “設定／更新” entry to “設定”; program and component updates remain organized inside the settings center.

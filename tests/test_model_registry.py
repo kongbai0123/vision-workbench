@@ -17,6 +17,12 @@ class ModelRegistryTests(unittest.TestCase):
             self.assertIn(key, models)
         self.assertEqual(models["efficientad"]["integration"], "planned")
         self.assertFalse(models["efficientad"]["train"])
+        self.assertEqual(models["mobilenet_v3_large_classification"]["integration"], "ready")
+        self.assertFalse(models["mobilenet_v3_large_classification"]["predict"])
+        self.assertEqual(models["rt_detr_r50"]["integration"], "ready")
+        self.assertEqual(models["rt_detr_r50"]["component"], "ultralytics")
+        self.assertTrue(next(component for component in catalog["components"]
+                             if component["id"] == "ultralytics")["installable"])
         self.assertEqual(models["pixel_prototype_v1"]["runtime_state"], "ready")
 
     def test_unfinished_component_cannot_be_installed_as_if_ready(self):

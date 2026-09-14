@@ -38,13 +38,10 @@ COMPONENTS = {
         "name": "Anomalib 異常檢測環境", "installable": False,
         "description": "EfficientAD 與 PatchCore 的獨立環境；待 Workbench 資料 adapter 完成後開放安裝。",
     },
-    "transformers": {
-        "name": "Transformers 偵測環境", "installable": False,
-        "description": "RT-DETR 的獨立環境；待固定 checkpoint 與評估 adapter 後開放安裝。",
-    },
     "ultralytics": {
-        "name": "Ultralytics YOLO 環境", "installable": False,
-        "description": "YOLO26 Seg 的獨立環境；啟用前需確認 AGPL-3.0 或 Enterprise 授權。",
+        "name": "Ultralytics 偵測與分割環境", "installable": True,
+        "description": "RT-DETR 與 YOLO26 Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
+        "requirements": "requirements-ultralytics.txt",
     },
 }
 
@@ -79,16 +76,16 @@ MODELS = (
      "description": "較高容量的語意分割變體。", "annotation": "面積標註",
      "metrics": ["mIoU", "Dice"], "license": "TorchVision；權重條件另依來源"},
     {"key": "mobilenet_v3_large_classification", "name": "MobileNet V3 · 分類", "family": "TorchVision Classification",
-     "task": "image_classification", "component": "torchvision", "integration": "planned",
-     "description": "適合 OK／NG 或整張圖片狀態；需先完成圖片層級標籤與審核。", "annotation": "圖片層級類別",
+     "task": "image_classification", "component": "torchvision", "integration": "ready", "predict": False,
+     "description": "適合 OK／NG 或整張圖片狀態；每張核准圖片需只有一個標註類別。", "annotation": "單一圖片類別",
      "metrics": ["Macro F1", "Recall"], "license": "TorchVision；權重條件另依來源"},
     {"key": "efficientnet_b0_classification", "name": "EfficientNet-B0 · 分類", "family": "TorchVision Classification",
-     "task": "image_classification", "component": "torchvision", "integration": "planned",
-     "description": "影像分類的平衡變體；需圖片層級標籤。", "annotation": "圖片層級類別",
+     "task": "image_classification", "component": "torchvision", "integration": "ready", "predict": False,
+     "description": "影像分類的平衡變體；每張核准圖片需只有一個標註類別。", "annotation": "單一圖片類別",
      "metrics": ["Macro F1", "Recall"], "license": "TorchVision；權重條件另依來源"},
     {"key": "resnet18_classification", "name": "ResNet18 · 分類", "family": "TorchVision Classification",
-     "task": "image_classification", "component": "torchvision", "integration": "planned",
-     "description": "穩定的分類基準；需圖片層級標籤。", "annotation": "圖片層級類別",
+     "task": "image_classification", "component": "torchvision", "integration": "ready", "predict": False,
+     "description": "穩定的分類基準；每張核准圖片需只有一個標註類別。", "annotation": "單一圖片類別",
      "metrics": ["Macro F1", "Recall"], "license": "TorchVision；權重條件另依來源"},
     {"key": "efficientad", "name": "EfficientAD", "family": "Anomalib", "task": "anomaly_detection",
      "component": "anomalib", "integration": "planned", "description": "正常樣本為主的快速異常檢測與熱圖。",
@@ -97,13 +94,13 @@ MODELS = (
      "component": "anomalib", "integration": "planned", "description": "少量缺陷資料的異常檢測基準。",
      "annotation": "正常／異常／未知", "metrics": ["Image AUROC", "AUPRO"], "license": "Anomalib · Apache-2.0"},
     {"key": "rt_detr_r50", "name": "RT-DETR · ResNet50", "family": "RT-DETR", "task": "object_detection",
-     "component": "transformers", "integration": "planned", "description": "端到端即時偵測；待固定官方 checkpoint 後開放。",
-     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Transformers · Apache-2.0；權重另依來源"},
+     "component": "ultralytics", "integration": "ready", "description": "以套件內建架構從零訓練，不會自動下載預訓練權重。",
+     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
     {"key": "yolo26n_seg", "name": "YOLO26n Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
-     "component": "ultralytics", "integration": "planned", "description": "YOLO26 nano 實例分割；需檢查 RLE 轉 polygon 的品質。",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 nano 實例分割；轉換前會阻擋無法無損表示的複合遮罩。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
     {"key": "yolo26s_seg", "name": "YOLO26s Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
-     "component": "ultralytics", "integration": "planned", "description": "YOLO26 small 實例分割；需檢查 RLE 轉 polygon 的品質。",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 實例分割；轉換前會阻擋無法無損表示的複合遮罩。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
 )
 
@@ -121,6 +118,13 @@ class ModelRegistry:
         configured = os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON") or self._configured_python
         isolated = self.app_root / ".venv-training" / "Scripts" / "python.exe"
         return Path(configured or (isolated if isolated.is_file() else sys.executable)).resolve()
+
+    def component_python(self, component_id: str) -> Path:
+        if component_id == "torchvision":
+            return self.training_python
+        if component_id == "builtin":
+            return Path(sys.executable).resolve()
+        return (self.app_root / ".venv-models" / component_id / "Scripts" / "python.exe").resolve()
 
     def _probe_torchvision(self):
         python = self.training_python
@@ -144,6 +148,25 @@ class ModelRegistry:
             return {"state": state, "message": "TorchVision 無法載入，請執行修復" if dedicated else "尚未安裝 TorchVision 獨立訓練環境",
                     "details": str(exc), "python": str(python)}
 
+    def _probe_python_component(self, component_id, imports):
+        python = self.component_python(component_id)
+        if not python.is_file():
+            return {"state": "not_installed", "message": f"尚未安裝 {COMPONENTS[component_id]['name']}",
+                    "python": str(python)}
+        code = f"import json,{','.join(imports)}; print(json.dumps({{'versions': {{{','.join(repr(name)+':getattr('+name+',\'__version__\',\'unknown\')' for name in imports)}}}}}))"
+        try:
+            result = subprocess.run([str(python), "-c", code], capture_output=True, text=True, timeout=30,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if result.returncode:
+                return {"state": "broken", "message": f"{COMPONENTS[component_id]['name']} 無法載入，請執行修復",
+                        "details": (result.stderr.strip().splitlines() or ["載入失敗"])[-1], "python": str(python)}
+            details = json.loads(result.stdout.strip().splitlines()[-1])
+            return {"state": "ready", "message": f"{COMPONENTS[component_id]['name']}可用",
+                    "python": str(python), **details}
+        except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError) as exc:
+            return {"state": "broken", "message": f"{COMPONENTS[component_id]['name']}無法載入，請執行修復",
+                    "details": str(exc), "python": str(python)}
+
     def component_status(self, refresh=False):
         with self._lock:
             if self._probe_cache is not None and not refresh and time.monotonic() - self._probe_time < 20:
@@ -153,8 +176,7 @@ class ModelRegistry:
                 "builtin": {"state": "ready", "message": "隨工作台提供", "python": sys.executable},
                 "torchvision": torchvision,
                 "anomalib": {"state": "planned", "message": "資料 adapter 與獨立 runtime 尚在開發"},
-                "transformers": {"state": "planned", "message": "RT-DETR adapter 尚在開發"},
-                "ultralytics": {"state": "planned", "message": "YOLO26 Seg adapter 與授權流程尚在開發"},
+                "ultralytics": self._probe_python_component("ultralytics", ("torch", "ultralytics")),
             }
             self._probe_cache, self._probe_time = states, time.monotonic()
             return states
@@ -171,7 +193,8 @@ class ModelRegistry:
             reason = "" if train else ("Workbench adapter 尚在開發" if definition["integration"] != "ready" else component["message"])
             models.append({**definition, "task_name": TASK_NAMES[definition["task"]],
                            "runtime_state": component["state"], "train": train, "evaluate": train,
-                           "predict": train, "export": False, "unavailable_reason": reason})
+                           "predict": train and definition.get("predict", True), "export": train,
+                           "unavailable_reason": reason})
         return {"models": models, "components": components, "tasks": TASK_NAMES,
                 "worker_python": str(self.training_python), "refreshed_at": time.time()}
 
@@ -184,11 +207,21 @@ class ModelRegistry:
         component = COMPONENTS[component_id]
         if not component.get("installable"):
             raise ValueError(component["description"])
-        if component_id != "torchvision":
-            raise ValueError("此模型元件尚未開放安裝")
-        progress("準備 TorchVision 獨立訓練環境", 5)
-        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                   str(self.app_root / "bootstrap.ps1"), "-Training", "-TrainingOnly"]
+        progress(f"準備 {component['name']}", 5)
+        if component_id == "torchvision":
+            command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                       str(self.app_root / "bootstrap.ps1"), "-Training", "-TrainingOnly"]
+        else:
+            target = self.component_python(component_id).parent.parent
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not self.component_python(component_id).is_file():
+                create = subprocess.run([sys.executable, "-m", "venv", str(target)], cwd=str(self.app_root),
+                                        capture_output=True, text=True,
+                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                if create.returncode:
+                    raise RuntimeError((create.stderr.strip().splitlines() or ["建立獨立環境失敗"])[-1])
+            command = [str(self.component_python(component_id)), "-m", "pip", "install", "-r",
+                       str(self.app_root / component["requirements"])]
         process = subprocess.Popen(command, cwd=str(self.app_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    text=True, encoding="utf-8", errors="replace",
                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -205,5 +238,5 @@ class ModelRegistry:
         status = self.component_status(refresh=True)[component_id]
         if status["state"] != "ready":
             raise RuntimeError(status["message"])
-        progress("TorchVision 環境已驗證", 100)
+        progress(f"{component['name']}已驗證", 100)
         return {"component_id": component_id, "status": status, "catalog": self.snapshot(refresh=True)}

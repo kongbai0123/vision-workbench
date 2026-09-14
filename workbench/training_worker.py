@@ -20,6 +20,10 @@ def main(argv=None):
         from .maskrcnn_engine import train
     elif engine.startswith("fasterrcnn_") or engine.startswith("deeplabv3_"):
         from .torchvision_engines import train
+    elif engine.endswith("_classification"):
+        from .classification_engine import train
+    elif engine == "rt_detr_r50" or engine.startswith("yolo26"):
+        from .ultralytics_engine import train
     else:
         raise ValueError(f"未知訓練引擎：{engine}")
     train(args.dataset.resolve(), args.run_dir.resolve(), args.model_dir.resolve())

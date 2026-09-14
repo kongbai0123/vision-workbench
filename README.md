@@ -27,6 +27,9 @@ Vision Workbench 是以 Windows 為主要平台的本地視覺資料與模型工
 - 正式 TorchVision Mask R-CNN 路徑支援原生 RLE 遮罩、CUDA／CPU、checkpoint、mask IoU 評估與隔離推論。
 - Faster R-CNN MobileNet V3／320 與 ResNet50 FPN V2 可直接由現有實例遮罩推導緊密框，完成偵測訓練、框評估與候選回填。
 - DeepLabV3 MobileNet V3／ResNet50 可由原生面積標註建立語意 class map，完成訓練、mIoU／Dice 評估與遮罩候選回填。
+- MobileNet V3、EfficientNet-B0 與 ResNet18 可直接訓練圖片分類；每張圖片需只有一個標註類別，結果提供 Accuracy／Macro F1／Recall，不會被轉成覆蓋整張圖片的框。
+- RT-DETR ResNet50 與 YOLO26n/s Seg 使用獨立 Ultralytics 環境；由固定資料版本建立訓練資料、持續寫入 Epoch 指標、保存 checkpoint，並將框或遮罩候選送回同一審核流程。
+- YOLO Seg 遇到含孔洞或多區塊的原生遮罩會在訓練前阻擋並指出圖片，不會靜默丟失幾何內容。
 - 設定中心羅列可用及規劃中的模型、所需標註、元件狀態與授權；選取未安裝模型只顯示說明，使用者按下安裝後才準備元件。
 - 內建像素原型分割可在未安裝 PyTorch 時立即完成資料到模型的快速基準驗證。
 - 模型輸出先保存為候選；接受後才加入圖片並回到待審核，不會直接覆蓋或核准人工標註。
@@ -73,7 +76,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 ```
 
-此設定會安裝鎖定的 Torch 2.7.1、TorchVision 0.22.1 與 CUDA 12.8 runtime，供 Mask R-CNN、Faster R-CNN 與 DeepLabV3 共用。也可以從「設定 → 模型與元件」選擇支援模型後按需安裝；工作台會在安裝後重新執行載入與 CUDA 檢查。未安裝時仍可使用內建基準引擎。
+此設定會安裝鎖定的 Torch 2.7.1、TorchVision 0.22.1 與 CUDA 12.8 runtime，供 Mask R-CNN、Faster R-CNN、DeepLabV3 與圖片分類模型共用。也可以從「設定 → 模型與元件」選擇支援模型後按需安裝；工作台會在安裝後重新執行載入與 CUDA 檢查。未安裝時仍可使用內建基準引擎。
+
+RT-DETR 與 YOLO26 Seg 使用 `.venv-models/ultralytics`。請先閱讀模型頁顯示的授權資訊，再於「設定 → 模型與元件」按「安裝必要元件」；選取模型本身不會建立環境或下載權重。Workbench 從套件內建 YAML 架構開始訓練，不會自動套用預訓練 checkpoint。
 
 ## 使用方式
 
@@ -84,7 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 5. 既有物件可在物件清單中逐一修改 `cls`，不會影響其他物件。
 6. 完成人工檢查並核准影像。修改已核准標註後，影像會回到待審狀態。
 7. 在「資料審核」核准可用圖片，於「模型訓練」檢查或自動設定 train／val／test。
-8. 建立固定資料版本，選擇實例分割、物件偵測或語意分割模型並啟動 Run；未安裝及規劃中的模型仍可查看用途與準備方式。
+8. 建立固定資料版本，選擇實例分割、物件偵測、語意分割或圖片分類模型並啟動 Run；未安裝及規劃中的模型仍可查看用途與準備方式。
 9. 在「評估與模型」查看任務對應指標、匯出模型封裝，或產生預標註候選；接受候選後回到人工審核。
 10. 模型封裝位於 `data/model-exports/{project_id}/{export_id}`；需要資料集備份或外部交換時，再開啟「備份與外部交換」。
 

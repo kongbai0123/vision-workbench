@@ -40,7 +40,7 @@ POST `/api/predictions/{candidate_id}/accept` `{asset_ids?}` => append candidate
 GET `/api/jobs/{id}` => `{id,kind,state:'queued'|'running'|'succeeded'|'failed',message,progress:0..100|null,result?,error?}`
 GET `/api/system` => app/version/capabilities/default export path.
 GET `/api/model-catalog?refresh=1` => all ready/unavailable/planned model entries plus component state; entries remain visible when unavailable.
-POST `/api/model-components/{component_id}/install` => bounded background install job for components whose Workbench adapter is ready; currently `torchvision`.
+POST `/api/model-components/{component_id}/install` => bounded background install job for components whose Workbench adapter is ready; currently `torchvision` and `ultralytics`.
 GET `/api/camera/devices` => `{devices:[{index,name}]}`
 POST `/api/camera/start` `{index,width,height,fps}` => status
 POST `/api/camera/stop` => status
@@ -57,9 +57,9 @@ All requests with JSON body use Content-Type application/json and X-Workbench: 1
 
 ## Training runtime
 
-The desktop runtime remains in `.venv`; the optional TorchVision runtime lives in `.venv-training` and is installed with `bootstrap.ps1 -Training` or the settings model center. `VISION_WORKBENCH_TRAINING_PYTHON` may select another versioned runtime. Training and TorchVision inference run as subprocesses. The built-in `pixel_prototype_v1` engine remains available without Torch; TorchVision engines are advertised as usable only after the runtime probe succeeds.
+The desktop runtime remains in `.venv`; the optional TorchVision runtime lives in `.venv-training` and is installed with `bootstrap.ps1 -Training` or the settings model center. RT-DETR and YOLO26 Seg use `.venv-models/ultralytics`, installed only by the settings model center. `VISION_WORKBENCH_TRAINING_PYTHON` may select another versioned TorchVision runtime. Every training and inference subprocess uses the runtime registered for its model component. The built-in `pixel_prototype_v1` engine remains available without Torch; optional engines are advertised as usable only after their runtime probe succeeds.
 
-Mask R-CNN reads native full-image RLE. Faster R-CNN derives tight boxes from valid mask pixels, and DeepLabV3 derives semantic class maps from native area annotations. Each writes `checkpoint.pt`, JSONL metrics, task-specific validation/test metrics and an artifact manifest. Detection candidates use rectangles; instance and semantic candidates use masks. All accepted candidates return through revision checks and pending review. The UI may close while a worker continues; persisted run files remain the source of truth after reopening.
+Mask R-CNN reads native full-image RLE. Faster R-CNN derives tight boxes from valid mask pixels, and DeepLabV3 derives semantic class maps from native area annotations. MobileNet V3, EfficientNet-B0, and ResNet18 derive one image class only when all shapes on an approved image have the same label; they do not create annotation candidates. RT-DETR uses tight boxes. YOLO26 Seg converts only single-component, hole-free area shapes and rejects lossy conversions before a worker starts. Each engine writes `checkpoint.pt`, JSONL metrics, task-specific validation/test metrics and an artifact manifest. Detection candidates use rectangles; instance and semantic candidates use masks. All accepted candidates return through revision checks and pending review. The UI may close while a worker continues; persisted run files remain the source of truth after reopening.
 
 ## Pipeline module (agent owned workbench/pipeline.py)
 

@@ -32,7 +32,17 @@ def atomic_json(path: Path, value) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        # Windows virus scanners and concurrent readers can hold the previous
+        # JSON file for a few milliseconds.  Keep the atomic replace contract
+        # while tolerating that transient lock.
+        for attempt in range(8):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(.015 * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
 

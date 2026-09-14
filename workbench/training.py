@@ -16,12 +16,14 @@ import zipfile
 import numpy as np
 from PIL import Image
 
-from composer_core.geometry import bounds, decode_rle
+from composer_core.geometry import bounds, decode_rle, shape_polygons
 from .store import dump, timestamp
 from .training_engine import ENGINE_KEY, ENGINE_NAME, atomic_json, predict, read_json
 from .maskrcnn_engine import ENGINE_KEY as MASKRCNN_KEY, ENGINE_NAME as MASKRCNN_NAME
 from .model_registry import ModelRegistry
 from .torchvision_engines import DETECTION_ENGINES, SEMANTIC_ENGINES
+from .classification_engine import CLASSIFICATION_ENGINES
+from .ultralytics_engine import ULTRALYTICS_ENGINES
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -266,6 +268,26 @@ class TrainingWorkspace:
             raise ValueError("找不到所選訓練引擎")
         if not definition["train"]:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
+        immutable = read_json(manifest)
+        if engine in CLASSIFICATION_ENGINES:
+            ambiguous = []
+            for asset in immutable["assets"]:
+                labels = {shape.get("label") for shape in asset.get("shapes", []) if shape.get("label") in immutable["classes"]}
+                if len(labels) != 1:
+                    ambiguous.append(asset.get("name") or asset["asset_id"])
+            if ambiguous:
+                raise ValueError(f"影像分類要求每張圖片只有一個標註類別；請修正 {len(ambiguous)} 張圖片")
+            train_labels = {shape.get("label") for asset in immutable["assets"] if asset["split"] == "train"
+                            for shape in asset.get("shapes", [])}
+            missing_classes = [name for name in immutable["classes"] if name not in train_labels]
+            if missing_classes:
+                raise ValueError(f"Train 缺少分類樣本：{'、'.join(missing_classes)}")
+        if engine.startswith("yolo26"):
+            for asset in immutable["assets"]:
+                for shape in asset.get("shapes", []):
+                    polygons, diagnostics = shape_polygons(shape, int(asset["width"]), int(asset["height"]), tolerance=0)
+                    if diagnostics.get("holes_omitted") or len(polygons) != 1 or diagnostics.get("pixel_iou", 1) < .999:
+                        raise ValueError(f"{asset['name']} 含有 YOLO Seg 無法無損表示的複合遮罩")
         epochs = int(config.get("epochs", 24))
         if not 1 <= epochs <= 200:
             raise ValueError("訓練輪數必須為 1–200")
@@ -282,17 +304,21 @@ class TrainingWorkspace:
             requested_device = str(config.get("device") or "auto")
             if requested_device not in {"auto", "cpu", "cuda"}:
                 raise ValueError("訓練裝置必須是 auto、cpu 或 cuda")
+            default_image_size = 224 if definition["task"] == "image_classification" else 640
             run = {"schema_version": 1, "run_id": run_id, "project_id": project_id,
                    "dataset_version_id": dataset_id, "model_version_id": model_id,
                    "engine": engine, "engine_name": engine_name,
                    "config": {"epochs": epochs, "device": requested_device, "seed": int(config.get("seed", 42)),
-                              "image_size": max(128, min(2048, int(config.get("image_size", 640)))),
+                              "image_size": max(128, min(2048, int(config.get("image_size", default_image_size)))),
                               "batch_size": max(1, min(16, int(config.get("batch_size", 1)))),
                               "learning_rate": float(config.get("learning_rate", 0.0005))},
                    "status": "queued", "message": "等待訓練程序", "progress": 0,
                    "created_at": time.time(), "updated_at": time.time()}
             atomic_json(run_dir / "run.json", run)
-            command = [self.python, "-m", "workbench.training_worker", "--dataset", str(manifest),
+            worker_python = str(self.registry.component_python(definition["component"]))
+            run["runtime"] = {"component": definition["component"], "python": worker_python}
+            atomic_json(run_dir / "run.json", run)
+            command = [worker_python, "-m", "workbench.training_worker", "--dataset", str(manifest),
                        "--run-dir", str(run_dir), "--model-dir", str(model_dir)]
             kwargs = {"cwd": str(Path(__file__).resolve().parents[1]), "stdin": subprocess.DEVNULL}
             if os.name == "nt":
@@ -441,6 +467,11 @@ class TrainingWorkspace:
 
     def create_predictions(self, project_id, model_id, asset_ids=None):
         model = self.model(project_id, model_id)
+        definition = self.registry.model(model.get("engine"), refresh=True)
+        if not definition or not definition.get("predict"):
+            if model.get("task") == "image_classification":
+                raise ValueError("影像分類結果不會轉成整張圖片的 Bounding Box；目前僅提供訓練、評估與模型匯出")
+            raise RuntimeError(definition.get("unavailable_reason") if definition else "此模型不支援預標註")
         project = self.store.snapshot(project_id)
         requested = set(asset_ids or [asset["id"] for asset in project["assets"] if asset["review_state"] != "approved"])
         if not requested:
@@ -450,11 +481,10 @@ class TrainingWorkspace:
         if missing:
             raise FileNotFoundError("部分預標註圖片不存在")
         generated = {}
-        torch_engines = {MASKRCNN_KEY, *DETECTION_ENGINES, *SEMANTIC_ENGINES}
-        if model.get("engine") in torch_engines:
-            definition = self.registry.model(model.get("engine"), refresh=True)
-            if not definition or not definition.get("train"):
-                raise RuntimeError("此模型需要可用的 TorchVision 訓練環境")
+        external_engines = {MASKRCNN_KEY, *DETECTION_ENGINES, *SEMANTIC_ENGINES, *ULTRALYTICS_ENGINES}
+        if model.get("engine") in external_engines:
+            if not definition.get("train"):
+                raise RuntimeError(definition.get("unavailable_reason") or "模型執行環境不可用")
             token = uuid.uuid4().hex
             request_path = self.predictions / f".{token}.request.json"
             output_path = self.predictions / f".{token}.output.json"
@@ -463,9 +493,12 @@ class TrainingWorkspace:
                         "assets": [{"asset_id": asset["id"], "image_path": asset["image_path"],
                                     "width": asset["width"], "height": asset["height"]} for asset in selected]})
             try:
-                worker = "workbench.maskrcnn_predict_worker" if model.get("engine") == MASKRCNN_KEY else "workbench.torchvision_predict_worker"
+                worker = ("workbench.maskrcnn_predict_worker" if model.get("engine") == MASKRCNN_KEY else
+                          "workbench.ultralytics_predict_worker" if model.get("engine") in ULTRALYTICS_ENGINES else
+                          "workbench.torchvision_predict_worker")
+                worker_python = str(self.registry.component_python(definition["component"]))
                 with stderr_path.open("wb") as stderr:
-                    result = subprocess.run([self.python, "-m", worker, "--request", str(request_path),
+                    result = subprocess.run([worker_python, "-m", worker, "--request", str(request_path),
                                              "--output", str(output_path)], cwd=str(Path(__file__).resolve().parents[1]),
                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
                                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -477,7 +510,7 @@ class TrainingWorkspace:
                 request_path.unlink(missing_ok=True); output_path.unlink(missing_ok=True); stderr_path.unlink(missing_ok=True)
         records = []
         for asset in selected:
-            if model.get("engine") in torch_engines:
+            if model.get("engine") in external_engines:
                 shapes = generated.get(asset["id"], [])
             else:
                 with Image.open(asset["image_path"]) as image:
