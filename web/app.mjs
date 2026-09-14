@@ -327,12 +327,13 @@ async function switchStage(stage) {
   try {
     await flushAllEdits();
     if(stage!=='annotate'&&state.editorMode==='cvat')await switchEditor('builtin');
-    for(const id of ['library','acquire','annotate','review','train','models','export'])$(id).hidden=id!==stage;
+    for(const id of ['library','acquire','annotate','review','split','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
     if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await cameraStatus();}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
     if(stage==='review'){await refreshProject();state.reviewSelection.clear();state.reviewPage=0;renderReview();}
+    if(stage==='split'){await refreshProject();await loadTraining();await renderSplitPage();}
     if(stage==='train'||stage==='models')await loadTraining();
     if(stage==='export'){await refreshProject();renderExport();}
   } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
@@ -1379,9 +1380,37 @@ const splitManager=new SplitManager({api,onApplied:async(result,pid,createVersio
   if(state.project?.id!==pid)return;
   state.project=result.project;renderBatchTable();renderReview();resetValidation('資料分割已更新，請重新驗證。');
   if(createVersion)await createDatasetVersion();else await loadTraining();
+  if(state.stage==='split')await renderSplitPage();
   toast(createVersion?'已建立新的固定資料版本。':'已套用專案分割；建立新資料版本後，後續訓練才會使用新分配。');
 }});
 async function openSplitManager(){await flushAllEdits();await splitManager.open(state.project.id)}
+async function renderSplitPage(){
+  if(!state.project||!state.training)return;
+  const projectId=state.project.id,info=await api(projectPath('/split-info'),'POST',{});
+  if(state.project?.id!==projectId||state.stage!=='split')return;
+  const readiness=state.training.readiness||{},stats=readiness.stats||{},splits=stats.splits||{};
+  const root=$('splitFlowStats');root.replaceChildren();
+  for(const [label,value,note] of [
+    ['已核准圖片',number(stats.approved||0),`排除 ${number(stats.excluded||0)} 張未核准圖片`],
+    ['獨立來源群組',number(info.groups?.length||0),'智慧分割不拆開同來源群組'],
+    ['分割方案',state.project.split_plan?.current?'已套用':'待確認',state.project.split_plan?.current?`種子 ${number(state.project.split_plan.seed)}`:'請預覽並套用智慧分割']]){
+    const card=element('div');card.append(element('span',label),element('b',value),element('small',note));root.append(card);
+  }
+  const distribution=$('splitFlowDistribution');distribution.replaceChildren();
+  const approved=Math.max(1,Number(stats.approved)||0);
+  for(const [key,label] of [['train','Train'],['val','Validation'],['test','Test']]){
+    const count=Number(splits[key])||0,row=element('div',undefined,'split-flow-row'),copy=element('div');
+    copy.append(element('b',label),element('span',`${number(count)} 張 · ${(count/approved*100).toFixed(1)}%`));
+    const bar=element('div',undefined,'split-flow-bar'),fill=element('i');fill.style.width=`${Math.min(100,count/approved*100)}%`;bar.append(fill);row.append(copy,bar);distribution.append(row);
+  }
+  const statusRoot=$('splitFlowStatus');statusRoot.replaceChildren();
+  if(readiness.ready)statusRoot.append(element('div','資料分割符合建立固定資料版本的條件。','readiness-item'));
+  for(const item of readiness.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('span',item.action));statusRoot.append(row)}
+  for(const item of readiness.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('span',item.action));statusRoot.append(row)}
+  $('openSplitFlowManager').disabled=!(stats.approved>0);
+  $('continueToTraining').disabled=!readiness.ready;
+  $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
+}
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device')});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
@@ -1430,7 +1459,7 @@ function renderReadiness(report){
   const stats=report?.stats||{},splits=stats.splits||{};
   if(report?.ready)root.append(element('div',`檢查通過 · 已核准 ${number(stats.approved)} 張 · Train ${number(splits.train)} / Val ${number(splits.val)} / Test ${number(splits.test)}`,'readiness-item'));
   for(const item of report?.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('div',`處理方式：${item.action}`));root.append(row)}
-  for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));if(item.code==='source_group_leak'){const fix=element('button','查看並調整批次','text-button');fix.onclick=()=>safe(openSplitManager);row.append(fix)}root.append(row)}
+  for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));if(item.code==='source_group_leak'){const fix=element('button','前往資料分割','text-button');fix.onclick=()=>safe(()=>switchStage('split'));row.append(fix)}root.append(row)}
 }
 function renderTraining(){
   if(!state.training)return;
@@ -1568,10 +1597,13 @@ bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewRe
 $('reviewSearch').oninput=()=>{state.reviewPage=0;renderReview()};$('reviewFilter').onchange=()=>{state.reviewSelection.clear();state.reviewPage=0;renderReview()};
 $('reviewSelectAll').onchange=()=>{for(const asset of reviewPageItems())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
-bind('prepareTraining',()=>switchStage('train'));
+bind('prepareTraining',()=>switchStage('split'));
 bind('refreshTraining',()=>loadTraining());
-bind('prepareAutoSplit',openSplitManager);
-bind('reviewSplitManager',openSplitManager);
+bind('prepareAutoSplit',()=>switchStage('split'));
+bind('openSplitFlowManager',openSplitManager);
+bind('refreshSplitPage',async()=>{await refreshProject();await loadTraining();await renderSplitPage()});
+bind('backToReview',()=>switchStage('review'));
+bind('continueToTraining',()=>switchStage('train'));
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
 $('trainingDataset').onchange=renderTraining;$('trainingEngine').onchange=renderTraining;$('trainingDevice').onchange=renderTraining;
 $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));
@@ -1586,7 +1618,7 @@ $('exportFormat').onchange=()=>{$('formatDescription').textContent=formatDescrip
 bind('autoSplit',autoSplitProject,{busy:true,task:'依類別數量自動分割'});bind('validateProject',validateProject,{busy:true});bind('exportProject',exportProject,{busy:true});bind('refreshExports',async()=>{await refreshProject();renderExport()});
 $('releaseDrawerClose').onclick=closeReleaseDrawer;$('releaseDrawer').onclick=event=>{if(event.target===$('releaseDrawer'))closeReleaseDrawer()};
 bind('help',async()=>{
-  const body=element('div');body.append(element('p','建議流程：建立專案 → 匯入／採集 → 標註 → 人工審核 → 建立固定訓練資料 → 訓練與評估 → 產生預標註候選 → 接受後再次審核。'));
+  const body=element('div');body.append(element('p','建議流程：建立專案 → 匯入／採集 → 標註 → 人工審核 → 智慧資料分割 → 建立固定訓練資料 → 訓練與評估 → 產生預標註候選 → 接受後再次審核。'));
   const list=element('ul');for(const text of ['F11：切換整套 Vision Workbench 的全螢幕與一般視窗。','即時預覽的展開圖示：只放大採集工作區；再次點擊或按 Esc 還原。','相機採集頁：S 擷取目前原始畫格。輸入文字或調整數值時不會觸發。','採集原圖：Q 選擇 Box、W 選擇 Polygon、E 選擇 Mask、Shift+E 擦除、Esc 關閉或取消。','Ctrl S：立即儲存；修改停止後也會自動儲存。','A／D 或左右方向鍵：切換上一張／下一張圖片。','V 選取、R 矩形、P 多邊形、L 折線、K 關鍵點、O 旋轉框。','B 遮罩筆刷、E 橡皮擦、H 平移；滑鼠滾輪縮放。','Enter 完成頂點；Esc 取消尚未完成的繪圖。','Shift 點選多個物件；Ctrl A 全選物件；Delete 刪除選取。','Ctrl Z / Ctrl Y：復原與重做。','選取模式雙擊邊線可插入頂點，Alt 點控制點可移除頂點。','AI 候選須先接受或捨棄，才能離開編輯工作區。','所有修改皆會重新進入待審核，只有已核准資料可以匯出。'])list.append(element('li',text));body.append(list);
   if(saver.dirty){const rescue=button('下載目前未儲存的標註副本','secondary',()=>{const blob=new Blob([JSON.stringify({format:'vision-workbench-recovery',project_id:state.project.id,asset:state.asset},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`recovery-${state.asset.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000)});body.append(rescue);}
   await formDialog({title:'操作指南與快捷鍵',body,eyebrow:'WORKBENCH GUIDE'});
