@@ -19,6 +19,8 @@ from composer_core.geometry import bounds, decode_rle
 from .store import dump, timestamp
 from .training_engine import ENGINE_KEY, ENGINE_NAME, atomic_json, predict, read_json
 from .maskrcnn_engine import ENGINE_KEY as MASKRCNN_KEY, ENGINE_NAME as MASKRCNN_NAME
+from .model_registry import ModelRegistry
+from .torchvision_engines import DETECTION_ENGINES, SEMANTIC_ENGINES
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -58,9 +60,8 @@ class TrainingWorkspace:
         self.predictions = self.root / "predictions"
         for folder in (self.datasets, self.runs, self.models, self.predictions):
             folder.mkdir(parents=True, exist_ok=True)
-        configured = os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON")
-        isolated = Path(__file__).resolve().parents[1] / ".venv-training" / "Scripts" / "python.exe"
-        self.python = str(Path(python_executable or configured or (isolated if isolated.is_file() else sys.executable)).resolve())
+        self.registry = ModelRegistry(Path(__file__).resolve().parents[1], python_executable)
+        self.python = str(self.registry.training_python)
         self.lock = threading.RLock()
         self.processes = {}
         self._maskrcnn_available = self._probe_maskrcnn()
@@ -110,15 +111,27 @@ class TrainingWorkspace:
                 continue
 
     def capabilities(self):
-        return {"available": True, "worker_python": self.python,
-                "engines": [{"key": MASKRCNN_KEY, "name": MASKRCNN_NAME,
-                             "task": "instance_segmentation", "train": self._maskrcnn_available,
-                             "evaluate": self._maskrcnn_available, "predict": self._maskrcnn_available,
-                             "export": self._maskrcnn_available,
-                             "description": "TorchVision 實例分割；讀取原生像素遮罩並保存 checkpoint 與 mask IoU。"},
-                            {"key": ENGINE_KEY, "name": ENGINE_NAME, "task": "instance_segmentation",
-                             "train": True, "evaluate": True, "predict": True, "export": True,
-                             "description": "直接讀取原生像素遮罩，可立即使用的快速本機基準模型。"}]}
+        catalog = self.registry.snapshot()
+        self.python = catalog["worker_python"]
+        self._maskrcnn_available = bool(next((model["train"] for model in catalog["models"]
+                                              if model["key"] == MASKRCNN_KEY), False))
+        return {"available": True, "worker_python": self.python, "engines": catalog["models"],
+                "components": catalog["components"], "tasks": catalog["tasks"],
+                "refreshed_at": catalog["refreshed_at"]}
+
+    def refresh_components(self):
+        self.registry.snapshot(refresh=True)
+        return self.capabilities()
+
+    def install_component(self, component_id, progress):
+        active = [run for project in self.runs.iterdir() if project.is_dir()
+                  for run in self.list_runs(project.name)
+                  if run.get("status") in {"queued", "preparing", "running", "stopping"}]
+        if active:
+            raise ValueError("訓練正在執行，完成或停止後才能變更模型環境")
+        result = self.registry.install(component_id, progress)
+        self.refresh_components()
+        return result
 
     def readiness(self, project_id):
         project = self.store.snapshot(project_id)
@@ -246,8 +259,11 @@ class TrainingWorkspace:
         if any(run.get("status") in {"queued", "preparing", "running", "stopping"} for run in self.list_runs(project_id)):
             raise ValueError("此專案已有訓練正在執行")
         engine = str(config.get("engine") or (MASKRCNN_KEY if self._maskrcnn_available else ENGINE_KEY))
-        if engine not in {ENGINE_KEY, MASKRCNN_KEY} or (engine == MASKRCNN_KEY and not self._maskrcnn_available):
-            raise ValueError("所選訓練引擎尚未安裝")
+        definition = self.registry.model(engine)
+        if definition is None:
+            raise ValueError("找不到所選訓練引擎")
+        if not definition["train"]:
+            raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         epochs = int(config.get("epochs", 24))
         if not 1 <= epochs <= 200:
             raise ValueError("訓練輪數必須為 1–200")
@@ -260,7 +276,7 @@ class TrainingWorkspace:
             run_dir, model_dir = project_runs / run_id, project_models / model_id
             run_dir.mkdir()
             model_dir.mkdir()
-            engine_name = MASKRCNN_NAME if engine == MASKRCNN_KEY else ENGINE_NAME
+            engine_name = definition["name"]
             requested_device = str(config.get("device") or "auto")
             if requested_device not in {"auto", "cpu", "cuda"}:
                 raise ValueError("訓練裝置必須是 auto、cpu 或 cuda")
@@ -323,6 +339,13 @@ class TrainingWorkspace:
                 if item.is_dir() and (item / "run.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
 
+    def active_runs(self):
+        if not self.runs.is_dir():
+            return []
+        return [run for project in self.runs.iterdir() if project.is_dir()
+                for run in self.list_runs(project.name)
+                if run.get("status") in {"queued", "preparing", "running", "stopping"}]
+
     def stop_run(self, project_id, run_id):
         run = self.run(project_id, run_id)
         if run["status"] not in {"queued", "preparing", "running"}:
@@ -356,9 +379,11 @@ class TrainingWorkspace:
         if missing:
             raise FileNotFoundError("部分預標註圖片不存在")
         generated = {}
-        if model.get("engine") == MASKRCNN_KEY:
-            if not self._maskrcnn_available:
-                raise RuntimeError("此模型需要 Mask R-CNN 訓練 runtime")
+        torch_engines = {MASKRCNN_KEY, *DETECTION_ENGINES, *SEMANTIC_ENGINES}
+        if model.get("engine") in torch_engines:
+            definition = self.registry.model(model.get("engine"), refresh=True)
+            if not definition or not definition.get("train"):
+                raise RuntimeError("此模型需要可用的 TorchVision 訓練環境")
             token = uuid.uuid4().hex
             request_path = self.predictions / f".{token}.request.json"
             output_path = self.predictions / f".{token}.output.json"
@@ -367,20 +392,21 @@ class TrainingWorkspace:
                         "assets": [{"asset_id": asset["id"], "image_path": asset["image_path"],
                                     "width": asset["width"], "height": asset["height"]} for asset in selected]})
             try:
+                worker = "workbench.maskrcnn_predict_worker" if model.get("engine") == MASKRCNN_KEY else "workbench.torchvision_predict_worker"
                 with stderr_path.open("wb") as stderr:
-                    result = subprocess.run([self.python, "-m", "workbench.maskrcnn_predict_worker", "--request", str(request_path),
+                    result = subprocess.run([self.python, "-m", worker, "--request", str(request_path),
                                              "--output", str(output_path)], cwd=str(Path(__file__).resolve().parents[1]),
                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
                                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 if result.returncode or not output_path.is_file():
                     detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
-                    raise RuntimeError(detail.splitlines()[-1] if detail else "Mask R-CNN 推論程序失敗")
+                    raise RuntimeError(detail.splitlines()[-1] if detail else "TorchVision 推論程序失敗")
                 generated = {row["asset_id"]: row["shapes"] for row in read_json(output_path)["assets"]}
             finally:
                 request_path.unlink(missing_ok=True); output_path.unlink(missing_ok=True); stderr_path.unlink(missing_ok=True)
         records = []
         for asset in selected:
-            if model.get("engine") == MASKRCNN_KEY:
+            if model.get("engine") in torch_engines:
                 shapes = generated.get(asset["id"], [])
             else:
                 with Image.open(asset["image_path"]) as image:

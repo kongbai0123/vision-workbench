@@ -321,7 +321,7 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         dialog=QDialog(self);dialog.setWindowTitle("設定／更新");dialog.setMinimumWidth(500)
         layout=QVBoxLayout(dialog)
-        heading=QLabel("Vision Workbench 設定");heading.setStyleSheet("font-size:18px;font-weight:600;margin-bottom:6px")
+        heading=QLabel("Vision Workbench 本機更新");heading.setStyleSheet("font-size:18px;font-weight:600;margin-bottom:6px")
         info=QLabel(f"資料位置\n{self.service.data_root}\n\n更新會套用 Codex 已完成的本機程式修改，安全關閉後自動重新開啟。")
         info.setWordWrap(True);layout.addWidget(heading);layout.addWidget(info)
         update_status=QLabel();update_status.setWordWrap(True);layout.addWidget(update_status)
@@ -353,7 +353,7 @@ class MainWindow(QMainWindow):
         if self.external_mode:
             QMessageBox.information(self,"請先返回工作台","請先在 CVAT 儲存標註並返回內建編輯器，完成讀回後再更新。")
             return
-        if self.service.jobs.active() or self.service._cvat is not None and self.service._cvat.status().get("busy"):
+        if self.service.jobs.active() or self.service.training.active_runs() or self.service._cvat is not None and self.service._cvat.status().get("busy"):
             QMessageBox.information(self,"工作仍在執行","請等待匯入、AI、匯出、CVAT 同步或安裝工作完成後再更新。")
             return
         self.update_pending=True

@@ -246,6 +246,9 @@ class Handler(BaseHTTPRequestHandler):
                                     "training":self.app.training.capabilities()}})
             if path == "/api/projects":
                 return self.json({"projects":self.app.store.list_projects()})
+            if path == "/api/model-catalog":
+                refresh = parse_qs(urlsplit(self.path).query).get("refresh", ["0"])[0] == "1"
+                return self.json(self.app.training.refresh_components() if refresh else self.app.training.capabilities())
             if parts[:2] == ["api", "jobs"] and len(parts) == 3:
                 return self.json(self.app.jobs.get(parts[2]))
             if path == "/api/camera/devices":
@@ -327,6 +330,10 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.strip("/").split("/")
             if path == "/api/projects" and method == "POST":
                 return self.json(self.app.store.create_project(payload.get("name")))
+            if parts[:2] == ["api", "model-components"] and len(parts) == 4 and parts[3] == "install" and method == "POST":
+                component_id = parts[2]
+                return self.json(self.app.jobs.submit("model-install", lambda progress:
+                    self.app.training.install_component(component_id, progress)))
             if parts[:2] == ["api", "jobs"] and len(parts) == 4 and method == "POST":
                 return self.json(self.app.jobs.control(parts[2], parts[3]))
             if path == "/api/dialog":

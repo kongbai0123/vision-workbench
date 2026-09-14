@@ -6,7 +6,8 @@ const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
   system:null,editorMode:'builtin',cvatPoll:null,cvatElapsedTimer:null,cvatPollStartedAt:null,cvatPollBaseText:'',cvatPollBusy:false,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null,
   splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
-  training:null,trainingTimer:null,selectedRun:null,selectedModel:null};
+  training:null,trainingTimer:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,
+  settingsPage:'general',settingsFocus:null,settingsJob:null};
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已退回'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
 const formatDescriptions = {
@@ -26,7 +27,7 @@ function toast(message,error=false) {
 function status(message,error=false) {$('statusText').textContent=message;$('connectionDot').classList.toggle('error',error);}
 window.workbenchUpdateStatus=count=>{
   $('updateDot').hidden=!Number.isInteger(count)||count<1;
-  $('settings').title=count===null?'暫時無法檢查更新':count>0?`有新更新：${count} 個程式檔案已修改`:'設定與本機更新';
+  $('settings').title=count===null?'開啟設定中心；暫時無法檢查更新':count>0?`開啟設定中心；有新更新：${count} 個程式檔案已修改`:'開啟設定中心';
 };
 async function api(path,method='GET',body) {
   let response;
@@ -65,6 +66,66 @@ function updateCvatSetupText({busy=state.cvatPollBusy,startedAt=state.cvatPollSt
 }
 function button(text,className='secondary',click) {const b=document.createElement('button');b.type='button';b.textContent=text;b.className=className;if(click)b.onclick=click;return b;}
 function element(tag,text,className) {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
+
+const settingDefaults={scale:'1',device:'auto'};
+function settingValue(name){try{return localStorage.getItem(`vision-workbench.${name}`)||settingDefaults[name]}catch{return settingDefaults[name]}}
+function saveSetting(name,value){try{localStorage.setItem(`vision-workbench.${name}`,value)}catch{}applySettings()}
+function applySettings(){document.body.style.zoom=settingValue('scale');if($('settingScale'))$('settingScale').value=settingValue('scale');if($('settingDevice'))$('settingDevice').value=settingValue('device')}
+
+function showSettingsPage(page='general'){
+  state.settingsPage=page;document.querySelectorAll('[data-settings-page]').forEach(item=>item.classList.toggle('active',item.dataset.settingsPage===page));
+  document.querySelectorAll('[data-settings-panel]').forEach(item=>item.hidden=item.dataset.settingsPanel!==page);
+}
+async function openSettings(page='general',modelKey=null){
+  state.settingsFocus=document.activeElement;$('settingsShell').hidden=false;showSettingsPage(page);applySettings();
+  if(modelKey)state.selectedCatalogModel=modelKey;
+  await loadModelCatalog();renderSettingsSummary();$('closeSettings').focus();
+}
+function closeSettings(){if($('settingsShell').hidden)return;$('settingsShell').hidden=true;state.settingsFocus?.focus?.();state.settingsFocus=null}
+function renderSettingsSummary(){
+  if(!state.system)return;
+  $('settingsVersion').textContent=`Vision Workbench ${state.system.version||'—'}`;
+  $('settingsLabelmeState').textContent=state.system.desktop?'桌面版可使用':'需要桌面版';
+  const facts=[['資料位置',state.system.data_root||'—'],['匯出位置',state.system.default_export_path||'—'],['訓練 Python',state.modelCatalog?.worker_python||'—'],['執行模式',state.system.desktop?'Windows 桌面版':'瀏覽器開發模式']];
+  $('computeSummary').replaceChildren(...facts.map(([label,value])=>{const row=element('div',undefined,'settings-fact');row.append(element('span',label),element('b',value));return row}));
+  $('diagnosticSummary').textContent=[`Vision Workbench ${state.system.version||'—'}`,`模式：${state.system.desktop?'Windows 桌面版':'瀏覽器'}`,`資料：${state.system.data_root||'—'}`,`訓練 Python：${state.modelCatalog?.worker_python||'—'}`,
+    ...((state.modelCatalog?.components||[]).map(component=>`${component.name}：${component.state} · ${component.message}`))].join('\n');
+}
+async function loadModelCatalog(refresh=false){
+  state.modelCatalog=await api(`/api/model-catalog${refresh?'?refresh=1':''}`);renderModelCatalog();renderSettingsSummary();return state.modelCatalog;
+}
+function catalogState(model){if(model.train)return ['可使用','ready'];if(model.integration!=='ready')return ['整合開發中','warning'];if(model.runtime_state==='broken')return ['需要修復','error'];return ['尚未安裝','warning']}
+function renderModelCatalog(){
+  const catalog=state.modelCatalog;if(!catalog)return;const search=$('modelCatalogSearch').value.trim().toLowerCase(),filter=$('modelCatalogFilter').value;
+  const models=(catalog.engines||catalog.models||[]).filter(model=>{
+    if(filter==='ready'&&!model.train)return false;if(filter==='unavailable'&&model.train)return false;
+    return !search||`${model.name} ${model.description} ${model.task_name} ${model.family}`.toLowerCase().includes(search);
+  });
+  if(!state.selectedCatalogModel||!(catalog.engines||catalog.models||[]).some(model=>model.key===state.selectedCatalogModel))state.selectedCatalogModel=models[0]?.key||(catalog.engines||catalog.models||[])[0]?.key;
+  const list=$('settingsModelList');list.replaceChildren();
+  if(!models.length)list.append(element('p','沒有符合條件的模型。','empty-list'));
+  for(const model of models){const [label,tone]=catalogState(model),row=button('','settings-model-row'+(model.key===state.selectedCatalogModel?' active':''),()=>{state.selectedCatalogModel=model.key;renderModelCatalog()});const top=element('div');top.append(element('b',model.name),element('i',undefined,'model-state-dot '+tone));row.append(top,element('small',`${model.task_name||model.task} · ${label}`));list.append(row)}
+  const model=(catalog.engines||catalog.models||[]).find(item=>item.key===state.selectedCatalogModel);renderCatalogDetail(model);
+}
+function renderCatalogDetail(model){
+  const root=$('settingsModelDetail');root.replaceChildren();if(!model){root.append(element('p','選擇一個模型查看詳情。'));return}
+  const [statusLabel,tone]=catalogState(model),head=element('div',undefined,'model-detail-status'),title=element('div');title.append(element('span',model.family||'MODEL','eyebrow'),element('h3',model.name));head.append(title,element('span',statusLabel,'settings-state '+tone));root.append(head,element('p',model.description));
+  const component=(state.modelCatalog.components||[]).find(item=>item.id===model.component),stateNames={ready:'可使用',not_installed:'尚未安裝',broken:'需要修復',planned:'整合開發中'};
+  const facts=element('dl',undefined,'catalog-facts');for(const [label,value]of [['任務',model.task_name||model.task],['所需標註',model.annotation||'依模型說明'],['評估指標',(model.metrics||[]).join('、')||'待定'],['執行元件',component?.name||model.component],['元件狀態',stateNames[model.runtime_state]||model.runtime_state],['訓練／推論',model.train?'可使用':model.unavailable_reason||'尚未準備']])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',component?.description||'','field-note'),element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
+  const actions=element('div',undefined,'catalog-actions');
+  if(model.train){const use=button('回到訓練並選用','primary',()=>{if(!state.project){toast('請先開啟專案。',true);return}closeSettings();switchStage('train').then(()=>{$('trainingEngine').value=model.key;renderTraining()})});actions.append(use)}
+  else if(model.integration==='ready'&&component?.installable){const install=button(component.state==='broken'?'修復必要元件':'安裝必要元件','primary',()=>safe(()=>installModelComponent(component.id)));actions.append(install)}
+  else {const planned=button('查看開發狀態','secondary',()=>toast('此模型已納入交付待辦；完成資料、評估與推論 adapter 後才會開放安裝。'));actions.append(planned)}
+  root.append(actions);
+}
+async function installModelComponent(componentId){
+  const component=(state.modelCatalog.components||[]).find(item=>item.id===componentId);if(!component)throw Error('找不到模型元件');
+  const job=await api(`/api/model-components/${componentId}/install`,'POST',{});state.settingsJob=job.id;$('settingsJobText').textContent=`正在準備 ${component.name}`;$('settingsJobProgress').hidden=false;
+  let current=job;
+  while(!['succeeded','failed','cancelled'].includes(current.state)){await new Promise(resolve=>setTimeout(resolve,650));current=await api(`/api/jobs/${job.id}`);$('settingsJobText').textContent=current.message||`正在準備 ${component.name}`;$('settingsJobProgress').value=Number(current.progress||0)}
+  state.settingsJob=null;$('settingsJobProgress').hidden=true;if(current.state!=='succeeded')throw Error(current.error||current.message||'安裝未完成');
+  await loadModelCatalog(true);if(state.project)await loadTraining({quiet:true});$('settingsJobText').textContent=`${component.name} 已安裝並通過檢查`;toast(`${component.name} 已可使用。`);
+}
 
 let savePhase='saved';
 function updateSaveControl() {
@@ -1368,16 +1429,21 @@ function renderTraining(){
   $('prepareAutoSplit').hidden=readiness.ready;$('prepareAutoSplit').disabled=!!active;
   $('createDatasetVersion').disabled=!readiness.ready||!!active;
   const engineSelect=$('trainingEngine'),engineRemember=engineSelect.value;engineSelect.replaceChildren();
-  for(const engine of capabilities.engines||[]){const option=new Option(`${engine.name}${engine.train?'':' · 尚未安裝'}`,engine.key);option.disabled=!engine.train;engineSelect.append(option)}
-  if([...engineSelect.options].some(option=>option.value===engineRemember&&!option.disabled))engineSelect.value=engineRemember;
-  else engineSelect.value=(capabilities.engines||[]).find(engine=>engine.train)?.key||'';
+  let currentTask='';for(const engine of capabilities.engines||[]){
+    const task=engine.task_name||capabilities.tasks?.[engine.task]||engine.task;if(task!==currentTask){const group=document.createElement('optgroup');group.label=task;engineSelect.append(group);currentTask=task}
+    const suffix=engine.train?' · 可使用':engine.integration==='ready'?' · 尚未安裝':' · 整合開發中';engineSelect.lastElementChild.append(new Option(`${engine.name}${suffix}`,engine.key));
+  }
+  if([...engineSelect.options].some(option=>option.value===engineRemember))engineSelect.value=engineRemember;
+  else engineSelect.value=(capabilities.engines||[]).find(engine=>engine.train)?.key||(capabilities.engines||[])[0]?.key||'';
   const engine=(capabilities.engines||[]).find(item=>item.key===engineSelect.value);$('trainingEngineHint').textContent=engine?.description||'沒有可用的訓練引擎。';
+  $('trainingTaskLabel').textContent=engine?`${engine.task_name||capabilities.tasks?.[engine.task]||engine.task} · ${engine.annotation||'依模型需求'}`:'尚未選擇模型';
+  const notice=$('trainingModelNotice');notice.hidden=!!engine?.train;if(!notice.hidden){$('trainingModelNoticeTitle').textContent=engine?.integration==='ready'?'此模型尚未準備完成':'此模型已納入開發待辦';$('trainingModelNoticeText').textContent=engine?.unavailable_reason||'完成必要元件與 Workbench adapter 後即可使用。'}
   const summary=$('trainingSummary');summary.replaceChildren();
   const deviceName={auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇';
-  for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務','實例分割'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
+  for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
   $('startTraining').disabled=!dataset||!engine?.train||!!active;
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
-  $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
+  $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
   const list=$('trainingRuns');list.replaceChildren();
   if(!runs.length)list.append(element('p','尚無訓練紀錄。','empty-list'));
   for(const run of runs){const row=button('','run-row'+(run.run_id===state.selectedRun?' active':''),()=>{state.selectedRun=run.run_id;renderTraining()});const top=element('div',undefined,'run-row-top');top.append(element('b',`${run.run_id} · ${run.engine_name}`),element('span',trainingStatusName(run.status),'run-status '+run.status));row.append(top,element('small',`${run.dataset_version_id} · ${date(run.created_at)}`));list.append(row)}
@@ -1389,7 +1455,7 @@ function renderTrainingRun(run){
   const heading=element('div',undefined,'run-progress-head'),copy=element('div');copy.append(element('span','TRAINING RUN','eyebrow'),element('h2',`${run.run_id} · ${trainingStatusName(run.status)}`));heading.append(copy,element('strong',`${number(run.progress||0)}%`));root.append(heading);
   const progress=document.createElement('progress');progress.className='run-progress';progress.max=100;progress.value=Number(run.progress||0);root.append(progress,element('p',run.message||'','muted'));
   const evaluation=run.evaluation?.test||run.evaluation?.validation;
-  if(evaluation){const metrics=element('div',undefined,'run-metrics');for(const [label,value]of [['Mean IoU',Number(evaluation.mean_iou).toFixed(3)],['評估圖片',number(evaluation.images)],['模型版本',run.model_version_id]]){const card=element('div',undefined,'run-metric');card.append(element('span',label),element('b',value));metrics.append(card)}root.append(metrics)}
+  if(evaluation){const values=evaluation.box_mean_iou!==undefined?[['Box IoU',Number(evaluation.box_mean_iou).toFixed(3)],['Recall@0.5',Number(evaluation.recall_50).toFixed(3)]]:evaluation.mean_dice!==undefined?[['mIoU',Number(evaluation.mean_iou).toFixed(3)],['Dice',Number(evaluation.mean_dice).toFixed(3)]]:[['Mean IoU',Number(evaluation.mean_iou).toFixed(3)]];values.push(['評估圖片',number(evaluation.images)],['模型版本',run.model_version_id]);const metrics=element('div',undefined,'run-metrics');for(const [label,value]of values){const card=element('div',undefined,'run-metric');card.append(element('span',label),element('b',value));metrics.append(card)}root.append(metrics)}
   if(run.error){const error=element('div',run.error,'readiness-item error');root.append(error)}
   const config=element('div',undefined,'run-config');for(const [label,value]of [['資料版本',run.dataset_version_id],['引擎',run.engine_name],['調整輪數',run.config?.epochs],['裝置',String(run.config?.device||'cpu').toUpperCase()]]){const item=element('div');item.append(element('span',label),element('b',String(value??'—')));config.append(item)}root.append(config);
 }
@@ -1502,6 +1568,7 @@ bind('refreshTraining',()=>loadTraining());
 bind('prepareAutoSplit',async()=>{await autoSplitProject();await loadTraining()},{busy:true,task:'設定訓練資料分割'});
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
 $('trainingDataset').onchange=renderTraining;$('trainingEngine').onchange=renderTraining;$('trainingDevice').onchange=renderTraining;
+$('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));
 bind('startTraining',startTrainingRun,{busy:true,task:'啟動獨立訓練程序'});
 bind('stopTraining',stopTrainingRun,{busy:true});
 bind('refreshModels',()=>loadTraining());
@@ -1518,8 +1585,13 @@ bind('help',async()=>{
   if(saver.dirty){const rescue=button('下載目前未儲存的標註副本','secondary',()=>{const blob=new Blob([JSON.stringify({format:'vision-workbench-recovery',project_id:state.project.id,asset:state.asset},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`recovery-${state.asset.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000)});body.append(rescue);}
   await formDialog({title:'操作指南與快捷鍵',body,eyebrow:'WORKBENCH GUIDE'});
 });
-$('settings').onclick=()=>{if(state.nativeBridge)state.nativeBridge.openSettings();else safe(()=>formDialog({title:'設定／更新',body:element('p','自動更新功能請在 Windows 桌面版使用。瀏覽器開發模式可重新啟動服務載入修改。'),eyebrow:'SETTINGS'}))};
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
+$('settings').onclick=()=>safe(()=>openSettings());$('closeSettings').onclick=closeSettings;$('settingsShell').onclick=event=>{if(event.target===$('settingsShell'))closeSettings()};
+document.querySelectorAll('[data-settings-page]').forEach(item=>item.onclick=()=>showSettingsPage(item.dataset.settingsPage));
+$('settingScale').onchange=event=>saveSetting('scale',event.target.value);$('settingDevice').onchange=event=>{saveSetting('device',event.target.value);$('trainingDevice').value=event.target.value;renderTraining()};
+$('modelCatalogSearch').oninput=renderModelCatalog;$('modelCatalogFilter').onchange=renderModelCatalog;$('refreshModelCatalog').onclick=()=>safe(()=>loadModelCatalog(true));
+$('goModelUpdates').onclick=()=>showSettingsPage('models');$('openDesktopUpdater').onclick=()=>{if(state.nativeBridge)state.nativeBridge.openSettings();else toast('本機程式更新工具需要 Windows 桌面版。',true)};
+$('copyDiagnostics').onclick=()=>safe(async()=>{await navigator.clipboard.writeText($('diagnosticSummary').textContent);toast('診斷摘要已複製。')});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('settingsShell').hidden){event.preventDefault();closeSettings();return}if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
 
 $('editorSelector').onchange=()=>safe(()=>switchEditor($('editorSelector').value));
 $('previousAssetTop').onclick=()=>safe(()=>navigateAsset(-1));$('nextAssetTop').onclick=()=>safe(()=>navigateAsset(1));
@@ -1555,6 +1627,7 @@ async function init() {
   try {
     setupCameraInspectors();
     const [system]=await Promise.all([api('/api/system'),loadProjects()]);state.system=system;
+    applySettings();$('trainingDevice').value=settingValue('device');
     if(!system.desktop){clearFileDrag();$('fileDropHint').textContent='拖曳匯入請使用桌面版；瀏覽器版可在右側輸入完整路徑。';}
     $('versionLabel').textContent=`VISION WORKBENCH · ${system.version||'1.0'}`;
     if(system.default_export_path)$('outputPath').placeholder=system.default_export_path;

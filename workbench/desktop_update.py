@@ -12,7 +12,7 @@ import time
 SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".css", ".html", ".json", ".ps1", ".bat"}
 SOURCE_DIRECTORIES = ("workbench", "web", "composer_core", "classical_segmentation", "sam2_segmentation")
 SOURCE_FILES = ("main.py", "cvat_setup.py", "setup_cvat.ps1", "bootstrap.ps1", "vision-workbench.bat",
-                "requirements.txt", "requirements-ai.txt", "requirements-lock.txt")
+                "requirements.txt", "requirements-ai.txt", "requirements-training.txt", "requirements-lock.txt")
 
 
 def source_snapshot(root):

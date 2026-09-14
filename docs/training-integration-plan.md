@@ -1,6 +1,6 @@
 # Vision Workbench × Vision Training Studio 整合規劃
 
-日期：2026-09-14。狀態：設計草案；本次只檢視原始碼並整理規劃，尚未實作訓練整合。
+日期：2026-09-14。狀態：原始整合設計紀錄；下列現況描述為設計當時的基線，實際交付能力以 [README](../README.md) 與 [整合契約](integration-contract.md) 為準。下一階段的六組模型、按需安裝及設定中心待辦見 [模型中心與設定中心規劃](model-center-settings-plan.md)。
 
 ## 1. 建議方向
 

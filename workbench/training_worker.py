@@ -18,6 +18,8 @@ def main(argv=None):
         from .training_engine import train
     elif engine == "maskrcnn_resnet50_fpn":
         from .maskrcnn_engine import train
+    elif engine.startswith("fasterrcnn_") or engine.startswith("deeplabv3_"):
+        from .torchvision_engines import train
     else:
         raise ValueError(f"未知訓練引擎：{engine}")
     train(args.dataset.resolve(), args.run_dir.resolve(), args.model_dir.resolve())

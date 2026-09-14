@@ -1,6 +1,9 @@
-param([switch]$AI,[switch]$Training)
+param([switch]$AI,[switch]$Training,[switch]$TrainingOnly)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+if ($TrainingOnly) { $Training = $true }
+if ($TrainingOnly -and $AI) { throw 'TrainingOnly cannot be combined with AI.' }
+if (-not $TrainingOnly) {
 $taskPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $taskPython)) {
     if (Get-Command py -ErrorAction SilentlyContinue) { & py -3.13 -m venv .venv }
@@ -15,6 +18,7 @@ if ($AI) {
     if ($LASTEXITCODE -ne 0) { throw 'AI dependency installation failed.' }
     & $taskPython prepare_models.py
     if ($LASTEXITCODE -ne 0) { throw 'Model preparation failed.' }
+}
 }
 if ($Training) {
     $trainingPython = Join-Path $PSScriptRoot '.venv-training\Scripts\python.exe'

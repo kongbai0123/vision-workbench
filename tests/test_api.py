@@ -198,5 +198,16 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(accepted['accepted'],[aid])
         self.assertEqual(self.call(f'/api/projects/{pid}/assets/{aid}')['review_state'],'pending')
 
+    def test_model_catalog_lists_optional_models_without_claiming_support(self):
+        catalog=self.call('/api/model-catalog')
+        engines={item['key']:item for item in catalog['engines']}
+        self.assertIn('fasterrcnn_mobilenet_v3_large_fpn',engines)
+        self.assertIn('deeplabv3_mobilenet_v3_large',engines)
+        self.assertIn('efficientad',engines)
+        self.assertIn('rt_detr_r50',engines)
+        self.assertIn('yolo26n_seg',engines)
+        self.assertEqual(engines['efficientad']['integration'],'planned')
+        self.assertFalse(engines['efficientad']['train'])
+
 
 if __name__=='__main__':unittest.main()

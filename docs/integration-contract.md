@@ -38,6 +38,8 @@ POST `/api/projects/{pid}/predictions` `{model_version_id,asset_ids?}` => predic
 POST `/api/predictions/{candidate_id}/accept` `{asset_ids?}` => append candidates through revision-checked project store
 GET `/api/jobs/{id}` => `{id,kind,state:'queued'|'running'|'succeeded'|'failed',message,progress:0..100|null,result?,error?}`
 GET `/api/system` => app/version/capabilities/default export path.
+GET `/api/model-catalog?refresh=1` => all ready/unavailable/planned model entries plus component state; entries remain visible when unavailable.
+POST `/api/model-components/{component_id}/install` => bounded background install job for components whose Workbench adapter is ready; currently `torchvision`.
 GET `/api/camera/devices` => `{devices:[{index,name}]}`
 POST `/api/camera/start` `{index,width,height,fps}` => status
 POST `/api/camera/stop` => status
@@ -54,9 +56,9 @@ All requests with JSON body use Content-Type application/json and X-Workbench: 1
 
 ## Training runtime
 
-The desktop runtime remains in `.venv`; the optional TorchVision runtime lives in `.venv-training` and is installed with `bootstrap.ps1 -Training`. `VISION_WORKBENCH_TRAINING_PYTHON` may select another versioned runtime. Training and Mask R-CNN inference run as subprocesses. The built-in `pixel_prototype_v1` engine remains available without Torch; `maskrcnn_resnet50_fpn` is advertised as usable only after the runtime probe succeeds.
+The desktop runtime remains in `.venv`; the optional TorchVision runtime lives in `.venv-training` and is installed with `bootstrap.ps1 -Training` or the settings model center. `VISION_WORKBENCH_TRAINING_PYTHON` may select another versioned runtime. Training and TorchVision inference run as subprocesses. The built-in `pixel_prototype_v1` engine remains available without Torch; TorchVision engines are advertised as usable only after the runtime probe succeeds.
 
-Both engines read the same native full-image RLE without polygon conversion. Mask R-CNN writes `checkpoint.pt`, JSONL metrics, validation/test mask IoU and an artifact manifest. The UI may close while a worker continues; persisted run files remain the source of truth after reopening.
+Mask R-CNN reads native full-image RLE. Faster R-CNN derives tight boxes from valid mask pixels, and DeepLabV3 derives semantic class maps from native area annotations. Each writes `checkpoint.pt`, JSONL metrics, task-specific validation/test metrics and an artifact manifest. Detection candidates use rectangles; instance and semantic candidates use masks. All accepted candidates return through revision checks and pending review. The UI may close while a worker continues; persisted run files remain the source of truth after reopening.
 
 ## Pipeline module (agent owned workbench/pipeline.py)
 

@@ -25,6 +25,9 @@ Vision Workbench 是以 Windows 為主要平台的本地視覺資料與模型工
 - 已核准資料直接建立不可變的 `D001`、`D002` 訓練資料版本，不需要先匯出再匯入另一套訓練程式。
 - 訓練由獨立程序執行；離開訓練頁或關閉工作台不會改寫進行中的資料版本，Run 狀態、指標、日誌及產物會持久保存。
 - 正式 TorchVision Mask R-CNN 路徑支援原生 RLE 遮罩、CUDA／CPU、checkpoint、mask IoU 評估與隔離推論。
+- Faster R-CNN MobileNet V3／320 與 ResNet50 FPN V2 可直接由現有實例遮罩推導緊密框，完成偵測訓練、框評估與候選回填。
+- DeepLabV3 MobileNet V3／ResNet50 可由原生面積標註建立語意 class map，完成訓練、mIoU／Dice 評估與遮罩候選回填。
+- 設定中心羅列可用及規劃中的模型、所需標註、元件狀態與授權；選取未安裝模型只顯示說明，使用者按下安裝後才準備元件。
 - 內建像素原型分割可在未安裝 PyTorch 時立即完成資料到模型的快速基準驗證。
 - 模型輸出先保存為候選；接受後才加入圖片並回到待審核，不會直接覆蓋或核准人工標註。
 
@@ -60,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 
 首次準備需要網路。模型下載完成後，推論可在本機執行。GrabCut 不需要額外模型權重。
 
-### Mask R-CNN 訓練環境
+### TorchVision 訓練環境
 
 正式實例分割使用獨立的 `.venv-training`，避免 Torch／CUDA 依賴影響桌面介面。首次安裝執行：
 
@@ -68,7 +71,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -AI
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 ```
 
-此設定會安裝鎖定的 Torch 2.7.1、TorchVision 0.22.1 與 CUDA 12.8 runtime。工作台會自動偵測環境；未安裝時仍可使用內建基準引擎。
+此設定會安裝鎖定的 Torch 2.7.1、TorchVision 0.22.1 與 CUDA 12.8 runtime，供 Mask R-CNN、Faster R-CNN 與 DeepLabV3 共用。也可以從「設定 → 模型與元件」選擇支援模型後按需安裝；工作台會在安裝後重新執行載入與 CUDA 檢查。未安裝時仍可使用內建基準引擎。
 
 ## 使用方式
 
@@ -79,8 +82,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 5. 既有物件可在物件清單中逐一修改 `cls`，不會影響其他物件。
 6. 完成人工檢查並核准影像。修改已核准標註後，影像會回到待審狀態。
 7. 在「資料審核」核准可用圖片，於「模型訓練」檢查或自動設定 train／val／test。
-8. 建立固定資料版本，選擇 Mask R-CNN 或內建基準引擎並啟動 Run。
-9. 在「評估與模型」查看來源與 mask IoU，產生預標註候選；接受候選後回到人工審核。
+8. 建立固定資料版本，選擇實例分割、物件偵測或語意分割模型並啟動 Run；未安裝及規劃中的模型仍可查看用途與準備方式。
+9. 在「評估與模型」查看任務對應指標並產生預標註候選；接受候選後回到人工審核。
 10. 需要備份或交付外部工具時，從「評估與模型」開啟「備份與外部交換」。
 
 ### 類別管理規則
@@ -206,6 +209,8 @@ node --test tests\ui_cvat.test.mjs
 ## 目前範圍
 
 2.0 版已交付影像採集至實例分割模型預標註的本機閉環。正式產線部署、模型服務監控及毫米級量測校正仍需依實際相機、鏡頭、治具、光源與標定流程另外驗證。
+
+2.1 版已交付設定中心、模型目錄、TorchVision 按需準備，以及 Faster R-CNN 與 DeepLabV3 完整訓練／評估／候選流程。影像分類、EfficientAD／PatchCore、RT-DETR、YOLO26 Seg 已顯示於目錄並明確標示整合開發中；安裝入口會在對應 adapter 完成後開放。範圍、介面與驗收清單見 [模型中心與設定中心規劃](docs/model-center-settings-plan.md)。
 
 ## 授權
 
