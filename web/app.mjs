@@ -2,6 +2,7 @@ import {AnnotationEditor, colorFor, shapeNames} from './editor.mjs';
 import {kind, decodeMask, encodeMask, brush} from './shapes.mjs';
 import {SaveQueue} from './save-queue.mjs';
 import {TrainingMonitor} from './training-monitor.mjs';
+import {TrainingParameters} from './training-parameters.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
@@ -342,7 +343,7 @@ async function openProject(id) {
   try {
     await flushAllEdits();
     const project=await api(`/api/projects/${id}`);
-    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;trainingMonitor.reset();
+    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;trainingMonitor.reset();trainingParameters.reset();
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -1374,6 +1375,7 @@ async function runAI() {
 }
 
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
+const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device')});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
 let trainingLoadGeneration=0;
 function trainingStatusName(value){return {queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value||'未知'}
@@ -1442,12 +1444,13 @@ function renderTraining(){
   if([...engineSelect.options].some(option=>option.value===engineRemember))engineSelect.value=engineRemember;
   else engineSelect.value=(capabilities.engines||[]).find(engine=>engine.train)?.key||(capabilities.engines||[])[0]?.key||'';
   const engine=(capabilities.engines||[]).find(item=>item.key===engineSelect.value);$('trainingEngineHint').textContent=engine?.description||'沒有可用的訓練引擎。';
+  trainingParameters.render(engine);
   $('trainingTaskLabel').textContent=engine?`${engine.task_name||capabilities.tasks?.[engine.task]||engine.task} · ${engine.annotation||'依模型需求'}`:'尚未選擇模型';
   const notice=$('trainingModelNotice');notice.hidden=!!engine?.train;if(!notice.hidden){$('trainingModelNoticeTitle').textContent=engine?.integration==='ready'?'此模型尚未準備完成':'此模型已納入開發待辦';$('trainingModelNoticeText').textContent=engine?.unavailable_reason||'完成必要元件與 Workbench adapter 後即可使用。'}
   const summary=$('trainingSummary');summary.replaceChildren();
-  const deviceName={auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇';
+  const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
   for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
-  $('startTraining').disabled=!dataset||!engine?.train||!!active;
+  $('startTraining').disabled=!dataset||!engine?.train||!engine?.parameters?.length||!!active;
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
   trainingMonitor.render();
@@ -1455,10 +1458,8 @@ function renderTraining(){
 async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{});await loadTraining();$('trainingDataset').value=created.id;renderTraining();toast(`已建立固定訓練資料 ${created.id}。`)}
 async function startTrainingRun(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
-  const epochs=Number($('trainingEpochs').value),seed=Number($('trainingSeed').value);
-  if(!Number.isInteger(epochs)||epochs<1||epochs>200)throw Error('調整輪數必須是 1–200 的整數。');
-  if(!Number.isInteger(seed)||seed<0)throw Error('隨機種子必須是非負整數。');
-  const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,epochs,seed,device:$('trainingDevice').value}});
+  const config=trainingParameters.collect();
+  const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...config}});
   state.selectedRun=run.run_id;trainingMonitor.mode='single';await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
 }
 async function stopTrainingRun(){const run=activeTrainingRun();if(!run)return;await api(projectPath(`/training-runs/${run.run_id}/stop`),'POST',{});await loadTraining();toast(`${run.run_id} 正在安全停止。`)}

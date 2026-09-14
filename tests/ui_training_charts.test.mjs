@@ -1,11 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finiteMetric, normalizedMetricRows, metricDescriptors, defaultMetricKeys,
-  runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch} from '../web/training-charts.mjs';
+  runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
 
 const run = (id, options = {}) => ({run_id: id, engine: 'maskrcnn_resnet50_fpn',
   dataset_version_id: 'D001', config: {epochs: 10, image_size: 640}, ...options});
 const reportsFor = (...entries) => new Map(entries.map(([item, metrics]) => [item.run_id, {run: item, metrics}]));
+
+test('small model thresholds remain nonzero in chart and Epoch value labels', () => {
+  assert.equal(formatMetric(1e-8), '1.000e-8');
+  assert.equal(formatMetric(2e-5), '2.000e-5');
+  assert.equal(formatMetric(0), '0.0000');
+  assert.equal(formatMetric(null), '—');
+});
 
 test('metric values reject coercion of missing, boolean and string input', () => {
   for (const value of [null, undefined, false, true, '', '0', [], {}, Infinity, NaN]) assert.equal(finiteMetric(value), false);
@@ -84,6 +91,12 @@ test('stable appearance allocation keeps a Run color and line style when another
   assert.deepEqual(runAppearance(run('R3', {appearanceIndex: Infinity}), 1), runAppearance(second, 0));
 });
 
+test('comparison appearance supports more than six saved models without undefined or repeated palette slots', () => {
+  const appearances=Array.from({length:12},(_,index)=>runAppearance(run(`R${index}`,{appearanceIndex:index}),0));
+  assert.equal(new Set(appearances.map(item=>item.color)).size,12);
+  assert.ok(appearances.every(item=>typeof item.color==='string'&&typeof item.dash==='string'));
+});
+
 test('loss limits only expand to fit new outliers and never follow falling losses', () => {
   const item = run('R1'), domains = new Map();
   const create = value => buildChartModel({runs: [item], domains,
@@ -103,6 +116,25 @@ test('domain cache is separate between comparison selections and between metrics
   assert.ok(buildChartModel({runs: [first, second], reports, domains}, 'train/loss').yMax >= 20);
   assert.equal(buildChartModel({runs: [first], reports, domains}, 'train/loss').yMax, 1);
   assert.equal(buildChartModel({runs: [first], reports, domains}, 'val/mean_iou').yMax, 1);
+});
+
+test('unchecked model candidates preserve comparison coordinates without blocking checked compatible Runs', () => {
+  const first = run('R1', {appearanceIndex: 0}), second = run('R2', {appearanceIndex: 1});
+  const other = run('R3', {engine: 'deeplabv3_resnet50', config: {epochs: 30, image_size: 640}, appearanceIndex: 2});
+  const domainRuns = [first, second, other], domains = new Map();
+  const reports = reportsFor([first, [{epoch: 1, 'train/loss': .4, 'val/mean_iou': .8}]],
+    [second, [{epoch: 1, 'train/loss': 1.7, 'val/mean_iou': .7}]],
+    [other, [{epoch: 1, 'train/loss': 3.4, 'val/mean_iou': .9}]]);
+  const checked = buildChartModel({runs: [first, second], domainRuns, reports, domains, comparison: true}, 'train/loss');
+  const unchecked = buildChartModel({runs: [first], domainRuns, reports, domains, comparison: true}, 'train/loss');
+  assert.equal(checked.incompatible, false);
+  assert.equal(unchecked.incompatible, false);
+  assert.equal(checked.xMax, 30); assert.equal(checked.xMax, unchecked.xMax);
+  assert.equal(checked.yMax, unchecked.yMax);
+  assert.deepEqual(unchecked.series.map(series => series.run.run_id), ['R1']);
+  assert.equal(checked.series[0].color, unchecked.series[0].color);
+  assert.equal(buildChartModel({runs: [first, second], domainRuns, reports, domains, comparison: true}, 'val/mean_iou').incompatible, false);
+  assert.equal(buildChartModel({runs: [first, other], domainRuns, reports, domains, comparison: true}, 'val/mean_iou').incompatible, true);
 });
 
 test('missing Epochs split line segments and exact Epoch comparison never substitutes neighboring values', () => {

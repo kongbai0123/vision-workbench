@@ -26,14 +26,17 @@
 .training-comparison-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .training-comparison-card p {margin:8px 0;overflow-wrap:anywhere}
 .training-comparison-card small {color:var(--muted)}
-.training-run-toggle {display:inline-flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--text);padding:4px 0;text-align:left;font:inherit;cursor:pointer}
-.training-run-toggle i {width:26px;border-top:3px solid;flex-shrink:0}
-.curve-hidden .training-run-toggle i {opacity:.3}
-.curve-hidden .training-run-toggle span {color:var(--muted)}
 .training-comparison-score {font-size:12px;color:#d0e5e5}
-.training-metric-options {display:flex;align-items:center;gap:10px 18px;flex-wrap:wrap;margin:20px 0 14px;font-size:12px}
-.training-metric-options label {display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer}
-.training-metric-options input {width:15px;height:15px;accent-color:var(--accent);margin:0}
+.training-model-picker {min-width:0;margin:0 0 20px;padding:14px 16px 16px;border:1px solid var(--line);border-radius:6px}
+.training-model-picker legend {padding:0 6px;font-weight:700;font-size:14px}
+.training-model-picker > p {font-size:12px;margin:2px 0 14px}
+.training-model-choices {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(270px,100%),1fr));gap:10px}
+.training-model-choice {display:flex;align-items:center;gap:10px;min-width:0;margin:0;padding:12px;border:1px solid var(--line);border-radius:5px;background:#101c24;cursor:pointer;font-size:12px}
+.training-model-choice:has(input:checked) {border-color:#438d82;background:#15302f}
+.training-model-choice input {width:17px;height:17px;min-width:17px;margin:0;accent-color:var(--accent)}
+.training-model-choice i {width:22px;border-top:3px solid;flex-shrink:0}
+.training-model-choice > span {display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.training-model-choice > span > span {color:var(--muted)}
 .training-chart-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .training-chart-card {min-width:0;padding:14px 14px 10px;border:1px solid #304955;border-radius:6px;background:#101c24}
 .training-chart-heading {display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;min-height:40px;margin-bottom:8px}
@@ -49,18 +52,26 @@
 .training-monitor-details {border-top:1px solid var(--line);margin-top:20px;padding-top:12px}
 .training-monitor-details summary {cursor:pointer;font-size:12px;padding:5px 0;color:#c3d6df}
 .training-monitor-details h3 {font-size:14px;margin-top:18px}
+.training-detail-columns {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:20px}
+.training-detail-columns > .training-monitor-details {min-width:0}
 .training-table-wrap {max-width:100%;overflow:auto;margin-top:12px}
 .training-table-wrap table {width:100%;border-collapse:collapse;font:12px/1.5 Consolas,'Microsoft JhengHei',monospace}
 .training-table-wrap th,.training-table-wrap td {padding:9px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
 .training-table-wrap th:first-child,.training-table-wrap td:first-child {text-align:left}
-.training-config-json {background:#101c24;border-radius:5px;padding:12px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.training-epoch-scroll {max-height:407px;scrollbar-gutter:stable}
+.training-epoch-scroll th,.training-epoch-scroll td {box-sizing:border-box;height:37px;padding:8px 10px;line-height:20px}
+.training-epoch-scroll thead {position:sticky;top:0;z-index:1;background:#172a34;box-shadow:0 1px 0 var(--line)}
+.training-parameter-list {display:grid;grid-template-columns:minmax(110px,.8fr) minmax(0,1.2fr);gap:0;margin:14px 0;font-size:12px}
+.training-parameter-list dt,.training-parameter-list dd {min-width:0;margin:0;padding:10px 8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.training-parameter-list dt {color:var(--muted)}
+.training-parameter-list dd {font-family:Consolas,'Microsoft JhengHei',monospace;color:var(--text)}
 .training-history-dialog {inset:0 0 0 auto;margin:0;width:min(620px,100vw);max-width:100vw;height:100%;max-height:100vh;padding:24px;border:0;border-left:1px solid #42606b;border-radius:0;background:#15232d;color:var(--text);box-shadow:-18px 0 60px #0008}
 .training-history-dialog[open] {display:flex;flex-direction:column}
 .training-history-dialog::backdrop {background:#040a10aa}
 .training-history-heading {display:flex;justify-content:space-between;gap:16px;align-items:center}
 .training-history-heading h2 {font-size:20px;margin:5px 0 10px}
 .training-history-dialog .run-list {overflow:auto;min-height:0;margin-top:8px}
-.training-history-row {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center}
+.training-history-row {display:grid;grid-template-columns:minmax(0,1fr);gap:7px;align-items:center}
 .training-history-row .run-row-top {flex-wrap:wrap;gap:6px}
 .training-history-row .run-row {min-width:0;overflow-wrap:anywhere}
 .training-history-row > .secondary {font-size:12px;padding:9px}
@@ -71,7 +82,7 @@
   .training-action-panel .field-note {min-height:0}
 }
 @media(max-width:760px){
-  .training-chart-grid,.training-comparison-list {grid-template-columns:1fr}
+  .training-chart-grid,.training-comparison-list,.training-detail-columns {grid-template-columns:1fr}
   .training-layout > .training-action-panel {display:flex}
   .training-action-panel #startTraining,.training-action-panel #stopTraining {margin-top:16px}
   .training-config-panel .training-details {margin-top:0}

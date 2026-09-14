@@ -69,10 +69,14 @@ class TrainingWorkflowTests(unittest.TestCase):
 
     def test_real_train_evaluate_predict_accept_roundtrip(self):
         dataset = self.workspace.create_dataset_version(self.pid)
-        run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 6})
+        run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 6,
+                                                                "threshold_min": .5, "threshold_max": 2.5})
         finished = self.wait_run(run["run_id"])
         self.assertEqual(finished["status"], "completed", finished)
         self.assertGreaterEqual(finished["evaluation"]["test"]["mean_iou"], .95)
+        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        self.assertEqual(metrics[0]["threshold"], .5)
+        self.assertEqual(metrics[-1]["threshold"], 2.5)
         model_id = finished["model_version_id"]
         model = self.workspace.model(self.pid, model_id)
         self.assertEqual(model["dataset_version_id"], "D001")
@@ -102,6 +106,17 @@ class TrainingWorkflowTests(unittest.TestCase):
         saved = self.store.get_asset(self.pid, aid)
         self.assertEqual(saved["review_state"], "pending")
         self.assertEqual(saved["shapes"][0]["metadata"]["model_version_id"], model_id)
+
+    def test_small_thresholds_keep_their_precision_in_metrics_and_model(self):
+        dataset = self.workspace.create_dataset_version(self.pid)
+        run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 2,
+                                                                "threshold_min": 1e-8, "threshold_max": 1e-7})
+        finished = self.wait_run(run["run_id"])
+        self.assertEqual(finished["status"], "completed", finished)
+        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        self.assertEqual([row["threshold"] for row in metrics], [1e-8, 1e-7])
+        model = self.workspace.model(self.pid, finished["model_version_id"])
+        self.assertTrue(all(1e-8 <= value <= 1e-7 for value in model["thresholds"].values()))
 
     def test_readiness_blocks_unreviewed_and_source_group_leakage(self):
         project = self.store.create_project("資料檢查")

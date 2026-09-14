@@ -45,7 +45,7 @@ def main():
         for engine in ENGINES:
             if not available.get(engine): raise RuntimeError(f"{engine} unavailable")
             run = workspace.start_run(project_id, dataset["id"], {"engine": engine, "epochs": 1,
-                "device": "auto", "image_size": 96, "batch_size": 2})
+                "device": "auto", "image_size": 128, "batch_size": 2})
             finished = wait(workspace, project_id, run["run_id"])
             if finished["status"] != "completed": raise RuntimeError(f"{engine}: {finished}")
             model = workspace.model(project_id, finished["model_version_id"])

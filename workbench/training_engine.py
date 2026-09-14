@@ -185,7 +185,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
                  "class_stats": {label: _stats(np.concatenate(rows)) for label, rows in samples.items()},
                  "thresholds": {label: 1.0 for label in classes}, "dataset_version_id": manifest["dataset_version_id"]}
         validation_split = "val" if any(a["split"] == "val" for a in manifest["assets"]) else "test"
-        candidates = np.linspace(.35, 4.0, epochs)
+        candidates = np.linspace(float(run["config"].get("threshold_min", .35)),
+                                 float(run["config"].get("threshold_max", 4.0)), epochs)
         metrics_path = run_dir / "metrics.jsonl"
         best = {label: (0.0, -1.0) for label in classes}
         metrics_path.write_text("", encoding="utf-8")
@@ -198,12 +199,12 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
             for label, value in evaluation["per_class_iou"].items():
                 if value > best[label][1]:
                     best[label] = (float(threshold), float(value))
-            row = {"epoch": epoch, "threshold": round(float(threshold), 6), "val/mean_iou": evaluation["mean_iou"]}
+            row = {"epoch": epoch, "threshold": float(threshold), "val/mean_iou": evaluation["mean_iou"]}
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"調整像素分類門檻 {epoch} / {epochs}", epoch=epoch,
                     progress=22 + round(epoch / epochs * 65), metrics=row)
-        model["thresholds"] = {label: round(best[label][0], 6) for label in classes}
+        model["thresholds"] = {label: float(best[label][0]) for label in classes}
         validation = _evaluate(manifest, dataset_dir, model, validation_split)
         test = _evaluate(manifest, dataset_dir, model, "test") if any(a["split"] == "test" for a in manifest["assets"]) else validation
         model.update(validation=validation, test=test, created_at=time.time(), model_version_id=run["model_version_id"],

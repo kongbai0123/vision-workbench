@@ -163,6 +163,11 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         device = "0" if requested == "cuda" else "cpu" if requested == "cpu" else None
         model.train(data=str(data_yaml), epochs=epochs, imgsz=int(run["config"].get("image_size", 640)),
                              batch=int(run["config"].get("batch_size", 1)), device=device, workers=0,
+                             lr0=float(run["config"].get("learning_rate", .0005)),
+                             weight_decay=float(run["config"].get("weight_decay", .0001)),
+                             optimizer=run["config"].get("optimizer", "AdamW"),
+                             **({"momentum": float(run["config"].get("momentum", .9))}
+                                if run["config"].get("optimizer") == "SGD" else {}),
                              project=str(run_dir / "ultralytics"), name="fit", exist_ok=True, pretrained=False,
                              plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)))
         if _stopping(run_dir):

@@ -24,6 +24,7 @@ from .model_registry import ModelRegistry
 from .torchvision_engines import DETECTION_ENGINES, SEMANTIC_ENGINES
 from .classification_engine import CLASSIFICATION_ENGINES
 from .ultralytics_engine import ULTRALYTICS_ENGINES
+from .training_parameters import parameter_schema, validate_config
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -119,7 +120,8 @@ class TrainingWorkspace:
         self.python = catalog["worker_python"]
         self._maskrcnn_available = bool(next((model["train"] for model in catalog["models"]
                                               if model["key"] == MASKRCNN_KEY), False))
-        return {"available": True, "worker_python": self.python, "engines": catalog["models"],
+        return {"available": True, "worker_python": self.python,
+                "engines": [{**model, "parameters": parameter_schema(model)} for model in catalog["models"]],
                 "components": catalog["components"], "tasks": catalog["tasks"],
                 "refreshed_at": catalog["refreshed_at"]}
 
@@ -256,6 +258,8 @@ class TrainingWorkspace:
         return self.models / project_id / _safe_id(model_id, "M") / "model.json"
 
     def start_run(self, project_id, dataset_id, config):
+        if not isinstance(config, dict):
+            raise ValueError("訓練參數必須是物件")
         dataset_id = _safe_id(dataset_id, "D")
         manifest = self.datasets / project_id / dataset_id / "manifest.json"
         if not manifest.is_file():
@@ -268,6 +272,7 @@ class TrainingWorkspace:
             raise ValueError("找不到所選訓練引擎")
         if not definition["train"]:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
+        effective_config = validate_config(definition, config)
         immutable = read_json(manifest)
         if engine in CLASSIFICATION_ENGINES:
             if len(immutable["classes"]) < 2:
@@ -290,9 +295,6 @@ class TrainingWorkspace:
                     polygons, diagnostics = shape_polygons(shape, int(asset["width"]), int(asset["height"]), tolerance=0)
                     if diagnostics.get("holes_omitted") or len(polygons) != 1 or diagnostics.get("pixel_iou", 1) < .999:
                         raise ValueError(f"{asset['name']} 含有 YOLO Seg 無法無損表示的複合遮罩")
-        epochs = int(config.get("epochs", 24))
-        if not 1 <= epochs <= 200:
-            raise ValueError("訓練輪數必須為 1–200")
         project_runs = self.runs / project_id
         project_models = self.models / project_id
         project_runs.mkdir(parents=True, exist_ok=True)
@@ -303,17 +305,10 @@ class TrainingWorkspace:
             run_dir.mkdir()
             model_dir.mkdir()
             engine_name = definition["name"]
-            requested_device = str(config.get("device") or "auto")
-            if requested_device not in {"auto", "cpu", "cuda"}:
-                raise ValueError("訓練裝置必須是 auto、cpu 或 cuda")
-            default_image_size = 224 if definition["task"] == "image_classification" else 640
             run = {"schema_version": 1, "run_id": run_id, "project_id": project_id,
                    "dataset_version_id": dataset_id, "model_version_id": model_id,
                    "engine": engine, "engine_name": engine_name,
-                   "config": {"epochs": epochs, "device": requested_device, "seed": int(config.get("seed", 42)),
-                              "image_size": max(128, min(2048, int(config.get("image_size", default_image_size)))),
-                              "batch_size": max(1, min(16, int(config.get("batch_size", 1)))),
-                              "learning_rate": float(config.get("learning_rate", 0.0005))},
+                   "config": effective_config,
                    "status": "queued", "message": "等待訓練程序", "progress": 0,
                    "created_at": time.time(), "updated_at": time.time()}
             atomic_json(run_dir / "run.json", run)

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0 — 2026-09-14
+
+- Replaced per-metric checkboxes with a single completed-model comparison picker. Selecting model versions controls every chart, summary, Epoch row, and evaluation panel together; recorded metrics render automatically.
+- Added model-specific training parameters for image size, batch size, learning rate, weight decay, and optimizer, plus meaningful threshold limits for the deterministic CPU baseline.
+- Validated parameters before Run creation and forwarded the effective values to each adapter; changing models or refreshing preserves parameter drafts.
+- Honored classification image sizes above 512 and supported singleton DeepLab batches without dropping training images.
+- Placed class evaluation and readable execution settings side by side on desktop, with stacked panels on smaller windows.
+- Limited the Epoch list to ten visible data rows with a sticky header and scrolling; polling preserves the current scroll position.
+
 ## 2.4.0 — 2026-09-14
 
 - Aligned the dataset, training configuration, and execution panels with matching heights and responsive field layouts.

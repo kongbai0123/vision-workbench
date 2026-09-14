@@ -53,10 +53,10 @@ def seed_reports(service, folder):
     assert snapshot["splits"] == {"train": 2, "val": 2, "test": 2}, snapshot
     saved = {}
     base = time.time() - 100
-    for number in (1, 2, 3):
+    for number in (1, 2, 3, 4):
         run_id = f"R{number:03d}"
         classification = number == 3
-        count = 7 if number == 2 else 10
+        count = 12 if number == 4 else 7 if number == 2 else 10
         rows = []
         for epoch in range(1, count + 1):
             row = {"epoch": epoch, "train/loss": round(1.7 / epoch + number * .01, 4)}
@@ -77,20 +77,33 @@ def seed_reports(service, folder):
                "dataset_version_id": snapshot["id"], "model_version_id": f"M{number:03d}",
                "engine": "resnet18_classification" if classification else "maskrcnn_resnet50_fpn",
                "engine_name": "ResNet18 · 分類" if classification else "Mask R-CNN · ResNet50 FPN",
-               "config": {"epochs": 10, "device": "auto", "seed": 42 + number,
+               "config": {"epochs": 20 if number == 4 else 10, "device": "auto", "seed": 42 + number,
                           "image_size": 224 if classification else 640, "batch_size": 1,
                           "learning_rate": .0005}, "device": "cpu", "status": "completed",
                "message": "訓練與評估完成", "epoch": count, "progress": 100,
-               "created_at": base + (0 if classification else number),
+               "created_at": base + (-10 if number == 4 else 0 if classification else number),
                "updated_at": base + 20, "completed_at": base + 20,
                "metrics": rows[-1], "evaluation": {
                    "validation": {"split": "val", "images": 2, **score},
                    "test": {"split": "test", "images": 2, **score}}}
+        if number == 4:
+            run.update(status="stopped", progress=60, message="Epoch 12 / 20")
+            run.pop("evaluation")
+            run.pop("completed_at")
         path = service.training._run_path(pid, run_id)
         path.parent.mkdir(parents=True)
         atomic_json(path, run)
         (path.parent / "metrics.jsonl").write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+        if number < 4:
+            model = service.training._model_path(pid, run["model_version_id"])
+            model.parent.mkdir(parents=True)
+            atomic_json(model, {"schema_version": 1, "model_version_id": run["model_version_id"],
+                               "run_id": run_id, "project_id": pid, "dataset_version_id": snapshot["id"],
+                               "engine": run["engine"], "engine_name": run["engine_name"],
+                               "task": "image_classification" if classification else "instance_segmentation",
+                               "created_at": base + number, "classes": snapshot["classes"],
+                               "evaluation": run["evaluation"]})
         saved[run_id] = (path, run, rows)
     return pid, saved
 
@@ -107,7 +120,7 @@ def main():
         view = QWebEngineView()
         page = Page(view)
         view.setPage(page)
-        view.resize(1440, 1000)
+        view.resize(1440, 1300)
         view.show()
         view.setUrl(QUrl(service.url))
         page.setVisible(True)
@@ -134,9 +147,27 @@ def main():
             wait(f"(()=>{{const e=document.querySelector({encoded});return e&&!e.disabled}})()")
             js(f"document.querySelector({encoded}).click()")
 
-        def capture(name, monitor=False):
-            if monitor:
-                js("document.querySelector('#trainingRunDetail').scrollIntoView({block:'start'})")
+        def fill(selector, value):
+            js(f"(()=>{{const e=document.querySelector({json.dumps(selector)});e.value={json.dumps(str(value))};e.dispatchEvent(new Event('input',{{bubbles:true}}));e.dispatchEvent(new Event('change',{{bubbles:true}}));}})()")
+
+        def structured(script):
+            return json.loads(js(f"JSON.stringify({script})"))
+
+        def set_model(run_id, checked):
+            selector = f'#trainingModelPicker input[data-model-run="{run_id}"]'
+            if js(f"document.querySelector({json.dumps(selector)}).checked") != checked:
+                click(selector)
+
+        def plotted_metrics():
+            return structured("[...document.querySelectorAll('#trainingPlots [data-metric-key]')].map(e=>e.dataset.metricKey)")
+
+        def epoch_stats():
+            return structured("(()=>{const e=document.querySelector('.training-epoch-scroll'),t=e.querySelector('table'), rows=[...t.tBodies[0].rows];return {height:e.clientHeight,total:e.scrollHeight,scroll:e.scrollTop,rows:rows.length,rowHeight:rows[0]?.getBoundingClientRect().height||0,header:t.tHead.getBoundingClientRect().height,headerTop:t.tHead.getBoundingClientRect().top,viewportTop:e.getBoundingClientRect().top,sticky:getComputedStyle(t.tHead).position==='sticky'||[...t.tHead.querySelectorAll('th')].every(h=>getComputedStyle(h).position==='sticky')}})()")
+
+        def capture(name, monitor=False, target=None):
+            target = target or ("#trainingRunDetail" if monitor else None)
+            if target:
+                js(f"document.querySelector({json.dumps(target)}).scrollIntoView({{block:'start'}})")
             # Offscreen Chromium can retain a compositor frame after a dialog closes.
             # A resize invalidates the surface so the PNG represents the verified DOM.
             width, height = view.width(), view.height()
@@ -174,7 +205,27 @@ def main():
             click("[data-stage=train]")
             wait("document.querySelectorAll('#trainingPlots svg').length===2")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
+            # Parameter forms expose the selected engine's actual supported schema.
+            fill("#trainingEngine", "maskrcnn_resnet50_fpn")
+            wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
+            values = {"image_size": "256", "batch_size": "2", "learning_rate": "0.003",
+                      "weight_decay": "0.0002", "optimizer": "SGD"}
+            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == sorted(values)
+            for key, value in values.items():
+                fill(f'#trainingAdvancedFields [data-training-param="{key}"]', value)
+            fill("#trainingEngine", "pixel_prototype_v1")
+            wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=threshold_min]')")
+            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == ["threshold_max", "threshold_min"]
+            assert js("document.querySelector('#trainingSeed').getClientRects().length===0&&document.querySelector('#trainingDevice').getClientRects().length===0")
+            fill('#trainingAdvancedFields [data-training-param="threshold_min"]', "1")
+            fill('#trainingAdvancedFields [data-training-param="threshold_max"]', "2")
+            fill("#trainingEngine", "maskrcnn_resnet50_fpn")
+            wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
+            for key, value in values.items():
+                assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
             capture("20-training-aligned-setup")
+            view.resize(1440, 1000)
+            QTest.qWait(180)
             boxes = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>{const r=e.getBoundingClientRect();return [r.top,r.height,r.bottom]}))"))
             assert len(boxes) == 3, boxes
             for coordinate in (0, 1, 2):
@@ -183,18 +234,25 @@ def main():
             QTest.qWait(80)
             expanded = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>e.getBoundingClientRect().height))"))
             assert max(expanded) - min(expanded) < 2, expanded
+            path, run, rows = saved["R004"]
+            run.update(status="running", updated_at=time.time())
+            atomic_json(path, run)
+            click("#refreshTraining")
+            wait("!document.querySelector('#backgroundTraining').hidden")
+            assert js("document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]').value") == "0.003"
 
-            # Available metrics are collected values, not every metric in the model catalog.
-            options = js("document.querySelector('#trainingMetricOptions').innerText")
-            assert "IoU" in options and "Loss" in options, options
-            assert "mAP" not in options and "Accuracy" not in options, options
-            history()
-            click('[data-compare-run="R001"]')
-            click('[data-compare-run="R002"]')
-            if js("document.querySelector('#trainingHistoryDialog').open"):
-                click("#closeTrainingHistory")
+            # Completed models are chosen in the monitor; every recorded metric appears.
+            assert not js("!!document.querySelector('#trainingMetricOptions')")
+            assert set(plotted_metrics()) == {"train/loss", "val/mean_iou"}
             click("#trainingViewCompare")
-            wait("document.querySelectorAll('#trainingRunDetail [data-toggle-run]').length===2")
+            wait("document.querySelectorAll('#trainingModelPicker input[type=checkbox]').length===3")
+            assert not js("!!document.querySelector('#trainingModelPicker [data-model-run=R004]')")
+            for model in ("M001", "M002", "M003"):
+                assert js(f"document.querySelector('#trainingModelPicker').innerText.includes('{model}')")
+            set_model("R001", True)
+            set_model("R002", True)
+            set_model("R003", False)
+            wait("document.querySelectorAll('.training-comparison-card').length===2")
             wait("new Set([...document.querySelectorAll('#trainingPlots circle[data-run-id]')].map(p=>p.dataset.runId)).size===2")
             assert js("document.querySelectorAll('#trainingPlots svg').length") == 2
             before = domains()
@@ -211,37 +269,74 @@ def main():
             assert "R001" in missing and "R002" in missing and "無資料" in missing, missing
             capture("21-training-overlay", monitor=True)
 
-            click('[data-toggle-run="R001"]')
+            set_model("R003", True)
+            wait("document.querySelectorAll('.training-comparison-card').length===3")
+            wait("document.querySelector('#trainingPlots').innerText.includes('無法疊圖')")
+            set_model("R003", False)
+            wait("document.querySelectorAll('.training-comparison-card').length===2")
+            wait("!!document.querySelector('#trainingPlots [data-metric-key=\"train/loss\"] circle[data-run-id=R001]')")
+            assert domains() == before, (before, domains())
+            assert not js("document.querySelector('#trainingPlots').innerText.includes('無法疊圖')")
+            set_model("R001", False)
             wait("!document.querySelector('#trainingPlots circle[data-run-id=R001]')")
             assert domains() == before, (before, domains())
             assert js("document.querySelectorAll('#trainingPlots circle[data-run-id=R002]').length") > 0
             assert js("document.querySelector('#trainingPlots circle[data-run-id=R002]').getAttribute('fill')") == colors["R002"][0]
-            click('[data-toggle-run="R002"]')
+            set_model("R002", False)
             wait("!document.querySelector('#trainingPlots circle[data-run-id]')")
-            assert domains() == before, (before, domains())
-            click('[data-toggle-run="R001"]')
-            click('[data-toggle-run="R002"]')
+            QTest.qWait(1200)
+            assert not js("!!document.querySelector('#trainingModelPicker input:checked')")
+            set_model("R001", True)
+            set_model("R002", True)
             wait("new Set([...document.querySelectorAll('#trainingPlots circle[data-run-id]')].map(p=>p.dataset.runId)).size===2")
+            assert domains() == before, (before, domains())
 
-            # Actual polling reads a newly appended Epoch while retaining comparison state.
-            path, run, rows = saved["R002"]
-            run.update(status="running", progress=70, message="Epoch 7 / 10", updated_at=time.time())
-            atomic_json(path, run)
-            click("#refreshTraining")
+            click('details[data-detail-key="epochs"] > summary')
+            wait("document.querySelector('.training-epoch-scroll')?.clientHeight>0")
+            stats = epoch_stats()
+            assert stats["rows"] == 17 and stats["total"] > stats["height"], stats
+            assert stats["height"] <= stats["header"] + stats["rowHeight"] * 10 + 2, stats
+            assert stats["sticky"], stats
+            js("document.querySelector('.training-epoch-scroll').scrollTop=120")
+            QTest.qWait(1300)
+            assert abs(epoch_stats()["scroll"] - 120) <= 2, epoch_stats()
+            assert abs(epoch_stats()["headerTop"] - epoch_stats()["viewportTop"]) <= 2, epoch_stats()
+            for key in ("evaluation", "config"):
+                click(f'details[data-detail-key="{key}"] > summary')
+            detail_boxes = structured("[...document.querySelectorAll('.training-detail-columns > details')].map(e=>{const r=e.getBoundingClientRect();return {top:r.top,left:r.left,width:r.width}})")
+            assert len(detail_boxes) == 2 and abs(detail_boxes[0]["top"] - detail_boxes[1]["top"]) < 2, detail_boxes
+            assert detail_boxes[1]["left"] >= detail_boxes[0]["left"] + detail_boxes[0]["width"], detail_boxes
+            capture("24-training-epoch-details", target='details[data-detail-key="epochs"]')
+
+            # Actual polling reads a newly appended Epoch while retaining table scroll.
+            history()
+            click('[data-select-run="R004"]')
             wait("document.querySelector('#trainingRunDetail').innerText.includes('訓練中')")
-            new_row = {"epoch": 8, "train/loss": .1714, "val/mean_iou": .9012}
+            wait("document.querySelector('.training-epoch-scroll tbody')?.rows.length===12")
+            js("document.querySelector('.training-epoch-scroll').scrollTop=65")
+            path, run, rows = saved["R004"]
+            live_domains = domains()
+            new_row = {"epoch": 13, "train/loss": .1714, "val/mean_iou": .9012}
             with (path.parent / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(new_row) + "\n")
-            run.update(epoch=8, metrics=new_row, progress=80, updated_at=time.time())
+            run.update(epoch=13, metrics=new_row, progress=65, updated_at=time.time())
             atomic_json(path, run)
-            wait(chart_script("val/mean_iou", ".querySelectorAll('circle[data-run-id=R002]').length===6"))
-            assert "0.9012" in hover_epoch("val/mean_iou", 8)
-            assert domains() == before, (before, domains())
-            wait("[...document.querySelectorAll('.training-comparison-card')].some(e=>e.innerText.includes('R002')&&e.innerText.includes('Epoch 8 / 10'))")
+            wait(chart_script("val/mean_iou", ".querySelectorAll('circle[data-run-id=R004]').length===13"))
+            assert "0.9012" in hover_epoch("val/mean_iou", 13)
+            assert domains() == live_domains, (live_domains, domains())
+            assert abs(epoch_stats()["scroll"] - 65) <= 2, epoch_stats()
             run.update(status="completed", progress=100, message="訓練與評估完成", updated_at=time.time())
             atomic_json(path, run)
             click("#refreshTraining")
             wait("!document.querySelector('#trainingRunDetail').innerText.includes('訓練中')")
+            history()
+            click('[data-select-run="R002"]')
+            wait("document.querySelector('.training-epoch-scroll tbody')?.rows.length===7")
+            stats = epoch_stats()
+            assert stats["total"] <= stats["height"] + 2, stats
+            assert stats["height"] < stats["header"] + stats["rowHeight"] * 8, stats
+            click("#trainingViewCompare")
+            wait("document.querySelectorAll('.training-comparison-card').length===2")
 
             for width in (1440, 1024, 760):
                 view.resize(width, 1000)
@@ -250,21 +345,18 @@ def main():
 
             # Selecting another history item exposes only that task's available measurements.
             history()
+            assert not js("!!document.querySelector('[data-compare-run]')")
             click('[data-select-run="R003"]')
             wait("!document.querySelector('#trainingHistoryDialog').open")
-            wait("document.querySelector('#trainingMetricOptions').innerText.includes('Accuracy')")
-            options = js("document.querySelector('#trainingMetricOptions').innerText")
-            assert "F1" in options and "Recall" in options and "IoU" not in options, options
+            wait("document.querySelectorAll('#trainingPlots svg').length===4")
+            assert set(plotted_metrics()) == {"train/loss", "val/accuracy", "val/macro_f1", "val/macro_recall"}
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R003')")
-            click('#trainingMetricOptions input[data-metric-key="val/macro_f1"]')
-            wait("document.querySelectorAll('#trainingPlots svg').length===3")
             assert js(chart_script("val/macro_f1", ".querySelectorAll('circle[data-run-id=R003]').length")) == 10
-            click('#trainingMetricOptions input[data-metric-key="train/loss"]')
-            wait("document.querySelectorAll('#trainingPlots svg').length===2")
-            assert not js("!!document.querySelector('#trainingPlots [data-metric-key=\"train/loss\"]')")
+            assert not js("!!document.querySelector('#trainingMetricOptions')")
             assert not page.errors, page.errors
             view.resize(1440, 1000)
-            capture("23-training-classification-metrics", monitor=True)
+            QTest.qWait(180)
+            capture("23-training-classification-metrics", target="#trainingPlots")
             print("DESKTOP_TRAINING_OK", json.dumps({"project": pid, "checks": steps}, ensure_ascii=False))
         finally:
             view.close()

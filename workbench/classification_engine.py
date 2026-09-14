@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from .training_engine import atomic_json, load_rgb, read_json, _status, _stopping
+from .training_parameters import create_optimizer
 
 
 CLASSIFICATION_ENGINES = {
@@ -130,7 +131,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         if requested == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("已指定 CUDA，但目前環境無法使用 CUDA")
         device = torch.device("cuda" if requested == "cuda" or (requested == "auto" and torch.cuda.is_available()) else "cpu")
-        image_size = max(128, min(512, int(run["config"].get("image_size", 224))))
+        image_size = int(run["config"].get("image_size", 224))
         model, _ = _model(run["engine"], len(manifest["classes"])); model.to(device)
         training = ClassificationDataset(manifest, dataset_manifest.parent, "train", torch, image_size)
         validation_split = "val" if any(asset["split"] == "val" for asset in manifest["assets"]) else "test"
@@ -144,8 +145,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             raise RuntimeError(f"Train 缺少分類樣本：{'、'.join(missing)}")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))),
                             shuffle=True, num_workers=0)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=float(run["config"].get("learning_rate", .0005)),
-                                      weight_decay=.0001)
+        optimizer = create_optimizer(torch, model.parameters(), run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"載入 {CLASSIFICATION_ENGINES[run['engine']]} · {device}", progress=3)
