@@ -355,6 +355,8 @@ class AcquisitionTests(unittest.TestCase):
             writer.write(np.full((32, 48, 3), index * 5, np.uint8))
         writer.release()
         output = a.extract_video(video, self.root, interval_seconds=.7)
+        from hashlib import sha256
+        self.assertEqual({item["source"]["video_sha256"] for item in output}, {sha256(video.read_bytes()).hexdigest()})
         self.assertEqual([item["source"]["frame_index"] for item in output], [0, 7, 14, 21])
         event = threading.Event()
         event.set()

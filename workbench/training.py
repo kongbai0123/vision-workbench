@@ -226,7 +226,8 @@ class TrainingWorkspace:
                             "project_name": project["name"], "project_revision": project["revision"],
                             "created_at": timestamp(), "classes": list(project["classes"]),
                             "class_mapping": [{"class_id": index, "name": name} for index, name in enumerate(project["classes"])],
-                            "readiness": report, "assets": records}
+                            "readiness": report, "assets": records,
+                            "split_plan": project.get("split_plan")}
                 manifest["manifest_sha256"] = _canonical_hash(manifest)
                 atomic_json(temporary / "manifest.json", manifest)
                 temporary.replace(target)
@@ -274,6 +275,8 @@ class TrainingWorkspace:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         effective_config = validate_config(definition, config)
         immutable = read_json(manifest)
+        if effective_config.get("scheduler") == "plateau" and not any(a["split"] == "val" for a in immutable.get("assets", [])):
+            raise ValueError("Validation 停滯下降需要獨立 Validation 集合，不能使用 Test 調整學習率")
         if engine in CLASSIFICATION_ENGINES:
             if len(immutable["classes"]) < 2:
                 raise ValueError("影像分類至少需要兩個類別")

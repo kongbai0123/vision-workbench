@@ -234,6 +234,11 @@ class ProjectStore:
         with self.connection(project_id) as db:
             project = dict(db.execute("SELECT * FROM project").fetchone())
             project["classes"] = json.loads(project["classes"])
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='split_plans'").fetchone():
+                plan = db.execute("SELECT data FROM split_plans WHERE id=1").fetchone()
+                if plan:
+                    project["split_plan"] = json.loads(plan["data"])
+                    project["split_plan"]["current"] = project["split_plan"]["project_revision"] == project["revision"]
             stats = {"total": 0, "pending": 0, "approved": 0, "rejected": 0}
             for row in db.execute("SELECT review_state,COUNT(*) AS n FROM assets GROUP BY review_state"):
                 stats[row["review_state"]] = row["n"]
@@ -615,6 +620,49 @@ class ProjectStore:
                               "review_state":row["review_state"],"batch_id":batch,"split":group})
             self._touch(db)
         return self.get_project(project_id)
+
+    def split_info(self, project_id):
+        from .smart_splitting import source_groups
+        project = self.snapshot(project_id)
+        assets = [a for a in project["assets"] if a["review_state"] == "approved"]
+        ids = {a["id"] for a in assets}
+        overrides = {k:v for k,v in project.get("split_plan",{}).get("options",{}).get("group_overrides",{}).items() if k in ids}
+        return {"project_revision":project["revision"], "groups":source_groups(assets,overrides),
+                "assets":[{k:a[k] for k in ("id","name","batch_id","url")} for a in assets],
+                "previous":project.get("split_plan")}
+
+    def preview_split(self, project_id, options=None):
+        from .smart_splitting import smart_split
+        project = self.snapshot(project_id)
+        assets = [a for a in project["assets"] if a["review_state"] == "approved"]
+        plan = smart_split(assets, options)
+        plan["project_revision"] = project["revision"]
+        plan["fingerprint"] = hashlib.sha256(dump(plan).encode()).hexdigest()
+        plan["assets"] = [{k: a[k] for k in ("id", "name", "batch_id", "url")} for a in assets]
+        return plan
+
+    def apply_split(self, project_id, options, revision, fingerprint):
+        plan = self.preview_split(project_id, options)
+        if type(revision) is not int or revision != plan["project_revision"] or fingerprint != plan["fingerprint"]:
+            raise ConflictError("資料或分割設定已變動，請重新預覽")
+        with self.connection(project_id, write=True) as db:
+            current = db.execute("SELECT revision FROM project").fetchone()["revision"]
+            if current != revision:
+                raise ConflictError("預覽後資料已變動，請重新預覽")
+            for aid, split in plan["assignments"].items():
+                row = db.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+                if row["split"] == split: continue
+                next_revision = row["revision"] + 1
+                db.execute("UPDATE assets SET split=?,revision=?,updated_at=? WHERE id=?", (split,next_revision,timestamp(),aid))
+                self._history(db, aid, next_revision, "smart_split", {"shapes":json.loads(row["shapes"]),
+                    "review_state":row["review_state"], "batch_id":row["batch_id"], "split":split})
+            self._touch(db)
+            plan["project_revision"] = revision + 1
+            plan["applied_at"] = timestamp()
+            plan.pop("assets", None)
+            db.execute("CREATE TABLE IF NOT EXISTS split_plans(id INTEGER PRIMARY KEY,data TEXT NOT NULL)")
+            db.execute("INSERT OR REPLACE INTO split_plans VALUES(1,?)", (dump(plan),))
+        return {"project":self.get_project(project_id), "report":plan}
 
     def auto_split(self, project_id, ratios):
         from .splitting import stratified_split

@@ -211,7 +211,7 @@ export class TrainingMonitor {
   }
   renderConfig(runs,parent){
     const d=this.details('完整執行設定','config',parent);
-    const labels={epochs:'訓練輪數',device:'裝置設定',seed:'隨機種子',image_size:'輸入影像尺寸',batch_size:'批次大小',learning_rate:'學習率',engine:'訓練模型',weight_decay:'權重衰減',momentum:'動量',optimizer:'最佳化器',threshold_min:'門檻搜尋下限',threshold_max:'門檻搜尋上限',patience:'提前停止耐心輪數',workers:'資料載入程序數',pretrained:'使用預訓練權重'};
+    const labels={epochs:'訓練輪數',device:'裝置設定',seed:'隨機種子',image_size:'輸入影像尺寸',batch_size:'批次大小',learning_rate:'初始學習率',scheduler:'學習率策略',min_learning_rate:'最低學習率',warmup_epochs:'暖身輪數',lr_patience:'降率耐心輪數',lr_factor:'降率倍率',engine:'訓練模型',weight_decay:'權重衰減',momentum:'動量',optimizer:'最佳化器',threshold_min:'門檻搜尋下限',threshold_max:'門檻搜尋上限',patience:'提前停止耐心輪數',workers:'資料載入程序數',pretrained:'使用預訓練權重'};
     const entries=(value,path=[])=>{if(value&&typeof value==='object')return Object.entries(value).flatMap(([key,item])=>entries(item,[...path,key]));return [[path.map(key=>labels[key]||key).join(' / '),value===null?'未設定':typeof value==='boolean'?(value?'開啟':'關閉'):String(value??'—')]]};
     for(const run of runs){
       d.append(el('h3',`${run.model_version_id||'尚未產生模型'} · ${run.run_id}`));

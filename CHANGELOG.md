@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.0 — 2026-09-14
+
+- 新增智慧資料分割管理：來源批次／影片／相同圖片保持群組完整，兼顧類別分布與比例；支援預覽、手動群組、指定集合及保留 Test。
+- 審核及訓練頁提供永久入口，跨集合批次警示可直接開啟；以修訂檢查拒絕過期預覽，固定資料版本保留完整分割方案。
+- 影片取樣記錄來源影片 SHA-256，避免同一影片換路徑後被當成獨立來源。
+- 新增固定、Cosine、線性與暖身 LR 設定／預覽；TorchVision 支援依 Validation 停滯降率。Ultralytics 接原生排程，監控與 Epoch 明細顯示實際 LR。
+- TorchVision 保存 optimizer／scheduler 狀態；補強 Windows 並行讀取訓練 JSON 時的短暫檔案鎖重試。
+- 增加智慧分割與 LR 單元測試、桌面流程測試，以及四種 TorchVision 引擎的實際 CPU 排程驗證腳本。
+
 ## 2.5.0 — 2026-09-14
 
 - Replaced per-metric checkboxes with a single completed-model comparison picker. Selecting model versions controls every chart, summary, Epoch row, and evaluation panel together; recorded metrics render automatically.

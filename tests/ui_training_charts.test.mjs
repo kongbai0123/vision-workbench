@@ -192,3 +192,12 @@ test('Test fallback cannot be compared as the same split as Validation', () => {
   assert.match(buildChartModel({runs: [second], reports}, 'val/accuracy').label, /Test（訓練期間評估）/);
   assert.doesNotMatch(metricDescriptors([second], reports)[0].label, /Validation/);
 });
+
+test('actual LR plots use a useful small scale and keep it when hiding runs',()=>{
+  const a=run('R1',{config:{epochs:10,learning_rate:.001}}),b=run('R2',{config:{epochs:10,learning_rate:.002}});
+  const reports=reportsFor([a,[{epoch:1,'train/learning_rate':.001}]],[b,[{epoch:1,'train/learning_rate':.002}]]);
+  const domains=new Map(),options={runs:[a,b],reports,domains};
+  const full=buildChartModel(options,'train/learning_rate');assert.ok(full.yMax>=.002&&full.yMax<.01);
+  const hidden=buildChartModel({...options,visibleRunIds:new Set(['R1'])},'train/learning_rate');
+  assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
+});

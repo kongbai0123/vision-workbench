@@ -191,6 +191,14 @@ def main():
             # Build and run a real immutable training version from the same UI.
             click("[data-stage='train']")
             click("#prepareAutoSplit")
+            wait("document.querySelector('#smartSplitDialog').open")
+            # This fixture contains independent imported drawings, so use the
+            # explicit class-balanced option rather than splitting camera footage.
+            fill("#splitStrategy","class_balanced")
+            click("#previewSmartSplit")
+            wait("!document.querySelector('#applySmartSplit').disabled")
+            click("#applySmartSplit")
+            wait("!document.querySelector('#smartSplitDialog').open")
             wait("document.querySelector('#trainingReadiness').innerText.includes('檢查通過')")
             split_assets=service.store.snapshot(pid)['assets']
             changed_split=next(asset['split'] for asset in split_assets if asset['id']==changed_id)
@@ -235,7 +243,8 @@ def main():
             capture("06-model-and-prediction")
             if service.store.get_project(pid)['stats']['pending']:
                 click("[data-stage='review']");click("#reviewSelectAll");click("#reviewApprove")
-                wait("document.querySelector('#reviewStats').innerText.includes('4')")
+                wait("[...document.querySelectorAll('#reviewStats .stat-chip')].some(x=>x.querySelector('span').textContent==='已核准' && x.querySelector('b').textContent==='4')")
+                wait("!document.querySelector('#reviewApprove').disabled")
             assert service.store.get_project(pid)['stats']['approved']==4
             click("[data-stage='models']");click("#openExchange");click("#validateProject")
             wait("document.querySelector('#validationReport').innerText.includes('4')")

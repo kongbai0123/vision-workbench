@@ -452,6 +452,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
             if action == "auto-split":
                 return self.json(self.app.store.auto_split(pid,payload.get("ratios") or {"train":70,"val":20,"test":10}))
+            if action == "split-preview":
+                return self.json(self.app.store.preview_split(pid,payload.get("options")))
+            if action == "split-info":
+                return self.json(self.app.store.split_info(pid))
+            if action == "split-apply":
+                return self.json(self.app.store.apply_split(pid,payload.get("options"),payload.get("revision"),payload.get("fingerprint")))
             if action == "merge":
                 return self.json(self.app.jobs.submit("merge",lambda progress:self.app.store.merge(pid,payload.get("project_ids"))))
             if action in {"validate", "export"}:

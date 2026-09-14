@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 
 
 SPLIT_ORDER = ("train", "val", "test")
@@ -15,7 +16,7 @@ def _ratios(values):
         if len(items) != 3:
             raise ValueError("分割比例必須包含 train、val、test")
         raw = dict(zip(SPLIT_ORDER, map(float, items)))
-    if any(value < 0 for value in raw.values()) or sum(raw.values()) <= 0:
+    if any(not math.isfinite(value) or value < 0 for value in raw.values()) or sum(raw.values()) <= 0:
         raise ValueError("分割比例必須為非負數且總和大於 0")
     total = sum(raw.values())
     return {name: raw[name] / total for name in SPLIT_ORDER}

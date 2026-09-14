@@ -15,6 +15,7 @@ from composer_core.geometry import encode_rle
 from .maskrcnn_engine import NativeMaskDataset, _collate, _device
 from .training_engine import annotation_mask, atomic_json, load_rgb, read_json, _iou, _status, _stopping
 from .training_parameters import create_optimizer
+from .learning_rates import LearningRateSchedule
 
 
 DETECTION_ENGINES = {
@@ -181,9 +182,11 @@ def train_detection(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
         optimizer = create_optimizer(torch, [p for p in model.parameters() if p.requires_grad], run["config"])
+        scheduler = LearningRateSchedule(optimizer, run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8"); _status(run_dir, run, status="preparing", message=f"載入 {ENGINE_NAMES[run['engine']]} · {device}", progress=3)
         for epoch in range(1, epochs + 1):
+            rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
             for images, targets, _assets in loader:
                 if _stopping(run_dir): return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
@@ -194,10 +197,13 @@ def train_detection(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             score = _evaluate_detection(model, validation, device, torch)
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
                    "val/box_mean_iou": score["box_mean_iou"], "val/recall_50": score["recall_50"]}
+            row.update(rates)
+            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")))
+            atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle: handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{ENGINE_NAMES[run['engine']]} {epoch} / {epochs}", epoch=epoch,
                     progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device))
-        checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size}, checkpoint)
+        checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate_detection(model, validation, device, torch)
         test_result = _evaluate_detection(model, testing, device, torch) if testing.assets else validation_result
         record = _base_record(run, manifest, run["engine"], image_size, validation_result, test_result)
@@ -225,9 +231,11 @@ def train_semantic(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         if not training.assets or not validation.assets: raise RuntimeError("DeepLabV3 需要非空的 Train 與 Validation/Test 資料")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True, num_workers=0)
         optimizer = create_optimizer(torch, model.parameters(), run["config"])
+        scheduler = LearningRateSchedule(optimizer, run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8"); _status(run_dir, run, status="preparing", message=f"載入 {ENGINE_NAMES[run['engine']]} · {device}", progress=3)
         for epoch in range(1, epochs + 1):
+            rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
             for images, targets, _assets in loader:
                 if _stopping(run_dir): return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
@@ -238,10 +246,13 @@ def train_semantic(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             score = _evaluate_semantic(model, validation, device, torch)
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
                    "val/mean_iou": score["mean_iou"], "val/mean_dice": score["mean_dice"]}
+            row.update(rates)
+            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")))
+            atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle: handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{ENGINE_NAMES[run['engine']]} {epoch} / {epochs}", epoch=epoch,
                     progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device))
-        checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size}, checkpoint)
+        checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate_semantic(model, validation, device, torch)
         test_result = _evaluate_semantic(model, testing, device, torch) if testing.assets else validation_result
         record = _base_record(run, manifest, run["engine"], image_size, validation_result, test_result)

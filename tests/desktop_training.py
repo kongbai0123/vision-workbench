@@ -175,6 +175,8 @@ def main():
             QTest.qWait(80)
             view.resize(width, height)
             QTest.qWait(500)
+            view.grab()  # Request a compositor readback before the saved frame.
+            QTest.qWait(500)
             view.grab().save(str(output / f"{name}.png"))
             assert not js("document.documentElement.scrollWidth>innerWidth+2"), name
             steps.append(name)
@@ -205,12 +207,29 @@ def main():
             click("[data-stage=train]")
             wait("document.querySelectorAll('#trainingPlots svg').length===2")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
+            # The split manager stays accessible even when readiness is already true.
+            old_manifest = service.training.datasets / pid / "D001" / "manifest.json"
+            old_bytes = old_manifest.read_bytes()
+            click("#prepareAutoSplit")
+            wait("document.querySelectorAll('#smartSplitDialog tbody tr').length===6")
+            click("#previewSmartSplit")
+            wait("!document.querySelector('#applySmartSplitVersion').disabled")
+            capture("30-smart-split-preview")
+            fill("#smartSplitSeed",43)
+            assert js("document.querySelector('#applySmartSplit').disabled")
+            click("#previewSmartSplit")
+            wait("!document.querySelector('#applySmartSplitVersion').disabled")
+            click("#applySmartSplitVersion")
+            wait("!document.querySelector('#smartSplitDialog').open")
+            wait("document.querySelector('#trainingDataset').value==='D002'")
+            assert old_manifest.read_bytes() == old_bytes
+            assert service.store.get_project(pid)['split_plan']['current']
             # Parameter forms expose the selected engine's actual supported schema.
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             values = {"image_size": "256", "batch_size": "2", "learning_rate": "0.003",
                       "weight_decay": "0.0002", "optimizer": "SGD"}
-            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == sorted(values)
+            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == sorted([*values,"scheduler","min_learning_rate","warmup_epochs","lr_patience","lr_factor"])
             for key, value in values.items():
                 fill(f'#trainingAdvancedFields [data-training-param="{key}"]', value)
             fill("#trainingEngine", "pixel_prototype_v1")
@@ -223,6 +242,14 @@ def main():
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             for key, value in values.items():
                 assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
+            click("#trainingSchedule summary")
+            fill("#trainingParam-scheduler","plateau")
+            assert js("document.querySelector('#trainingParam-lr_patience').getClientRects().length>0")
+            assert js("document.querySelector('#trainingParam-warmup_epochs').getClientRects().length===0")
+            fill("#trainingParam-scheduler","cosine")
+            fill("#trainingParam-warmup_epochs","2")
+            capture("31-learning-rate-settings", target="#trainingSchedule")
+            click("#trainingSchedule summary")
             capture("20-training-aligned-setup")
             view.resize(1440, 1000)
             QTest.qWait(180)

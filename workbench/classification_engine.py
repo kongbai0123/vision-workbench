@@ -16,6 +16,7 @@ import numpy as np
 
 from .training_engine import atomic_json, load_rgb, read_json, _status, _stopping
 from .training_parameters import create_optimizer
+from .learning_rates import LearningRateSchedule
 
 
 CLASSIFICATION_ENGINES = {
@@ -146,10 +147,12 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))),
                             shuffle=True, num_workers=0)
         optimizer = create_optimizer(torch, model.parameters(), run["config"])
+        scheduler = LearningRateSchedule(optimizer, run["config"])
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"載入 {CLASSIFICATION_ENGINES[run['engine']]} · {device}", progress=3)
         for epoch in range(1, epochs + 1):
+            rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
             for images, targets, _assets in loader:
                 if _stopping(run_dir):
@@ -161,12 +164,15 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
                    "val/accuracy": score["accuracy"], "val/macro_f1": score["macro_f1"],
                    "val/macro_recall": score["macro_recall"]}
+            row.update(rates)
+            scheduler.finish_epoch(score["accuracy"])
+            atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{CLASSIFICATION_ENGINES[run['engine']]} {epoch} / {epochs}",
                     epoch=epoch, progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device))
         checkpoint = model_dir / "checkpoint.pt"
-        torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size}, checkpoint)
+        torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate(model, validation, device, torch)
         test_result = _evaluate(model, testing, device, torch) if testing.assets else validation_result
         record = {"schema_version": 1, "engine": run["engine"], "engine_name": CLASSIFICATION_ENGINES[run["engine"]],

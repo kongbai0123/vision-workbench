@@ -839,6 +839,13 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
     try:
         if not capture.isOpened():
             raise AcquisitionError(f"無法開啟影片：{path.name}")
+        from hashlib import sha256
+        video_hash = sha256()
+        with path.open("rb") as source_file:
+            while chunk := source_file.read(1024 * 1024):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise AcquisitionCancelled("影片取樣已取消")
+                video_hash.update(chunk)
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         if not math.isfinite(fps) or fps <= 0:
             raise AcquisitionError("影片沒有有效的影格率，無法可靠地依時間取樣。")
@@ -858,6 +865,7 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
                 _save_png(target, frame)
                 records.append({"path": str(target), "name": f"{path.stem}_{frame_index:09d}.png",
                                 "batch_id": batch_id, "source": {"kind": "video", "video": str(path),
+                                "video_sha256": video_hash.hexdigest(),
                                 "frame_index": frame_index, "timestamp_seconds": timestamp, "fps": fps}})
                 next_time = (math.floor(timestamp / interval + 1e-8) + 1) * interval
             frame_index += 1

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseParameter,parameterPayload} from '../web/training-parameters.mjs';
+import {parseParameter,parameterPayload,plannedRates} from '../web/training-parameters.mjs';
 
 test('parameter entry validates integer range and required Ultralytics image multiple',()=>{
   const field={key:'image_size',label:'影像尺寸',type:'integer',min:128,max:2048,step:32};
@@ -22,4 +22,17 @@ test('optimizer options reject unsupported choices',()=>{
   const field={label:'優化器',type:'select',options:[{value:'AdamW',label:'AdamW'},{value:'SGD',label:'SGD'}]};
   assert.equal(parseParameter(field,'SGD'),'SGD');
   assert.throws(()=>parseParameter(field,'auto'));
+});
+
+test('schedule preview shows warmup and final floor but does not invent plateau values',()=>{
+  const config={epochs:6,learning_rate:.01,min_learning_rate:.001,warmup_epochs:2,scheduler:'cosine'};
+  const rates=plannedRates(config);assert.deepEqual(rates.slice(0,2),[.005,.01]);assert.equal(rates.at(-1),.001);
+  assert.deepEqual(plannedRates({...config,scheduler:'plateau'}),[]);
+  assert.deepEqual(plannedRates({...config,scheduler:'fixed'}),Array(6).fill(.01));
+});
+test('hidden schedule controls do not leak into the submitted configuration',()=>{
+  const schema=[{key:'scheduler',label:'strategy',type:'select',options:[{value:'fixed'},{value:'cosine'}]},
+    {key:'warmup_epochs',label:'warmup',type:'integer',min:0,when:['cosine']}];
+  assert.deepEqual(parameterPayload(schema,{scheduler:'fixed',warmup_epochs:'invalid'}),{scheduler:'fixed'});
+  assert.throws(()=>parameterPayload(schema,{scheduler:'cosine',warmup_epochs:'invalid'}));
 });
