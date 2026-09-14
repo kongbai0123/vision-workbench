@@ -4,7 +4,9 @@ import {SaveQueue} from './save-queue.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
-  system:null,editorMode:'builtin',cvatPoll:null,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null};
+  system:null,editorMode:'builtin',cvatPoll:null,cvatElapsedTimer:null,cvatPollStartedAt:null,cvatPollBaseText:'',cvatPollBusy:false,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null,
+  splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
+  training:null,trainingTimer:null,selectedRun:null,selectedModel:null};
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已退回'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
 const formatDescriptions = {
@@ -46,6 +48,20 @@ function date(value) {
   if(!value)return '尚無紀錄';
   const parsed=new Date(typeof value==='number'&&value<1e12?value*1000:value);
   return Number.isNaN(parsed.getTime())?String(value):parsed.toLocaleString('zh-TW',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+}
+function formatDuration(totalSeconds) {
+  const total=Math.max(0,Math.floor(totalSeconds));
+  const minutes=Math.floor(total/60),seconds=total%60;
+  return `${minutes}分 ${String(seconds).padStart(2,'0')}秒`;
+}
+function currentCvatText() { return state.cvatPollBaseText || 'CVAT 尚未準備。'; }
+function updateCvatSetupText({busy=state.cvatPollBusy,startedAt=state.cvatPollStartedAt}={}) {
+  const base=currentCvatText();
+  const isBusy=busy===undefined?state.cvatPollBusy:busy;
+  const started=isNaN(startedAt)?state.cvatPollStartedAt:Number(startedAt);
+  if(!isBusy||!Number.isFinite(started)||started<=0||state.editorMode!=='cvat'){ $('cvatSetupText').textContent=base;return; }
+  const elapsed=formatDuration((Date.now()-started*1000)/1000);
+  $('cvatSetupText').textContent=`${base}（已進行 ${elapsed}）`;
 }
 function button(text,className='secondary',click) {const b=document.createElement('button');b.type='button';b.textContent=text;b.className=className;if(click)b.onclick=click;return b;}
 function element(tag,text,className) {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
@@ -246,12 +262,13 @@ async function switchStage(stage) {
   try {
     await flushAllEdits();
     if(stage!=='annotate'&&state.editorMode==='cvat')await switchEditor('builtin');
-    for(const id of ['library','acquire','annotate','review','export'])$(id).hidden=id!==stage;
+    for(const id of ['library','acquire','annotate','review','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
     if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await cameraStatus();}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
     if(stage==='review'){await refreshProject();state.reviewSelection.clear();state.reviewPage=0;renderReview();}
+    if(stage==='train'||stage==='models')await loadTraining();
     if(stage==='export'){await refreshProject();renderExport();}
   } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
 }
@@ -262,12 +279,13 @@ async function openProject(id) {
   try {
     await flushAllEdits();
     const project=await api(`/api/projects/${id}`);
+    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
-    $('validationReport').replaceChildren(element('p','請執行驗證，檢查目前專案及目標格式。','muted'));
+    closeReleaseDrawer();resetValidation('請執行驗證，檢查目前專案及目標格式。');
     $('importReport').hidden=true;$('videoReport').hidden=true;$('mergeReport').hidden=true;
-    for(const section of ['library','acquire','annotate','review','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
+    for(const section of ['library','acquire','annotate','review','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
     renderAssetList();renderMergeList();renderExport();
     if(project.assets.length)await loadAsset(project.assets[0].id);else await cameraStatus();
@@ -487,43 +505,166 @@ async function navigateAsset(direction) {
   if(next)await selectAsset(next.id);
 }
 
+// Every state that cannot progress on its own tells the user what to do next.
+const cvatGuides={
+  reboot_required:{title:'需要你先重新啟動 Windows',steps:[
+    '儲存所有未完成的工作，包含其他程式裡的。',
+    '重新啟動 Windows（選「重新啟動」，不要關機再開機）。待安裝的更新會在這時裝完，可能需要幾分鐘。',
+    '開機後回到這個畫面，按「繼續準備」，就會接著安裝 WSL 2。']},
+  uac:{title:'Windows 正在等你確認',steps:[
+    'Windows 的「使用者帳戶控制」視窗可能被其他視窗擋住，請找出來。',
+    '按「是」允許準備環境。整個流程只有這一步需要管理員權限。']},
+  waiting_action:{title:'上一步沒有完成，環境未變更',steps:[
+    '剛才的管理員確認沒有通過，所以沒有安裝任何東西。',
+    '按「繼續準備」重試，跳出確認視窗時選「是」。']},
+  blocked:{title:'這台電腦目前無法安裝 CVAT',steps:[
+    '需求：x64 的 Windows 10 22H2 或 Windows 11 23H2 以上、8 GB 以上記憶體，且 BIOS／UEFI 已啟用虛擬化。',
+    '這不影響標註工作，可以直接按下方「返回內建編輯器」繼續使用。']},
+  error:{title:'準備過程中斷了',steps:[
+    '已下載完成的內容會保留，重試不會從頭開始。',
+    '按「繼續準備」重試；若持續失敗，可先用內建編輯器標註。']},
+};
+const cvatWaitNotes={
+  downloading_docker:'正在從 Docker 官方網站下載安裝檔（數百 MB）。',
+  installing_docker:'正在安裝 Docker Desktop。',
+  waiting_docker:'正在等待 Docker Desktop 啟動。首次啟動時它可能要求你同意授權條款，同意後這裡會自動繼續。',
+  download:'正在下載 CVAT 容器映像檔（數 GB，這是整個流程最久的一段）。',
+  services:'正在啟動 CVAT 服務。',
+};
+function cvatGuideFor(snapshot) {
+  if(snapshot.ready)return null;
+  if(snapshot.reboot_required)return cvatGuides.reboot_required;
+  const note=cvatWaitNotes[snapshot.phase];
+  if(note&&snapshot.busy)return {title:note,tone:'busy',steps:[
+    '這一段沒有進度條，可能需要數分鐘到數十分鐘。',
+    '只要上方的計時還在跳動，就代表仍在進行中，不是當機。',
+    '這段期間可以讓視窗留在背景，不需要一直看著。']};
+  return cvatGuides[snapshot.phase]||null;
+}
+function renderCvatGuidance(snapshot) {
+  const guide=cvatGuideFor(snapshot),panel=$('cvatGuidance');
+  panel.hidden=!guide;
+  if(!guide)return;
+  panel.className='cvat-guidance '+(guide.tone||'attention');
+  $('cvatGuidanceTitle').textContent=guide.title;
+  $('cvatGuidanceSteps').replaceChildren(...guide.steps.map(text=>element('li',text)));
+}
 function renderCvatStatus(snapshot) {
-  $('cvatSetupText').textContent=snapshot.text||'CVAT 尚未準備。';
+  state.cvatPollBaseText=snapshot.text||'CVAT 尚未準備。';
+  state.cvatPollBusy=!!snapshot.busy;
+  state.cvatPollStartedAt=Number(snapshot.started_at);
+  if(!Number.isFinite(state.cvatPollStartedAt))state.cvatPollStartedAt=null;
+  clearInterval(state.cvatElapsedTimer);
+  updateCvatSetupText({busy:state.cvatPollBusy,startedAt:state.cvatPollStartedAt});
+
   $('cvatSteps').replaceChildren(...(snapshot.steps||[]).map(step=>element('div',step.label,`cvat-step ${step.state||''}`)));
+  renderCvatGuidance(snapshot);
+  if(!state.cvatRebootScheduled){
+    $('rebootNow').hidden=!snapshot.can_reboot;
+    $('rebootNow').textContent='立即重新啟動 Windows';
+    $('rebootNow').title='儲存工作後，由這裡重新啟動並安裝待處理的更新。';
+  }
   $('setupCvat').hidden=!!snapshot.ready;
   $('setupCvat').disabled=!!snapshot.busy||snapshot.can_setup===false;
-  $('setupCvat').textContent=snapshot.resume?'繼續準備':snapshot.busy?'正在準備…':'安裝並啟用';
+  if(snapshot.reboot_required){
+    $('setupCvat').textContent='重新啟動後才能繼續';
+    $('setupCvat').title='必須先重新啟動 Windows，回到此頁後這顆按鈕就會解鎖。';
+  } else if(snapshot.resume) {
+    $('setupCvat').textContent='繼續準備';
+    $('setupCvat').title='Windows 已重啟，點此繼續。';
+  } else if(snapshot.busy){
+    $('setupCvat').textContent='正在準備…';
+    $('setupCvat').title='安裝中';
+  } else {
+    $('setupCvat').textContent='安裝並啟用';
+    $('setupCvat').title='啟用 CVAT。';
+  }
+
+  if(snapshot.busy&&state.cvatPollStartedAt&&state.editorMode==='cvat'){
+    state.cvatElapsedTimer=setInterval(()=>updateCvatSetupText({busy:state.cvatPollBusy,startedAt:state.cvatPollStartedAt}),1000);
+  }
 }
 async function openCvat() {
-  const result=await pollJob(await api('/api/cvat/launch','POST',{project_id:state.project.id}));
-  if(!state.nativeBridge)throw Error('內建 CVAT 僅能在 Windows 桌面版開啟。');
-  const opened=await new Promise(resolve=>state.nativeBridge.openCvat(result.ticket,resolve));
-  if(!opened)throw Error('CVAT 視窗切換失敗，請重試。');
-  state.cvatWasOpened=true;
+  if(state.cvatLaunching)return;
+  state.cvatLaunching=true;
+  clearTimeout(state.cvatPoll);state.cvatPoll=null;
+  clearInterval(state.cvatElapsedTimer);
+  $('retryCvat').hidden=true;$('setupCvat').hidden=true;
+  $('cvatGuidance').hidden=true;
+  state.cvatPollStartedAt=Date.now()/1000;
+  state.cvatPollBaseText='正在啟動 CVAT 並等待服務就緒…';state.cvatPollBusy=true;
+  updateCvatSetupText();state.cvatElapsedTimer=setInterval(()=>updateCvatSetupText(),1000);
+  try {
+    if(!state.nativeBridge)throw Error('內建 CVAT 僅能在 Windows 桌面版開啟。');
+    const projectId=state.project.id;
+    const result=await pollJob(await api('/api/cvat/launch','POST',{project_id:projectId,asset_id:state.asset?.id}),null,current=>{
+      state.cvatPollBaseText=current.message||'正在啟動 CVAT…';updateCvatSetupText();
+    });
+    if(state.editorMode!=='cvat'||state.project?.id!==projectId)return;
+    const opened=await new Promise(resolve=>state.nativeBridge.openCvat(result.ticket,resolve));
+    if(!opened)throw Error('CVAT 視窗切換失敗，請重試。');
+    state.cvatWasOpened=true;
+    state.cvatPollBaseText='CVAT 已開啟。';
+    if(result.skipped_masks>0)toast(`有 ${result.skipped_masks} 個遮罩標註沒有送進 CVAT（CVAT 匯入僅支援方框與多邊形）。原始遮罩仍保留在內建編輯器，不會遺失。`,true);
+  } catch(error) {
+    state.cvatPollBaseText=`CVAT 開啟失敗：${error.message}`;
+    $('retryCvat').hidden=false;
+    throw error;
+  } finally {
+    state.cvatLaunching=false;state.cvatPollBusy=false;
+    clearInterval(state.cvatElapsedTimer);state.cvatElapsedTimer=null;updateCvatSetupText();
+  }
 }
 async function refreshCvat({openWhenReady=false}={}) {
   const snapshot=await api('/api/cvat/status');renderCvatStatus(snapshot);
-  if(snapshot.ready&&openWhenReady){clearTimeout(state.cvatPoll);state.cvatPoll=null;await openCvat();return;}
-  if(snapshot.busy){clearTimeout(state.cvatPoll);state.cvatPoll=setTimeout(()=>safe(()=>refreshCvat({openWhenReady:true})),1200)}
+  if(snapshot.ready&&openWhenReady&&state.editorMode==='cvat'){clearTimeout(state.cvatPoll);state.cvatPoll=null;await openCvat();return;}
+  if(state.editorMode!=='cvat'||snapshot.ready){
+    clearTimeout(state.cvatPoll);state.cvatPoll=null;
+    return;
+  }
+  clearTimeout(state.cvatPoll);
+  const interval = snapshot.busy ? 1200 : 5000;
+  state.cvatPoll=setTimeout(()=>safe(()=>refreshCvat({openWhenReady:true})),interval);
 }
 async function switchEditor(mode) {
+  $('retryCvat').hidden=true;
   if(mode==='builtin') {
-    clearTimeout(state.cvatPoll);state.cvatPoll=null;state.editorMode='builtin';$('editorSelector').value='builtin';
+    clearTimeout(state.cvatPoll);state.cvatPoll=null;
+    clearInterval(state.cvatElapsedTimer);state.cvatElapsedTimer=null;
+    state.editorMode='builtin';$('editorSelector').value='builtin';
     $('cvatSetup').hidden=true;document.querySelector('#annotate>.editor-layout').hidden=false;editor.active=state.stage==='annotate';
     requestAnimationFrame(()=>editor.fit(false));return;
+  }
+  if(mode==='labelme') {
+    await flushAllEdits();
+    if(!state.nativeBridge?.openLabelme){$('editorSelector').value=state.editorMode;throw Error('Labelme 整合需要更新後的 Windows 桌面版。');}
+    const error=await new Promise(resolve=>state.nativeBridge.openLabelme(state.project.id,state.asset?.id||'',resolve));
+    if(error){$('editorSelector').value=state.editorMode;throw Error(`Labelme 無法開啟：${error}`);}
+    state.editorMode='labelme';$('editorSelector').value='labelme';editor.active=false;
+    return;
   }
   await flushAllEdits();state.editorMode='cvat';$('editorSelector').value='cvat';editor.active=false;
   document.querySelector('#annotate>.editor-layout').hidden=true;$('cvatSetup').hidden=false;
   const snapshot=await api('/api/cvat/status');renderCvatStatus(snapshot);
   if(snapshot.ready)await openCvat();
+  else await refreshCvat({openWhenReady:true});
 }
-window.workbenchCvatClosed=()=>safe(async()=>{
-  await switchEditor('builtin');
-  if(!state.cvatWasOpened||!state.project)return;
-  state.cvatWasOpened=false;const current=state.asset?.id;
-  const result=await pollJob(await api('/api/cvat/import','POST',{project_id:state.project.id}));
-  await refreshProject();if(current&&state.project.assets.some(asset=>asset.id===current))await loadAsset(current);
-  toast(result.updated?`已從 CVAT 讀回 ${result.updated} 張圖片的標註。`:'CVAT 沒有新的標註變更。');
+window.workbenchExternalSync=async({source,asset_id})=>{
+  try {
+    if(source==='cvat') {
+      const result=await pollJob(await api('/api/cvat/import','POST',{project_id:state.project.id}));
+      toast(result.updated?`已同步 ${result.updated} 張圖片，修改內容已送往待審核。`:'CVAT 沒有新的標註變更。');
+    }
+    await refreshProject();
+    const current=asset_id||state.asset?.id;
+    if(current&&state.project.assets.some(asset=>asset.id===current))await loadAsset(current);
+    await switchEditor('builtin');state.cvatWasOpened=false;
+    state.nativeBridge.finishEditorSync('');
+  } catch(error) {state.nativeBridge.finishEditorSync(String(error.message||error));}
+};
+window.workbenchExternalNavigate=target=>safe(async()=>{
+  if(target==='review')await switchStage('review');
+  else if(target!=='builtin')await switchEditor(target);
 });
 
 async function nativeChoose(kind) {
@@ -575,13 +716,14 @@ $('stopAcquisitionTask').onclick=()=>safe(async()=>{
   const task=acquisitionTask;if(!task||task.stopping||task.stopped)return;task.stopping=true;task.paused=false;task.message='正在安全停止…';renderAcquisitionTask(task);
   if(task.jobId)await api(`/api/jobs/${task.jobId}/cancel`,'POST',{});else finishTimedTask(task,'stopped','已停止等待 · '+taskSeconds(task),2400);
 });
-async function pollJob(job,onDone) {
+async function pollJob(job,onDone,onProgress) {
   let current=job;const id=job.id||job.job_id||job.job;
   if(!id) return onDone ? onDone(job.result||job) : job.result||job;
   const tracker=state.stage==='acquire'?acquisitionTask:null;if(tracker)tracker.jobId=id;
   $('jobStatus').hidden=false;
   try {
     while(true) {
+      if(onProgress)onProgress(current);
       $('jobMessage').textContent=current.message||'正在處理工作…';
       if(Number.isFinite(current.progress))$('jobProgress').value=current.progress;else $('jobProgress').removeAttribute('value');
       if(tracker){tracker.paused=current.state==='paused';tracker.stopping=current.state==='stopping';updateTimedTask(tracker,current.message||'正在處理工作…',current.progress)}
@@ -1035,37 +1177,107 @@ function renderExport() {
   }
   if(!list.children.length)list.append(element('p','尚無匯出版本。完成審核後，執行驗證並建立第一個版本。','muted'));
 }
+const BATCH_PAGE_SIZE=3,VALIDATION_PAGE_SIZE=3;
+function openReleaseDrawer(title,details){
+  const shell=$('releaseDrawer'),body=$('releaseDrawerBody');state.releaseDrawerFocus=document.activeElement;
+  $('releaseDrawerTitle').textContent=title;body.replaceChildren();
+  for(const [label,value]of details){const row=element('div',undefined,'release-detail-row');row.append(element('span',label),element('div',String(value)));body.append(row)}
+  shell.hidden=false;requestAnimationFrame(()=>shell.classList.add('open'));$('releaseDrawerClose').focus();
+}
+function closeReleaseDrawer(){
+  const shell=$('releaseDrawer');if(shell.hidden)return;shell.classList.remove('open');shell.hidden=true;
+  if(state.releaseDrawerFocus instanceof HTMLElement)state.releaseDrawerFocus.focus();state.releaseDrawerFocus=null;
+}
 function renderBatchTable() {
-  const grouped=new Map();for(const asset of state.project?.assets||[]){const key=asset.batch_id||'';if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(asset)}
-  const table=$('batchTable');table.replaceChildren();
-  for(const [name,assets]of grouped) {
-    const row=element('div',undefined,'batch-row'),info=element('div');info.append(element('b',name||'尚未指定批次'),element('small',`${number(assets.length)} 張 · ${number(assets.filter(a=>a.review_state==='approved').length)} 已核准`));
-    const select=document.createElement('select');for(const [v,t]of [['','未指定分割'],['train','train · 訓練集'],['val','val · 驗證集'],['test','test · 測試集']])select.append(new Option(t,v));
-    const splits=[...new Set(assets.map(a=>a.split||''))];if(splits.length>1){select.prepend(new Option('混合分割 · 請統一','mixed'));select.value='mixed'}else select.value=splits[0]||'';
+  const table=$('batchTable'),summary=$('splitSummary'),assets=state.project?.assets||[];table.replaceChildren();summary?.replaceChildren();
+  const meta={train:['train · 訓練集','模型學習用'],val:['val · 驗證集','調整與比較模型用'],test:['test · 測試集','最終成效評估用'],'':['未指定','匯出前需要指定']};
+  const splitMaps=new Map();
+  for(const asset of assets){const split=asset.split||'',name=asset.batch_id||'';if(!splitMaps.has(split))splitMaps.set(split,new Map());const batches=splitMaps.get(split);if(!batches.has(name))batches.set(name,[]);batches.get(name).push(asset)}
+  const bySplit=new Map([...splitMaps].map(([split,batches])=>[split,[...batches].map(([name,batchAssets])=>({name,assets:batchAssets}))]));
+  for(const key of ['train','val','test']){
+    const batches=bySplit.get(key)||[],splitAssets=batches.flatMap(batch=>batch.assets),approved=splitAssets.filter(asset=>asset.review_state==='approved').length,item=element('div',undefined,'split-summary-item');
+    item.append(element('span',meta[key][0],'split-summary-label'),element('b',`${number(approved)} 張`),element('small',`${number(batches.length)} 個來源批次 · ${meta[key][1]}`));summary?.append(item);
+  }
+  const balance=$('classBalanceTable');balance?.replaceChildren();
+  if(balance){
+    const matrix=document.createElement('table'),head=document.createElement('thead'),headRow=document.createElement('tr');
+    for(const name of ['類別','train','val','test','合計'])headRow.append(element('th',name));head.append(headRow);matrix.append(head);
+    const body=document.createElement('tbody');
+    for(const className of state.project?.classes||[]){
+      const row=document.createElement('tr'),counts={train:0,val:0,test:0};
+      for(const asset of assets)if(asset.review_state==='approved'&&counts[asset.split]!==undefined)counts[asset.split]+=Number(asset.class_counts?.[className]||0);
+      row.append(element('th',className));for(const split of ['train','val','test'])row.append(element('td',number(counts[split])));row.append(element('td',number(counts.train+counts.val+counts.test)));body.append(row);
+    }
+    matrix.append(body);balance.append(matrix);
+  }
+  const keys=['train','val','test'];if((bySplit.get('')||[]).length)keys.push('');
+  if(!keys.includes(state.splitTab))state.splitTab=keys[0];
+  const tabs=element('div',undefined,'split-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','選擇資料集合');
+  for(const key of keys){
+    const batches=bySplit.get(key)||[],count=batches.reduce((total,batch)=>total+batch.assets.length,0),tab=button(`${meta[key][0]} · ${number(count)}`,'split-tab',()=>{state.splitTab=key;state.splitPage=0;renderBatchTable()});
+    tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(state.splitTab===key));tabs.append(tab);
+  }
+  const batches=bySplit.get(state.splitTab)||[],pages=Math.max(1,Math.ceil(batches.length/BATCH_PAGE_SIZE));state.splitPage=Math.min(state.splitPage,pages-1);
+  const viewport=element('div',undefined,'batch-viewport');viewport.setAttribute('role','tabpanel');
+  for(const {name,assets:batchAssets}of batches.slice(state.splitPage*BATCH_PAGE_SIZE,(state.splitPage+1)*BATCH_PAGE_SIZE)){
+    const approved=batchAssets.filter(asset=>asset.review_state==='approved').length,row=element('div',undefined,'batch-row-fixed');
+    const info=button(name||'尚未指定批次','batch-detail-link',()=>openReleaseDrawer('來源批次詳情',[
+      ['來源批次',name||'尚未指定批次'],['目前集合',meta[state.splitTab][0]],['此集合影像',`${number(batchAssets.length)} 張`],['已核准',`${number(approved)} 張`]
+    ]));info.title='查看來源批次詳情';info.append(element('small',`${number(batchAssets.length)} 張 · ${number(approved)} 已核准`));
+    const select=document.createElement('select');for(const [v,t]of [['','未指定分割'],['train','train · 訓練集'],['val','val · 驗證集'],['test','test · 測試集']])select.append(new Option(t,v));select.value=state.splitTab;
     select.setAttribute('aria-label',`${name||'未指定批次'}的資料分割`);
     const apply=button('儲存','secondary',()=>safe(async()=>{
-      if(select.value==='mixed')throw Error('請選擇明確的分割。');
       if(state.busy)return;apply.disabled=true;select.disabled=true;
-      try{await flushAllEdits();state.project=await api(projectPath('/assign'),'POST',{asset_ids:assets.map(a=>a.id),split:select.value});renderBatchTable();toast('批次分割已儲存，請重新執行驗證。')}
+      try{await flushAllEdits();state.project=await api(projectPath('/assign'),'POST',{asset_ids:batchAssets.map(asset=>asset.id),split:select.value});state.splitPage=0;renderBatchTable();toast('批次分割已儲存，請重新執行驗證。')}
       finally{apply.disabled=false;select.disabled=false;}
-    }));row.append(info,select,apply);table.append(row);
+    }));row.append(info,select,apply);viewport.append(row);
   }
-  if(!grouped.size)table.append(element('p','加入圖片後，可在此設定各來源批次的資料分割。','muted'));
+  if(!batches.length)viewport.append(element('p',assets.length?'此集合目前沒有來源批次。':'加入圖片後，可在此設定來源批次與資料分割。','batch-empty'));
+  const pager=element('div',undefined,'fixed-pager'),previous=button('上一頁','secondary',()=>{state.splitPage--;renderBatchTable()}),next=button('下一頁','secondary',()=>{state.splitPage++;renderBatchTable()});
+  previous.disabled=state.splitPage===0;next.disabled=state.splitPage>=pages-1;pager.append(previous,element('span',`第 ${state.splitPage+1} / ${pages} 頁 · ${number(batches.length)} 個來源批次`),next);
+  table.append(tabs,viewport,pager);
+}
+async function autoSplitProject(){
+  const values=$('splitRatio').value.split('/').map(Number),ratios={train:values[0],val:values[1],test:values[2]};
+  const result=await api(projectPath('/auto-split'),'POST',{ratios});state.project=result.project;renderBatchTable();
+  const report=result.report||{},message=$('splitBalanceReport');message.hidden=false;message.replaceChildren(element('strong',`已依 cls 數量完成 ${ratios.train} / ${ratios.val} / ${ratios.test} 分割`),element('div',`更新 ${number(report.changed||0)} 張影像；分配結果：train ${number(report.image_counts?.train||0)}、val ${number(report.image_counts?.val||0)}、test ${number(report.image_counts?.test||0)}。`));
+  for(const warning of report.warnings||[])message.append(element('div',warning,'split-warning'));
+  resetValidation('資料分割已更新，請重新執行驗證。');toast('已依類別數量完成自動分割。');
+}
+function resetValidation(message){
+  state.validationResult=null;state.validationTab=null;state.validationPage=0;
+  const root=$('validationReport');root.className='report-empty';root.replaceChildren(element('p',message,'muted'));
 }
 function renderValidation(result) {
-  const base=result?.report||result||{},report=base.validation?{...base.validation,losses:base.losses||base.validation.losses}:base,root=$('validationReport');root.className='';root.replaceChildren();
-  const valid=report.valid??!(report.errors?.length),header=element('div',undefined,'report-header'+(valid?'':' invalid')),text=element('div');
-  text.append(element('h3',valid?'檢查通過':'仍有問題需要處理'),element('p',result?.path?'匯出版本已建立，圖片與封裝檢查均已完成。':valid?'請確認轉換說明後建立匯出版本。':'依下方項目修正資料，再重新執行驗證。'));header.append(element('span',valid?'✓':'!','report-symbol'),text);root.append(header);
-  const counts=report.stats||{};const statRow=element('div',undefined,'report-stats');
-  const keys={total:'全部影像',assets:'影像',approved:'已核准',pending:'待審核',rejected:'已退回',images:'輸出影像',annotations:'標註',shapes:'標註物件',classes:'類別',exported:'輸出影像',eligible:'可匯出'};
+  const base=result?.report||result||{},report=base.validation?{...base.validation,losses:base.losses||base.validation.losses}:base;
+  state.validationResult={result,report};state.validationPage=0;
+  state.validationTab=(report.errors||[]).length?'errors':(report.warnings||[]).length?'warnings':(report.losses||[]).length?'losses':'errors';
+  renderValidationView();
+}
+function renderValidationView(){
+  const root=$('validationReport'),stored=state.validationResult;if(!stored)return;
+  const {result,report}=stored,valid=report.valid??!(report.errors?.length);root.className='validation-report-shell';root.replaceChildren();
+  const header=element('div',undefined,'report-header compact'+(valid?'':' invalid')),text=element('div');
+  text.append(element('h3',result?.path?'匯出版本已建立':valid?'檢查通過':'仍有問題需要處理'),element('p',result?.path?'圖片與封裝檢查均已完成。':valid?'請確認轉換影響後建立匯出版本。':'請依問題清單修正後重新驗證。'));header.append(element('span',valid?'✓':'!','report-symbol'),text);
+  if(result?.path)header.append(button('查看匯出位置','secondary',()=>openReleaseDrawer('匯出版本位置',[['輸出路徑',result.path],...(result.zip_path?[['壓縮檔',result.zip_path]]:[])])));
+  root.append(header);
+  const counts=report.stats||{},statRow=element('div',undefined,'report-stats fixed');
+  const keys={total:'全部影像',assets:'影像',approved:'已核准',pending:'待審核',rejected:'已退回',images:'輸出影像',annotations:'標註',shapes:'標註物件',classes:'類別',batches:'來源批次',exported:'輸出影像',eligible:'可匯出'};
   for(const [key,value]of Object.entries(counts))if(typeof value==='number')statRow.append(element('span',`${keys[key]||key} ${number(value)}`));root.append(statRow);
-  for(const [key,title]of [['errors','必須處理'],['warnings','檢查提醒'],['losses','格式轉換影響']]) {
-    const entries=report[key]||[];if(!entries.length)continue;
-    const section=element('div',undefined,'report-section'),list=element('ul',undefined,'report-items '+key);section.append(element('h3',`${title} · ${entries.length}`));
-    for(const entry of entries)list.append(element('li',readable(entry)));section.append(list);root.append(section);
+  const categories=[['errors','必須處理'],['warnings','檢查提醒'],['losses','格式轉換影響']],tabs=element('div',undefined,'validation-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','驗證結果分類');
+  for(const [key,title]of categories){const count=(report[key]||[]).length,tab=button(`${title} · ${number(count)}`,'validation-tab',()=>{state.validationTab=key;state.validationPage=0;renderValidationView()});tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(state.validationTab===key));tabs.append(tab)}root.append(tabs);
+  const entries=report[state.validationTab]||[],pages=Math.max(1,Math.ceil(entries.length/VALIDATION_PAGE_SIZE));state.validationPage=Math.min(state.validationPage,pages-1);
+  const viewport=element('div',undefined,'validation-viewport '+state.validationTab);viewport.setAttribute('role','tabpanel');
+  for(const [offset,entry]of entries.slice(state.validationPage*VALIDATION_PAGE_SIZE,(state.validationPage+1)*VALIDATION_PAGE_SIZE).entries()){
+    const item=element('div',undefined,'validation-item'),message=readable(entry),index=state.validationPage*VALIDATION_PAGE_SIZE+offset+1,body=element('div');
+    body.append(element('b',message),element('small',`${categories.find(category=>category[0]===state.validationTab)[1]} · 第 ${number(index)} 項`));
+    item.append(body,button('詳情','secondary',()=>openReleaseDrawer('驗證項目詳情',[
+      ['分類',categories.find(category=>category[0]===state.validationTab)[1]],['項目',`${index} / ${entries.length}`],['說明',message]
+    ])));viewport.append(item);
   }
-  if(!report.errors?.length&&!report.warnings?.length&&!report.losses?.length)root.append(element('p','未回報幾何、類別或格式相容性問題。','muted'));
-  if(result?.path){const path=element('div',undefined,'inline-report');path.append(element('strong','匯出已建立'),element('div',result.path));root.append(path);}
+  if(!entries.length)viewport.append(element('p',state.validationTab==='errors'?'此分類沒有必須處理的問題。':'此分類目前沒有項目。','validation-empty'));root.append(viewport);
+  const pager=element('div',undefined,'fixed-pager validation-pager'),previous=button('上一頁','secondary',()=>{state.validationPage--;renderValidationView()}),next=button('下一頁','secondary',()=>{state.validationPage++;renderValidationView()});
+  previous.disabled=state.validationPage===0;next.disabled=state.validationPage>=pages-1;pager.append(previous,element('span',`第 ${state.validationPage+1} / ${pages} 頁 · ${number(entries.length)} 項`),next);root.append(pager);
 }
 async function validateProject() {
   await flushAllEdits();const job=await api(projectPath('/validate'),'POST',{format:$('exportFormat').value,tolerance:0});
@@ -1097,6 +1309,116 @@ async function runAI() {
     if(result.diagnostics){const extra=Array.isArray(result.diagnostics)?result.diagnostics.map(readable).join('；'):typeof result.diagnostics==='string'?result.diagnostics:result.diagnostics.message;$('aiMessage').textContent+=extra?' '+extra:'';}
   }catch(error){$('aiMessage').textContent=error.message;throw error;}
 }
+
+const activeRunStates=new Set(['queued','preparing','running','stopping']);
+function trainingStatusName(value){return {queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value||'未知'}
+function selectedDataset(){const id=$('trainingDataset')?.value||state.training?.datasets?.[0]?.id;return state.training?.datasets?.find(item=>item.id===id)||null}
+function activeTrainingRun(){return state.training?.runs?.find(run=>activeRunStates.has(run.status))||null}
+function trainingProjectIsCurrent(projectId){return state.project?.id===projectId}
+async function loadTraining({quiet=false}={}) {
+  if(!state.project)return;
+  const projectId=state.project.id;
+  try{
+    const overview=await api(projectPath('/training'));
+    if(!trainingProjectIsCurrent(projectId))return;
+    state.training=overview;
+    if(!overview.runs?.some(run=>run.run_id===state.selectedRun))state.selectedRun=overview.runs?.[0]?.run_id||null;
+    if(!overview.models?.some(model=>model.model_version_id===state.selectedModel))state.selectedModel=overview.models?.[0]?.model_version_id||null;
+    updateBackgroundTraining();
+    if(state.stage==='train')renderTraining();
+    if(state.stage==='models')renderModels();
+    scheduleTrainingPoll();
+  }catch(error){
+    if(!quiet)throw error;
+    updateBackgroundTraining(error.message);
+  }
+}
+function scheduleTrainingPoll(){
+  clearTimeout(state.trainingTimer);state.trainingTimer=null;
+  if(!state.project||!activeTrainingRun())return;
+  const projectId=state.project.id;
+  state.trainingTimer=setTimeout(()=>{if(trainingProjectIsCurrent(projectId))loadTraining({quiet:true})},900);
+}
+function updateBackgroundTraining(error=''){
+  const run=activeTrainingRun(),button=$('backgroundTraining');
+  button.hidden=!run&&!error;
+  if(error){$('backgroundTrainingText').textContent=`訓練狀態暫時無法更新：${error}`;$('backgroundTrainingProgress').removeAttribute('value');return}
+  if(!run)return;
+  const epoch=run.epoch?` · ${number(run.epoch)} / ${number(run.config?.epochs)}`:'';
+  $('backgroundTrainingText').textContent=`${run.run_id} ${trainingStatusName(run.status)}${epoch}`;
+  const progress=Number(run.progress);if(Number.isFinite(progress))$('backgroundTrainingProgress').value=progress;else $('backgroundTrainingProgress').removeAttribute('value');
+}
+function renderReadiness(report){
+  const root=$('trainingReadiness');root.replaceChildren();
+  const stats=report?.stats||{},splits=stats.splits||{};
+  if(report?.ready)root.append(element('div',`檢查通過 · 已核准 ${number(stats.approved)} 張 · Train ${number(splits.train)} / Val ${number(splits.val)} / Test ${number(splits.test)}`,'readiness-item'));
+  for(const item of report?.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('div',`處理方式：${item.action}`));root.append(row)}
+  for(const item of report?.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('div',item.action));root.append(row)}
+}
+function renderTraining(){
+  if(!state.training)return;
+  const {readiness,datasets=[],runs=[],capabilities}=state.training,active=activeTrainingRun();
+  renderReadiness(readiness);
+  const datasetSelect=$('trainingDataset'),remember=datasetSelect.value;datasetSelect.replaceChildren();
+  if(!datasets.length)datasetSelect.append(new Option('尚無資料版本',''));
+  for(const item of datasets)datasetSelect.append(new Option(`${item.id} · ${number(item.asset_count)} 張 · ${date(item.created_at)}`,item.id));
+  datasetSelect.value=datasets.some(item=>item.id===remember)?remember:datasets[0]?.id||'';
+  const dataset=selectedDataset();$('trainingDatasetCurrent').textContent=dataset?.id||'尚未建立';
+  $('trainingDatasetHint').textContent=dataset?`${number(dataset.asset_count)} 張 · Train ${number(dataset.splits.train)} / Val ${number(dataset.splits.val)} / Test ${number(dataset.splits.test)}`:'只會固定已核准且完成分割的資料。';
+  $('prepareAutoSplit').hidden=readiness.ready;$('prepareAutoSplit').disabled=!!active;
+  $('createDatasetVersion').disabled=!readiness.ready||!!active;
+  const engineSelect=$('trainingEngine'),engineRemember=engineSelect.value;engineSelect.replaceChildren();
+  for(const engine of capabilities.engines||[]){const option=new Option(`${engine.name}${engine.train?'':' · 尚未安裝'}`,engine.key);option.disabled=!engine.train;engineSelect.append(option)}
+  if([...engineSelect.options].some(option=>option.value===engineRemember&&!option.disabled))engineSelect.value=engineRemember;
+  else engineSelect.value=(capabilities.engines||[]).find(engine=>engine.train)?.key||'';
+  const engine=(capabilities.engines||[]).find(item=>item.key===engineSelect.value);$('trainingEngineHint').textContent=engine?.description||'沒有可用的訓練引擎。';
+  const summary=$('trainingSummary');summary.replaceChildren();
+  const deviceName={auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇';
+  for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務','實例分割'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
+  $('startTraining').disabled=!dataset||!engine?.train||!!active;
+  $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
+  $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
+  const list=$('trainingRuns');list.replaceChildren();
+  if(!runs.length)list.append(element('p','尚無訓練紀錄。','empty-list'));
+  for(const run of runs){const row=button('','run-row'+(run.run_id===state.selectedRun?' active':''),()=>{state.selectedRun=run.run_id;renderTraining()});const top=element('div',undefined,'run-row-top');top.append(element('b',`${run.run_id} · ${run.engine_name}`),element('span',trainingStatusName(run.status),'run-status '+run.status));row.append(top,element('small',`${run.dataset_version_id} · ${date(run.created_at)}`));list.append(row)}
+  renderTrainingRun(runs.find(run=>run.run_id===state.selectedRun)||runs[0]);
+}
+function renderTrainingRun(run){
+  const root=$('trainingRunDetail');root.replaceChildren();
+  if(!run){const empty=element('div',undefined,'report-empty');empty.append(element('span','◴'),element('h3','尚無訓練紀錄'),element('p','開始訓練後在此查看進度、指標與固定設定。'));root.append(empty);return}
+  const heading=element('div',undefined,'run-progress-head'),copy=element('div');copy.append(element('span','TRAINING RUN','eyebrow'),element('h2',`${run.run_id} · ${trainingStatusName(run.status)}`));heading.append(copy,element('strong',`${number(run.progress||0)}%`));root.append(heading);
+  const progress=document.createElement('progress');progress.className='run-progress';progress.max=100;progress.value=Number(run.progress||0);root.append(progress,element('p',run.message||'','muted'));
+  const evaluation=run.evaluation?.test||run.evaluation?.validation;
+  if(evaluation){const metrics=element('div',undefined,'run-metrics');for(const [label,value]of [['Mean IoU',Number(evaluation.mean_iou).toFixed(3)],['評估圖片',number(evaluation.images)],['模型版本',run.model_version_id]]){const card=element('div',undefined,'run-metric');card.append(element('span',label),element('b',value));metrics.append(card)}root.append(metrics)}
+  if(run.error){const error=element('div',run.error,'readiness-item error');root.append(error)}
+  const config=element('div',undefined,'run-config');for(const [label,value]of [['資料版本',run.dataset_version_id],['引擎',run.engine_name],['調整輪數',run.config?.epochs],['裝置',String(run.config?.device||'cpu').toUpperCase()]]){const item=element('div');item.append(element('span',label),element('b',String(value??'—')));config.append(item)}root.append(config);
+}
+async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{});await loadTraining();$('trainingDataset').value=created.id;renderTraining();toast(`已建立固定訓練資料 ${created.id}。`)}
+async function startTrainingRun(){
+  const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
+  const epochs=Number($('trainingEpochs').value),seed=Number($('trainingSeed').value);
+  if(!Number.isInteger(epochs)||epochs<1||epochs>200)throw Error('調整輪數必須是 1–200 的整數。');
+  if(!Number.isInteger(seed)||seed<0)throw Error('隨機種子必須是非負整數。');
+  const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,epochs,seed,device:$('trainingDevice').value}});
+  state.selectedRun=run.run_id;await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
+}
+async function stopTrainingRun(){const run=activeTrainingRun();if(!run)return;await api(projectPath(`/training-runs/${run.run_id}/stop`),'POST',{});await loadTraining();toast(`${run.run_id} 正在安全停止。`)}
+function renderModels(){
+  if(!state.training)return;const {models=[],predictions=[]}=state.training;
+  const list=$('modelList');list.replaceChildren();if(!models.length)list.append(element('p','尚無模型版本。','empty-list'));
+  for(const model of models){const row=button('','model-row'+(model.model_version_id===state.selectedModel?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});const top=element('div',undefined,'model-row-top');top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),element('span','可預標註','run-status'));row.append(top,element('small',`${model.dataset_version_id} · ${date(model.created_at)}`));list.append(row)}
+  renderModelDetail(models.find(model=>model.model_version_id===state.selectedModel)||models[0]);
+  const selected=models.find(model=>model.model_version_id===state.selectedModel)||models[0];$('generatePredictions').disabled=!selected;
+  const predictionsRoot=$('predictionList');predictionsRoot.replaceChildren();
+  if(!predictions.length)predictionsRoot.append(element('p','尚無候選標註。','empty-list'));
+  for(const candidate of predictions){const pending=candidate.assets.filter(asset=>asset.status==='candidate'),accepted=candidate.assets.filter(asset=>asset.status==='accepted'),empty=candidate.assets.filter(asset=>asset.status==='empty');const row=element('article',undefined,'prediction-row');row.append(element('b',`${candidate.model_version_id} · ${date(candidate.created_at)}`),element('small',`候選 ${number(pending.length)} 張 · 已接受 ${number(accepted.length)} 張${empty.length?` · 未偵測 ${number(empty.length)} 張`:''}`));if(pending.length){const accept=button('接受候選並送審','secondary',()=>safe(()=>acceptPredictions(candidate.candidate_id)));row.append(accept)}predictionsRoot.append(row)}
+}
+function renderModelDetail(model){const root=$('modelDetail');root.replaceChildren();if(!model){const empty=element('div',undefined,'report-empty');empty.append(element('span','◇'),element('h3','尚無可用模型'),element('p','完成一次訓練與評估後，模型會連同資料來源出現在這裡。'));root.append(empty);return}
+  const title=element('div',undefined,'model-title'),copy=element('div');copy.append(element('span','MODEL VERSION','eyebrow'),element('h2',`${model.model_version_id} · ${model.engine_name}`));title.append(copy,element('span','分割／預標註','badge approved'));root.append(title);
+  const test=model.test||model.validation||{},score=element('div',undefined,'run-metrics');for(const [label,value]of [['Test Mean IoU',Number(test.mean_iou||0).toFixed(3)],['測試圖片',number(test.images)],['類別數',number(model.classes?.length)]]){const item=element('div',undefined,'run-metric');item.append(element('span',label),element('b',value));score.append(item)}root.append(score);
+  const facts=element('dl',undefined,'model-facts');for(const [label,value]of [['來源 Run',model.run_id],['訓練資料',model.dataset_version_id],['類別',(model.classes||[]).join('、')],['模型能力','訓練／評估／預標註'],['建立時間',date(model.created_at)]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p','模型與資料版本、類別映射和評估結果一起保存；專案後續修改不會回寫此模型。','readiness-item'))}
+async function generatePredictions(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先完成一個模型版本。');let assetIds;if($('predictionTarget').value==='current'){if(!state.asset)throw Error('請先在標註頁選擇圖片。');assetIds=[state.asset.id]}const job=await api(projectPath('/predictions'),'POST',{model_version_id:model.model_version_id,...(assetIds?{asset_ids:assetIds}:{})});await pollJob(job);await loadTraining();toast('預標註候選已產生，接受後會進入待審核。')}
+async function acceptPredictions(candidateId){const result=await api(`/api/predictions/${candidateId}/accept`,'POST',{});state.project=result.project;if(state.asset&&result.accepted.includes(state.asset.id))await loadAsset(state.asset.id);await loadTraining();renderAssetList();toast(`${number(result.accepted.length)} 張候選已寫入待審標註。`)}
 
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
@@ -1175,22 +1497,59 @@ bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewRe
 $('reviewSearch').oninput=()=>{state.reviewPage=0;renderReview()};$('reviewFilter').onchange=()=>{state.reviewSelection.clear();state.reviewPage=0;renderReview()};
 $('reviewSelectAll').onchange=()=>{for(const asset of reviewPageItems())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
+bind('prepareTraining',()=>switchStage('train'));
+bind('refreshTraining',()=>loadTraining());
+bind('prepareAutoSplit',async()=>{await autoSplitProject();await loadTraining()},{busy:true,task:'設定訓練資料分割'});
+bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
+$('trainingDataset').onchange=renderTraining;$('trainingEngine').onchange=renderTraining;$('trainingDevice').onchange=renderTraining;
+bind('startTraining',startTrainingRun,{busy:true,task:'啟動獨立訓練程序'});
+bind('stopTraining',stopTrainingRun,{busy:true});
+bind('refreshModels',()=>loadTraining());
+bind('generatePredictions',generatePredictions,{busy:true,task:'產生預標註候選'});
+bind('openExchange',()=>switchStage('export'));bind('backToModels',()=>switchStage('models'));
+$('backgroundTraining').onclick=()=>safe(()=>switchStage('train'));
 bind('chooseOutput',async()=>{const paths=await nativeChoose('output');if(paths.length)$('outputPath').value=paths[0]});
-$('exportFormat').onchange=()=>{$('formatDescription').textContent=formatDescriptions[$('exportFormat').value];$('acknowledgeLoss').checked=false;$('validationReport').replaceChildren(element('p','目標格式已變更，請重新執行驗證。','muted'))};
-bind('validateProject',validateProject,{busy:true});bind('exportProject',exportProject,{busy:true});bind('refreshExports',async()=>{await refreshProject();renderExport()});
+$('exportFormat').onchange=()=>{$('formatDescription').textContent=formatDescriptions[$('exportFormat').value];$('acknowledgeLoss').checked=false;resetValidation('目標格式已變更，請重新執行驗證。')};
+bind('autoSplit',autoSplitProject,{busy:true,task:'依類別數量自動分割'});bind('validateProject',validateProject,{busy:true});bind('exportProject',exportProject,{busy:true});bind('refreshExports',async()=>{await refreshProject();renderExport()});
+$('releaseDrawerClose').onclick=closeReleaseDrawer;$('releaseDrawer').onclick=event=>{if(event.target===$('releaseDrawer'))closeReleaseDrawer()};
 bind('help',async()=>{
-  const body=element('div');body.append(element('p','建議流程：建立專案 → 匯入／採集 → 標註 → 人工審核 → 設定批次分割 → 驗證匯出。'));
+  const body=element('div');body.append(element('p','建議流程：建立專案 → 匯入／採集 → 標註 → 人工審核 → 建立固定訓練資料 → 訓練與評估 → 產生預標註候選 → 接受後再次審核。'));
   const list=element('ul');for(const text of ['F11：切換整套 Vision Workbench 的全螢幕與一般視窗。','即時預覽的展開圖示：只放大採集工作區；再次點擊或按 Esc 還原。','相機採集頁：S 擷取目前原始畫格。輸入文字或調整數值時不會觸發。','採集原圖：Q 選擇 Box、W 選擇 Polygon、E 選擇 Mask、Shift+E 擦除、Esc 關閉或取消。','Ctrl S：立即儲存；修改停止後也會自動儲存。','A／D 或左右方向鍵：切換上一張／下一張圖片。','V 選取、R 矩形、P 多邊形、L 折線、K 關鍵點、O 旋轉框。','B 遮罩筆刷、E 橡皮擦、H 平移；滑鼠滾輪縮放。','Enter 完成頂點；Esc 取消尚未完成的繪圖。','Shift 點選多個物件；Ctrl A 全選物件；Delete 刪除選取。','Ctrl Z / Ctrl Y：復原與重做。','選取模式雙擊邊線可插入頂點，Alt 點控制點可移除頂點。','AI 候選須先接受或捨棄，才能離開編輯工作區。','所有修改皆會重新進入待審核，只有已核准資料可以匯出。'])list.append(element('li',text));body.append(list);
   if(saver.dirty){const rescue=button('下載目前未儲存的標註副本','secondary',()=>{const blob=new Blob([JSON.stringify({format:'vision-workbench-recovery',project_id:state.project.id,asset:state.asset},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`recovery-${state.asset.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000)});body.append(rescue);}
   await formDialog({title:'操作指南與快捷鍵',body,eyebrow:'WORKBENCH GUIDE'});
 });
 $('settings').onclick=()=>{if(state.nativeBridge)state.nativeBridge.openSettings();else safe(()=>formDialog({title:'設定／更新',body:element('p','自動更新功能請在 Windows 桌面版使用。瀏覽器開發模式可重新啟動服務載入修改。'),eyebrow:'SETTINGS'}))};
-document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
 
 $('editorSelector').onchange=()=>safe(()=>switchEditor($('editorSelector').value));
 $('previousAssetTop').onclick=()=>safe(()=>navigateAsset(-1));$('nextAssetTop').onclick=()=>safe(()=>navigateAsset(1));
 $('backToBuiltin').onclick=()=>switchEditor('builtin');
+$('rebootNow').onclick=()=>safe(async()=>{
+  if(state.cvatRebootScheduled){
+    await api('/api/cvat/reboot/cancel','POST',{});
+    state.cvatRebootScheduled=false;$('rebootNow').textContent='立即重新啟動 Windows';
+    toast('已取消重新啟動。');return;
+  }
+  const body=element('div');
+  body.append(element('p','Windows 會開始倒數並重新啟動，關機與開機時會裝完待處理的更新，可能需要幾分鐘。'));
+  const points=element('ul');
+  points.append(element('li','請先儲存其他程式裡未完成的工作。'),
+                element('li','這個專案的標註已存在本機，不會遺失。'),
+                element('li','倒數期間可以回到這裡按「取消重新啟動」中止。'));
+  body.append(points);
+  const result=await formDialog({title:'現在重新啟動 Windows？',body,confirm:'重新啟動',eyebrow:'RESTART WINDOWS',
+    onSubmit:()=>api('/api/cvat/reboot','POST',{confirm:true})});
+  if(!result)return;
+  state.cvatRebootScheduled=true;$('rebootNow').textContent='取消重新啟動';
+  toast(`Windows 將在 ${result.seconds} 秒後重新啟動。`);
+});
 $('setupCvat').onclick=()=>safe(async()=>{const snapshot=await api('/api/cvat/setup','POST',{});renderCvatStatus(snapshot);await refreshCvat({openWhenReady:true})});
+$('retryCvat').onclick=()=>safe(async()=>{
+  $('retryCvat').hidden=true;
+  const snapshot=await api('/api/cvat/status');renderCvatStatus(snapshot);
+  if(snapshot.ready)await openCvat();
+  else if(snapshot.busy)await refreshCvat({openWhenReady:true});
+});
 
 async function init() {
   try {

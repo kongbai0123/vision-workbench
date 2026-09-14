@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QByteArray, QObject, QEvent, QLockFile, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
@@ -12,11 +13,11 @@ from PySide6.QtNetwork import QNetworkCookie
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QToolBar, QVBoxLayout)
-from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .server import APP_ROOT, WorkbenchService
-from .desktop_update import changed_sources, schedule_restart, source_snapshot, validate_sources
+from .desktop_update import changed_sources, schedule_restart, source_snapshot, validate_sources, missing_runtime_requirements
 
 
 class DialogBridge(QObject):
@@ -118,6 +119,19 @@ class WorkbenchBridge(QObject):
     def showWorkbench(self):
         self.window.show_workbench()
 
+    @Slot(str,str,result=str)
+    def openLabelme(self,pid,asset_id):
+        try:
+            self.window.open_labelme(pid,asset_id)
+            return ''
+        except Exception as error:
+            logging.exception('Labelme could not open')
+            return str(error)
+
+    @Slot(str)
+    def finishEditorSync(self,error):
+        self.window.finish_editor_sync(error)
+
     @Slot()
     def openSettings(self):
         self.window.open_settings()
@@ -158,15 +172,18 @@ class MainWindow(QMainWindow):
         self.cvat_view = None
         self.cvat_profile = None
         self.cvat_url = None
-        self.cvat_toolbar = QToolBar("CVAT 編輯器", self)
+        self.labelme_editor=None
+        self.editor_transition=None
+        self.external_mode=None
+        self.cvat_context={}
+        self.cvat_toolbar = QToolBar("專案標註編輯器", self)
         self.cvat_toolbar.setMovable(False)
-        back = QAction("‹ 返回內建編輯器", self)
-        back.triggered.connect(self.show_workbench)
-        external = QAction("在瀏覽器開啟 ↗", self)
-        external.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(self.cvat_url)) if self.cvat_url else None)
-        self.cvat_toolbar.addAction(back)
-        self.cvat_toolbar.addSeparator()
-        self.cvat_toolbar.addAction(external)
+        for title,target in [('內建編輯器','builtin'),('Labelme','labelme'),('CVAT','cvat'),('儲存並前往審核','review')]:
+            action=QAction(title,self)
+            action.triggered.connect(lambda checked=False,t=target:self.transition_editor(t))
+            self.cvat_toolbar.addAction(action)
+        self.editor_status=QLabel('切換時自動儲存並同步專案')
+        self.cvat_toolbar.addSeparator();self.cvat_toolbar.addWidget(self.editor_status)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.cvat_toolbar)
         self.cvat_toolbar.hide()
         self.view.loadFinished.connect(self.loaded)
@@ -203,6 +220,11 @@ class MainWindow(QMainWindow):
             self.cvat_profile.setCachePath(str(profile_root / "cache"))
             self.cvat_view = QWebEngineView(self.stack)
             self.cvat_view.setPage(Page(self.cvat_profile, self.cvat_view))
+            script=QWebEngineScript();script.setName('vision-workbench-sync')
+            script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+            script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            script.setSourceCode((APP_ROOT/'web'/'cvat-host.js').read_text('utf-8'))
+            self.cvat_view.page().scripts().insert(script)
             self.stack.addWidget(self.cvat_view)
         destination = QUrl(url)
         store = self.cvat_profile.cookieStore()
@@ -210,18 +232,82 @@ class MainWindow(QMainWindow):
             cookie = QNetworkCookie(QByteArray(value["name"].encode()), QByteArray(value["value"].encode()))
             cookie.setDomain(value.get("domain", "cvat.localhost"))
             cookie.setPath(value.get("path", "/"))
-            cookie.setHttpOnly(value.get("httpOnly", True))
+            cookie.setHttpOnly(value.get("httpOnly", value['name']=='sessionid'))
             cookie.setSecure(value.get("secure", False))
             store.setCookie(cookie, destination)
         self.cvat_url = url
+        self.cvat_context=result
+        self.external_mode='cvat'
+        self.editor_status.setText('CVAT · 切換時自動儲存並同步專案')
         QTimer.singleShot(120, lambda: self.cvat_view.setUrl(destination))
         self.stack.setCurrentWidget(self.cvat_view)
         self.cvat_toolbar.show()
 
     def show_workbench(self):
-        self.stack.setCurrentWidget(self.view)
-        self.cvat_toolbar.hide()
-        self.page.runJavaScript("window.workbenchCvatClosed?.()")
+        self.transition_editor('builtin')
+
+    def open_labelme(self,pid,asset_id):
+        from .labelme_bridge import create_labelme_editor
+        editor=create_labelme_editor(self.service.store,pid,self.service.data_root,asset_id)
+        if self.labelme_editor:
+            self.stack.removeWidget(self.labelme_editor);self.labelme_editor.deleteLater()
+        self.labelme_editor=editor;self.stack.addWidget(editor)
+        self.stack.setCurrentWidget(editor);self.external_mode='labelme'
+        self.editor_status.setText('Labelme · 切換時自動儲存並同步專案')
+        self.cvat_toolbar.show()
+
+    def transition_editor(self,target):
+        if self.editor_transition or not self.external_mode:return
+        source=self.external_mode
+        self.editor_transition={'source':source,'target':target,'started':time.monotonic()}
+        self.cvat_toolbar.setEnabled(False)
+        self.editor_status.setText('正在儲存並同步專案…')
+        if source=='labelme':
+            if not self.labelme_editor.flush():
+                self.finish_editor_sync(self.labelme_editor.last_sync_error);return
+            self.editor_transition['asset_id']=(self.labelme_editor.current_asset or {}).get('id')
+            self.labelme_editor.setEnabled(False)
+            self.request_editor_sync()
+        else:
+            self.cvat_view.page().runJavaScript(
+                f'window.workbenchCvatHost?.save({int(self.cvat_context["job_id"])})')
+            self.cvat_view.setEnabled(False)
+            QTimer.singleShot(100,self.poll_cvat_save)
+
+    def poll_cvat_save(self):
+        self.cvat_view.page().runJavaScript(
+            "JSON.stringify(window.workbenchCvatHost||{state:'error',message:'CVAT 尚未載入完成'})",self.cvat_save_state)
+
+    def cvat_save_state(self,value):
+        if not self.editor_transition:return
+        try:state=json.loads(value or '{}')
+        except ValueError:state={}
+        if state.get('state')=='saving' and time.monotonic()-self.editor_transition['started']<120:
+            QTimer.singleShot(150,self.poll_cvat_save);return
+        if state.get('state')!='saved':
+            self.finish_editor_sync(state.get('message') or 'CVAT 儲存尚未完成，請稍後重試。');return
+        frames=self.cvat_context.get('asset_ids',[]);frame=state.get('frame',0)
+        if 0<=frame<len(frames):self.editor_transition['asset_id']=frames[frame]
+        self.request_editor_sync()
+
+    def request_editor_sync(self):
+        request={k:v for k,v in self.editor_transition.items() if k!='started'}
+        self.page.runJavaScript(f'window.workbenchExternalSync?.({json.dumps(request)})')
+
+    def finish_editor_sync(self,error):
+        transition=self.editor_transition
+        if not transition:return
+        self.editor_transition=None;self.cvat_toolbar.setEnabled(True)
+        if self.cvat_view:self.cvat_view.setEnabled(True)
+        if self.labelme_editor:self.labelme_editor.setEnabled(True)
+        if error:
+            self.editor_status.setText('尚未同步 · 內容已保留，請修正後重試')
+            QMessageBox.warning(self,'標註尚未同步',error);return
+        self.external_mode=None
+        self.stack.setCurrentWidget(self.view);self.cvat_toolbar.hide()
+        if transition['source']=='cvat':self.cvat_view.setUrl(QUrl('about:blank'))
+        if transition['target']=='close':QTimer.singleShot(0,self.close)
+        else:self.page.runJavaScript(f'window.workbenchExternalNavigate?.({json.dumps(transition["target"])})')
 
     def check_update_indicator(self):
         try:
@@ -260,9 +346,11 @@ class MainWindow(QMainWindow):
         changes=self.check_update_indicator()
         if not changes:return
         if any(name.startswith("requirements") for name in changes):
-            QMessageBox.information(self,"需要更新執行環境","此次修改包含套件需求。請先執行 bootstrap.ps1 更新環境，再重新開啟工作台。")
-            return
-        if self.stack.currentWidget() is self.cvat_view:
+            missing=missing_runtime_requirements(APP_ROOT)
+            if missing:
+                QMessageBox.information(self,"需要更新執行環境","尚缺少下列套件：\n"+'\n'.join(missing)+"\n請執行 bootstrap.ps1 更新環境，再重新開啟工作台。")
+                return
+        if self.external_mode:
             QMessageBox.information(self,"請先返回工作台","請先在 CVAT 儲存標註並返回內建編輯器，完成讀回後再更新。")
             return
         if self.service.jobs.active() or self.service._cvat is not None and self.service._cvat.status().get("busy"):
@@ -316,6 +404,8 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         event.ignore()
+        if self.external_mode:
+            self.transition_editor('close');return
         if self.closing:
             return
         if self.service.jobs.active():

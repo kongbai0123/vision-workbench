@@ -8,6 +8,8 @@ from urllib.error import HTTPError
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
+import numpy as np
+from composer_core.geometry import encode_rle
 from workbench.server import WorkbenchService
 
 
@@ -159,6 +161,42 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(asset['review_state'],'pending')
         self.assertEqual(asset['shapes'][0]['type'],'polygon')
         self.assertEqual(asset['shapes'][0]['label'],'fixture')
+
+    def test_dataset_training_model_and_prediction_api(self):
+        project=self.call('/api/projects',{'name':'整合訓練 API'});pid=project['id']
+        records=[]
+        for index,split in enumerate(['train','train','val','val','test','test']):
+            pixels=np.full((32,40,3),(20,25,30),np.uint8);pixels[6:26,8+index:25+index]=(185,65,45)
+            path=self.root/f'train-{index}.png';Image.fromarray(pixels).save(path)
+            mask=np.zeros((32,40),np.uint8);mask[6:26,8+index:25+index]=1
+            records.append({'path':str(path),'name':path.name,'split':split,'batch_id':f'{split}-{index}',
+                'review_state':'approved','source':{'kind':'api-test'},'shapes':[{'id':f'shape-{index}',
+                'type':'mask','label':'handlebar','x':0,'y':0,'width':40,'height':32,'counts':encode_rle(mask)}]})
+        added=self.service.store.add_assets(pid,records)
+        overview=self.call(f'/api/projects/{pid}/training')
+        self.assertTrue(overview['readiness']['ready'],overview)
+        dataset=self.call(f'/api/projects/{pid}/dataset-versions',{})
+        self.assertEqual(dataset['id'],'D001')
+        run=self.call(f'/api/projects/{pid}/training-runs',{'dataset_version_id':'D001',
+            'config':{'engine':'pixel_prototype_v1','epochs':5}})
+        deadline=time.monotonic()+20
+        while time.monotonic()<deadline:
+            overview=self.call(f'/api/projects/{pid}/training')
+            run=next(item for item in overview['runs'] if item['run_id']==run['run_id'])
+            if run['status'] in {'completed','failed','stopped'}:break
+            time.sleep(.04)
+        self.assertEqual(run['status'],'completed',run)
+        metrics=self.call(f"/api/projects/{pid}/training-runs/{run['run_id']}/metrics")
+        self.assertEqual(len(metrics['metrics']),5)
+        target=self.root/'unreviewed.png';target_pixels=pixels.copy();target_pixels[0,0]=(21,25,30);Image.fromarray(target_pixels).save(target)
+        aid=self.service.store.add_assets(pid,[{'path':str(target),'name':'unreviewed.png',
+            'batch_id':'new','source':{'kind':'api-test'}}])['asset_ids'][0]
+        prediction=self.job(self.call(f'/api/projects/{pid}/predictions',{
+            'model_version_id':run['model_version_id'],'asset_ids':[aid]}))
+        self.assertEqual(prediction['assets'][0]['status'],'candidate')
+        accepted=self.call(f"/api/predictions/{prediction['candidate_id']}/accept",{'asset_ids':[aid]})
+        self.assertEqual(accepted['accepted'],[aid])
+        self.assertEqual(self.call(f'/api/projects/{pid}/assets/{aid}')['review_state'],'pending')
 
 
 if __name__=='__main__':unittest.main()

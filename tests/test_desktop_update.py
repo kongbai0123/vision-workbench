@@ -6,10 +6,19 @@ import sys
 import time
 from pathlib import Path
 
-from workbench.desktop_update import changed_sources, source_snapshot, validate_sources
+from workbench.desktop_update import changed_sources, source_snapshot, validate_sources, missing_runtime_requirements
 
 
 class DesktopUpdateTests(unittest.TestCase):
+    def test_already_installed_requirements_allow_restart(self):
+        from importlib.metadata import version
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'requirements.txt'
+            path.write_text('PySide6=='+version('PySide6')+'\n','utf-8')
+            self.assertEqual(missing_runtime_requirements(folder),[])
+            path.write_text('PySide6==0.0.0\nworkbench-missing-fixture==1.0\n','utf-8')
+            self.assertEqual(len(missing_runtime_requirements(folder)),2)
+
     def test_detects_program_changes_and_ignores_project_data(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);(root/"workbench").mkdir();(root/"data").mkdir()

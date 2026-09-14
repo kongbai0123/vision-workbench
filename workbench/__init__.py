@@ -1,3 +1,3 @@
-"""Vision Workbench: one local project from acquisition to verified export."""
+"""Vision Workbench: local vision data and model lifecycle."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

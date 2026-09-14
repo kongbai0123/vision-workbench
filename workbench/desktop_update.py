@@ -38,6 +38,22 @@ def validate_sources(root):
             compile(path.read_bytes(),str(path),"exec")
 
 
+def missing_runtime_requirements(root):
+    """Allow updates after dependencies were already installed into this runtime."""
+    from importlib.metadata import version,PackageNotFoundError
+    missing=[]
+    for line in (Path(root)/'requirements.txt').read_text('utf-8').splitlines():
+        line=line.strip()
+        if not line or line.startswith('#'):continue
+        name,separator,required=line.partition('==')
+        if not separator:
+            missing.append(line);continue
+        try:installed=version(name)
+        except PackageNotFoundError:installed=None
+        if installed!=required:missing.append(line)
+    return missing
+
+
 def schedule_restart(root):
     root=Path(root).resolve();logs=root/"data"/"logs";logs.mkdir(parents=True,exist_ok=True)
     with (logs/"update.log").open("ab") as log:

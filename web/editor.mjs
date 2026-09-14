@@ -226,7 +226,7 @@ export class AnnotationEditor {
     if (proposal) node.setAttribute('stroke-dasharray',`${6/scale} ${4/scale}`);
     this.$('overlay').append(node);
     if (!proposal && t !== 'mask' && shape.label) {
-      const label = svgElement('text',{x:shape.x,y:Math.max(14/scale,shape.y-5/scale),fill:color,'font-size':11/scale,'font-family':'Segoe UI, Microsoft JhengHei, sans-serif','font-weight':600,'paint-order':'stroke','stroke':'#101820','stroke-width':2/scale,'pointer-events':'none'});
+      const label = svgElement('text',{x:shape.x,y:Math.max(14/scale,shape.y-5/scale),fill:color,'font-size':12/scale,'font-family':'Segoe UI, Microsoft JhengHei, sans-serif','font-weight':600,'paint-order':'stroke','stroke':'#101820','stroke-width':2/scale,'pointer-events':'none'});
       label.textContent = shape.label; this.$('overlay').append(label);
     }
     if (selected && !proposal && t !== 'mask') {
@@ -249,7 +249,7 @@ export class AnnotationEditor {
     for (const [category,points] of Object.entries(this.prompts)) for (const [x,y] of points) {
       const scale = this.scale*this.zoom || 1;
       svg.append(svgElement('circle',{cx:x,cy:y,r:5/scale,fill:category==='positive'?'#54e9b2':'#ff8585',stroke:'#0c1a20','stroke-width':1.5/scale,'pointer-events':'none'}));
-      const text = svgElement('text',{x,y:y+3/scale,fill:'#102128','text-anchor':'middle','font-size':10/scale,'font-weight':700,'pointer-events':'none'});
+      const text = svgElement('text',{x,y:y+3/scale,fill:'#102128','text-anchor':'middle','font-size':12/scale,'font-weight':700,'pointer-events':'none'});
       text.textContent = category === 'positive' ? '+' : '−'; svg.append(text);
     }
   }

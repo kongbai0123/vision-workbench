@@ -118,22 +118,24 @@ class PipelineTests(unittest.TestCase):
         self.assertAlmostEqual(float(rows[0][3]), 19/24, places=8)
         self.assertAlmostEqual(float(rows[0][4]), 15/20, places=8)
 
-    def test_split_mixed_same_batch_and_duplicate_content_are_rejected(self):
+    def test_incomplete_split_and_duplicate_content_are_rejected(self):
         snapshot = self.snapshot()
         snapshot['assets'][0]['split'] = 'train'
         self.assertFalse(validate_project(snapshot)['valid'])
         snapshot['assets'][1]['split'] = 'val'
         snapshot['assets'][1]['batch_id'] = 'batch-0'
-        self.assertFalse(validate_project(snapshot)['valid'])
+        self.assertTrue(validate_project(snapshot)['valid'])
         snapshot['assets'][1]['batch_id'] = 'batch-1'
         snapshot['assets'][1]['image_path'] = snapshot['assets'][0]['image_path']
         snapshot['assets'][1]['sha256'] = snapshot['assets'][0]['sha256']
         self.assertFalse(validate_project(snapshot)['valid'])
 
-    def test_single_batch_yolo_blocks_but_native_works(self):
+    def test_single_batch_yolo_uses_class_count_stratification(self):
         snapshot = self.snapshot()
         snapshot['assets'][1]['batch_id'] = 'batch-0'
-        self.assertFalse(validate_project(snapshot, 'yolo_detection')['valid'])
+        checked = validate_project(snapshot, 'yolo_detection')
+        self.assertTrue(checked['valid'])
+        self.assertEqual(set(checked['splits'].values()), {'train', 'val'})
         self.assertTrue(validate_project(snapshot)['valid'])
 
     def test_invalid_hash_dimensions_class_shape_block(self):

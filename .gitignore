@@ -1,5 +1,6 @@
 # Python
 .venv/
+.venv-training/
 venv/
 __pycache__/
 *.py[cod]
@@ -17,6 +18,7 @@ qa-output/
 verification/
 build/
 dist/
+export_workpiece*/
 *.egg-info/
 *.sqlite
 *.sqlite3

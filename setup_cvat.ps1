@@ -9,6 +9,7 @@ $taskRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $taskFolder = Join-Path $taskRoot 'data\cvat'
 $taskState = Join-Path $taskFolder 'installer-state.json'
 $taskLog = Join-Path $taskFolder 'prerequisites.log'
+$stateSchema = 2
 $dockerVersion = '4.90.0'
 $dockerUrl = 'https://desktop.docker.com/win/main/amd64/238679/Docker%20Desktop%20Installer.exe'
 $dockerSha256 = '2ecc54255702ffbf2e2779cb35ebecde535a0b31e4223171be2195dc318ebd3d'
@@ -48,13 +49,15 @@ function Get-Probe {
               virtualization=([bool]$systemInfo.HypervisorPresent -or [bool]$cpuInfo.VirtualizationFirmwareEnabled);
               wsl_version=$wslVersion; wsl_ready=($wslVersion -and [version]$wslVersion -ge [version]'2.1.5');
               features_ready=$featuresReady; docker_installed=$dockerInstalled; docker_target_version=$dockerVersion;
+              reboot_pending=(Test-RebootPending);
               boot_id=$osInfo.LastBootUpTime.ToUniversalTime().ToString('o') }
 }
 
 function Set-Stage([string]$Phase, [string]$Text, [string]$Step = 'wsl') {
     if (-not (Test-Path -LiteralPath $taskFolder)) { New-Item -ItemType Directory -Path $taskFolder -Force | Out-Null }
     $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
-    $stateValue = @{ phase=$Phase; text=$Text; step=$Step; boot_id=$boot; pid=$PID;
+    # Bumped whenever stage wording/step ids change, so the hub can discard a stale file's text.
+    $stateValue = @{ phase=$Phase; text=$Text; step=$Step; boot_id=$boot; pid=$PID; schema=$stateSchema;
                      updated_at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()/1000.0 }
     $stateTemp = $taskState + '.' + $PID + '.tmp'
     [IO.File]::WriteAllText($stateTemp, ($stateValue | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
@@ -73,7 +76,7 @@ try {
     $probe = Get-Probe
     if (-not $probe.supported) { Set-Stage 'blocked' $probe.reason 'system'; exit 0 }
     if (Test-RebootPending) {
-        Set-Stage 'reboot_required' 'Windows 有待完成的重新啟動；請儲存工作並自行重新啟動，再回到中心按繼續準備。'
+        Set-Stage 'reboot_required' 'Windows 有其他更新待重新啟動，必須先重啟才能安裝 WSL 2。' 'system'
         exit 0
     }
     if ($Mode -eq 'Elevated') {
@@ -91,7 +94,7 @@ try {
             }
         }
         if ($rebootNeeded) {
-            Set-Stage 'reboot_required' 'Windows 功能已啟用，需要重新啟動；請儲存工作並自行重新啟動，再按繼續準備。'
+            Set-Stage 'reboot_required' 'Windows 功能已啟用，需要重新啟動；重啟後回到中心按繼續準備。'
             exit 0
         }
         if (-not $probe.wsl_ready) {

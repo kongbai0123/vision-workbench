@@ -6,3 +6,4 @@ PyYAML==6.0.3
 mss==10.2.0
 pygrabber==0.2
 comtypes==1.4.16
+labelme==7.4.1

@@ -188,7 +188,47 @@ def main():
             wait("!document.querySelector('#reviewApprove').disabled")
             assert service.store.get_project(pid)['stats']['approved']==4
             capture("04-review-approved")
-            click("[data-stage='export']");click("#validateProject")
+            # Build and run a real immutable training version from the same UI.
+            click("[data-stage='train']")
+            click("#prepareAutoSplit")
+            wait("document.querySelector('#trainingReadiness').innerText.includes('檢查通過')")
+            split_assets=service.store.snapshot(pid)['assets']
+            changed_split=next(asset['split'] for asset in split_assets if asset['id']==changed_id)
+            if changed_split=='train':
+                replacement=next(asset for asset in split_assets if asset['split'] in {'val','test'})
+                service.store.assign(pid,[changed_id],split=replacement['split'])
+                service.store.assign(pid,[replacement['id']],split='train')
+                click("#refreshTraining")
+                wait("document.querySelector('#trainingReadiness').innerText.includes('檢查通過')")
+            click("#createDatasetVersion")
+            wait("document.querySelector('#trainingDatasetCurrent').innerText==='D001'")
+            fill("#trainingEngine","pixel_prototype_v1");fill("#trainingEpochs","4");click("#startTraining")
+            wait("document.querySelector('#trainingRunDetail').innerText.includes('已完成')",seconds=60)
+            assert (root/'data'/'datasets'/pid/'D001'/'manifest.json').is_file()
+            assert (root/'data'/'models'/pid/'M001'/'model.json').is_file()
+            capture("05-training-completed")
+            training_manifest=json.loads((root/'data'/'datasets'/pid/'D001'/'manifest.json').read_text(encoding='utf-8'))
+            training_asset=next(asset['asset_id'] for asset in training_manifest['assets'] if asset['split']=='train')
+            click("[data-stage='annotate']")
+            click(f"#assetList [data-asset-id='{training_asset}']")
+            wait(f"window.workbenchState().assetId==={json.dumps(training_asset)}")
+            click("[data-stage='models']")
+            wait("document.querySelector('#modelDetail').innerText.includes('M001')")
+            fill("#predictionTarget","current");click("#generatePredictions")
+            wait("document.querySelector('#predictionList').innerText.includes('M001')",seconds=60)
+            generated_candidate=service.training.list_predictions(pid)[0]
+            assert generated_candidate['assets'][0]['status'] in {'candidate','empty'}
+            if generated_candidate['assets'][0]['status']=='candidate':
+                click("#predictionList button")
+                wait("document.querySelector('#predictionList').innerText.includes('已接受 1 張')")
+                pending_after_prediction=service.store.get_project(pid)['stats']['pending']
+                assert pending_after_prediction==1,pending_after_prediction
+            capture("06-model-and-prediction")
+            if service.store.get_project(pid)['stats']['pending']:
+                click("[data-stage='review']");click("#reviewSelectAll");click("#reviewApprove")
+                wait("document.querySelector('#reviewStats').innerText.includes('4')")
+            assert service.store.get_project(pid)['stats']['approved']==4
+            click("[data-stage='models']");click("#openExchange");click("#validateProject")
             wait("document.querySelector('#validationReport').innerText.includes('4')")
             wait("!document.querySelector('#validateProject').disabled")
             click("#exportProject")
@@ -197,7 +237,7 @@ def main():
             assert len(project['exports'])==1,project['exports']
             exported=project['exports'][0]
             assert Path(exported['path']).is_dir() and Path(exported['zip_path']).is_file()
-            capture("05-validated-export")
+            capture("07-validated-export")
             # Reload entire page; choose the saved project, all data must remain.
             js("document.documentElement.dataset.workflowReload='old'")
             page.triggerAction(QWebEnginePage.WebAction.Reload)
@@ -212,14 +252,14 @@ def main():
             click('.project-delete');wait("document.querySelector('#formDialog').open")
             assert js("document.querySelector('#dialogBody').innerText.includes('4 張影像')")
             assert js("document.querySelector('#dialogBody').innerText.includes('已匯出的資料集會保留')")
-            capture('06-delete-confirmation')
+            capture('08-delete-confirmation')
             click('#cancelDialog');wait("!document.querySelector('#formDialog').open")
             assert service.store.get_project(pid)['id']==pid
             click('.project-delete');wait("document.querySelector('#formDialog').open")
             js("document.querySelector('#dialogForm').requestSubmit()")
             wait("window.workbenchState().projectId===null && !document.querySelector('.project-card')")
             assert Path(exported['path']).is_dir() and Path(exported['zip_path']).is_file()
-            capture('07-project-deleted')
+            capture('09-project-deleted')
             assert not page.errors,page.errors
             (output/'report.json').write_text(json.dumps({'success':True,'steps':steps,'project_images':4,
                 'approved':4,'exported':4,'page_errors':page.errors},ensure_ascii=False,indent=2),encoding='utf-8')
