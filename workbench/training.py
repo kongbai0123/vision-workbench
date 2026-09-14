@@ -270,6 +270,8 @@ class TrainingWorkspace:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         immutable = read_json(manifest)
         if engine in CLASSIFICATION_ENGINES:
+            if len(immutable["classes"]) < 2:
+                raise ValueError("影像分類至少需要兩個類別")
             ambiguous = []
             for asset in immutable["assets"]:
                 labels = {shape.get("label") for shape in asset.get("shapes", []) if shape.get("label") in immutable["classes"]}
