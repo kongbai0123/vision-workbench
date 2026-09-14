@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.4.0 — 2026-09-14
+
+- Aligned the dataset, training configuration, and execution panels with matching heights and responsive field layouts.
+- Expanded training results to full width and moved Run history into a keyboard-accessible sidebar dialog.
+- Added two-column metric plots with on-demand metric selection, up to four same-dataset Run overlays, persistent Run colors/line styles, and synchronized show/hide controls.
+- Added exact shared-Epoch inspection, missing-value gaps, stable chart domains, per-Epoch tables, class-level evaluation, and classification confusion matrices.
+- Prevented overlays of incompatible loss/IoU definitions and clearly identified Test fallback during training evaluation.
+- Fixed Ultralytics mAP50 being confused with mAP50–95; absent metrics are omitted instead of fabricated as zero, and final evaluation retains the actual data split.
+- Added chart-model regression tests and an isolated desktop workflow covering comparison, live polling, missing values, metric selection, and panel alignment.
+
 ## 2.3.0 — 2026-09-14
 
 - Added trainable MobileNet V3, EfficientNet-B0, and ResNet18 image-classification adapters with immutable input validation, per-epoch Accuracy/Macro F1/Macro Recall, evaluation, checkpoints, and model bundles.

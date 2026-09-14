@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -84,39 +85,47 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str) ->
     return path
 
 
+def _finite_metric(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 6) if math.isfinite(number) else None
+
+
 def _numeric_metrics(trainer, kind):
     raw = getattr(trainer, "metrics", {}) or {}
-    values = {}
-    for key, value in raw.items():
-        try:
-            values[str(key)] = float(value)
-        except (TypeError, ValueError):
-            continue
-    def get(*needles):
+    values = {str(key).lower(): number for key, value in raw.items()
+              if (number := _finite_metric(value)) is not None}
+
+    def get(name):
         for key, value in values.items():
-            lowered = key.lower()
-            if all(needle in lowered for needle in needles):
-                return round(value, 6)
-        return 0.0
+            if key.rsplit("/", 1)[-1] == name:
+                return value
+        return None
+
     loss_items = getattr(trainer, "loss_items", None)
     try:
-        loss = float(loss_items.detach().sum().cpu())
+        loss = _finite_metric(loss_items.detach().sum().cpu())
     except Exception:
-        loss = get("loss")
-    if kind == "detect":
-        return {"train/loss": round(loss, 6), "val/box_map50_95": get("map50-95", "b"),
-                "val/box_map50": get("map50", "b")}
-    return {"train/loss": round(loss, 6), "val/mask_map50_95": get("map50-95", "m"),
-            "val/mask_map50": get("map50", "m")}
+        loss = None
+    if loss is None:
+        loss = values.get("train/loss", values.get("loss"))
+    prefix, suffix = ("box", "b") if kind == "detect" else ("mask", "m")
+    measured = {"train/loss": loss, f"val/{prefix}_map50_95": get(f"map50-95({suffix})"),
+                f"val/{prefix}_map50": get(f"map50({suffix})")}
+    return {key: value for key, value in measured.items() if value is not None}
 
 
 def _result_metrics(result, kind, split, image_count):
     metrics = getattr(result, "box" if kind == "detect" else "seg", None)
     prefix = "box" if kind == "detect" else "mask"
-    return {"split": split, "images": image_count,
-            f"{prefix}_map50_95": round(float(getattr(metrics, "map", 0.0) or 0.0), 6),
-            f"{prefix}_map50": round(float(getattr(metrics, "map50", 0.0) or 0.0), 6),
-            f"{prefix}_map75": round(float(getattr(metrics, "map75", 0.0) or 0.0), 6)}
+    measured = {f"{prefix}_{name}": number for name, attribute in
+                (("map50_95", "map"), ("map50", "map50"), ("map75", "map75"))
+                if (number := _finite_metric(getattr(metrics, attribute, None))) is not None}
+    return {"split": split, "images": image_count, **measured}
 
 
 def _artifact_manifest(run_dir, model_dir, run_id, checkpoint):
@@ -134,8 +143,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         os.environ.setdefault("YOLO_OFFLINE", "true")
         from ultralytics import RTDETR, YOLO
         data_yaml = prepare_yolo_dataset(dataset_manifest, run_dir / "dataset", definition["task"])
+        validation_split = "val" if any(asset["split"] == "val" for asset in manifest["assets"]) else "test"
         metrics_path = run_dir / "metrics.jsonl"; metrics_path.write_text("", encoding="utf-8")
-        _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3)
+        _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3,
+                validation_split=validation_split)
         model = (RTDETR if definition["kind"] == "detect" else YOLO)(definition["architecture"])
         epochs = int(run["config"]["epochs"])
         def on_epoch(trainer):
@@ -165,10 +176,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             raise RuntimeError("訓練完成但找不到 checkpoint")
         checkpoint = model_dir / "checkpoint.pt"; shutil.copy2(best, checkpoint)
         validation_raw = model.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
-        val_count = sum(asset["split"] == "val" for asset in manifest["assets"])
-        if not val_count:
-            val_count = sum(asset["split"] == "test" for asset in manifest["assets"])
-        validation = _result_metrics(validation_raw, definition["kind"], "val", val_count)
+        val_count = sum(asset["split"] == validation_split for asset in manifest["assets"])
+        validation = _result_metrics(validation_raw, definition["kind"], validation_split, val_count)
         test_count = sum(asset["split"] == "test" for asset in manifest["assets"])
         test = (_result_metrics(model.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
                                 definition["kind"], "test", test_count) if test_count else validation)

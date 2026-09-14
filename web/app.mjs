@@ -1,6 +1,7 @@
 import {AnnotationEditor, colorFor, shapeNames} from './editor.mjs';
 import {kind, decodeMask, encodeMask, brush} from './shapes.mjs';
 import {SaveQueue} from './save-queue.mjs';
+import {TrainingMonitor} from './training-monitor.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
@@ -341,7 +342,7 @@ async function openProject(id) {
   try {
     await flushAllEdits();
     const project=await api(`/api/projects/${id}`);
-    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;
+    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;trainingMonitor.reset();
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -1373,30 +1374,30 @@ async function runAI() {
 }
 
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
+const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
+let trainingLoadGeneration=0;
 function trainingStatusName(value){return {queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value||'未知'}
 function selectedDataset(){const id=$('trainingDataset')?.value||state.training?.datasets?.[0]?.id;return state.training?.datasets?.find(item=>item.id===id)||null}
 function activeTrainingRun(){return state.training?.runs?.find(run=>activeRunStates.has(run.status))||null}
 function trainingProjectIsCurrent(projectId){return state.project?.id===projectId}
 async function loadTraining({quiet=false}={}) {
   if(!state.project)return;
-  const projectId=state.project.id;
+  const projectId=state.project.id,generation=++trainingLoadGeneration;
   try{
     const overview=await api(projectPath('/training'));
-    if(!trainingProjectIsCurrent(projectId))return;
+    if(!trainingProjectIsCurrent(projectId)||generation!==trainingLoadGeneration)return;
     state.training=overview;
     if(!overview.runs?.some(run=>run.run_id===state.selectedRun))state.selectedRun=overview.runs?.[0]?.run_id||null;
     if(!overview.models?.some(model=>model.model_version_id===state.selectedModel))state.selectedModel=overview.models?.[0]?.model_version_id||null;
-    if(state.selectedRun){
-      try{const report=await api(projectPath(`/training-runs/${state.selectedRun}/metrics`));if(trainingProjectIsCurrent(projectId)&&state.selectedRun===report.run.run_id)state.trainingMetrics=report}
-      catch(error){if(!quiet)throw error}
-    }else state.trainingMetrics=null;
+    await trainingMonitor.update(overview,projectId,state.selectedRun);
+    if(!trainingProjectIsCurrent(projectId)||generation!==trainingLoadGeneration)return;
     updateBackgroundTraining();
     if(state.stage==='train')renderTraining();
     if(state.stage==='models')renderModels();
     scheduleTrainingPoll();
   }catch(error){
     if(!quiet)throw error;
-    updateBackgroundTraining(error.message);
+    if(trainingProjectIsCurrent(projectId)&&generation===trainingLoadGeneration){updateBackgroundTraining(error.message);scheduleTrainingPoll()}
   }
 }
 function scheduleTrainingPoll(){
@@ -1449,37 +1450,7 @@ function renderTraining(){
   $('startTraining').disabled=!dataset||!engine?.train||!!active;
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
-  const list=$('trainingRuns');list.replaceChildren();
-  if(!runs.length)list.append(element('p','尚無訓練紀錄。','empty-list'));
-  for(const run of runs){const row=button('','run-row'+(run.run_id===state.selectedRun?' active':''),()=>safe(async()=>{state.selectedRun=run.run_id;state.trainingMetrics=await api(projectPath(`/training-runs/${run.run_id}/metrics`));renderTraining()}));const top=element('div',undefined,'run-row-top');top.append(element('b',`${run.run_id} · ${run.engine_name}`),element('span',trainingStatusName(run.status),'run-status '+run.status));row.append(top,element('small',`${run.dataset_version_id} · ${date(run.created_at)}`));list.append(row)}
-  renderTrainingRun(runs.find(run=>run.run_id===state.selectedRun)||runs[0]);
-}
-const metricLabels={'train/loss':'Train loss','val/mean_iou':'Validation mIoU','val/box_mean_iou':'Validation Box IoU','val/recall_50':'Validation Recall@0.5','val/mean_dice':'Validation Dice','val/accuracy':'Validation Accuracy','val/macro_f1':'Validation Macro F1','val/macro_recall':'Validation Macro Recall','val/box_map50_95':'Validation Box mAP50–95','val/box_map50':'Validation Box mAP50','val/mask_map50_95':'Validation Mask mAP50–95','val/mask_map50':'Validation Mask mAP50'};
-const metricColors={'train/loss':'#efb35b','val/mean_iou':'#55d4bd','val/box_mean_iou':'#55d4bd','val/recall_50':'#8ebdff','val/mean_dice':'#c795f5','val/accuracy':'#55d4bd','val/macro_f1':'#8ebdff','val/macro_recall':'#c795f5','val/box_map50_95':'#55d4bd','val/box_map50':'#8ebdff','val/mask_map50_95':'#55d4bd','val/mask_map50':'#8ebdff'};
-function svgNode(name,attributes={},textValue){const node=document.createElementNS('http://www.w3.org/2000/svg',name);for(const [key,value]of Object.entries(attributes))node.setAttribute(key,String(value));if(textValue!==undefined)node.textContent=textValue;return node}
-function metricChart(title,rows,keys,epochs,{fixedUnit=false}={}){
-  const available=keys.filter(key=>rows.some(row=>Number.isFinite(Number(row[key]))));if(!available.length)return null;
-  const card=element('section',undefined,'metric-chart-card'),heading=element('div',undefined,'metric-chart-heading');heading.append(element('b',title));
-  for(const key of available){const row=[...rows].reverse().find(item=>Number.isFinite(Number(item[key])));const chip=element('span');chip.style.setProperty('--series-color',metricColors[key]);chip.textContent=`${metricLabels[key]} ${Number(row[key]).toFixed(4)}`;heading.append(chip)}card.append(heading);
-  const width=760,height=240,left=54,right=18,top=16,bottom=36,plotWidth=width-left-right,plotHeight=height-top-bottom,xMax=Math.max(1,Number(epochs)||rows.length||1);
-  const values=rows.flatMap(row=>available.map(key=>Number(row[key])).filter(Number.isFinite));let yMax=fixedUnit?1:Math.max(1,...values);if(!fixedUnit)yMax=Math.ceil(yMax*10)/10;
-  const svg=svgNode('svg',{viewBox:`0 0 ${width} ${height}`,role:'img','aria-label':`${title}，X 軸固定為 1 到 ${xMax} epoch`});
-  for(let tick=0;tick<=4;tick++){const y=top+plotHeight*(1-tick/4),value=yMax*tick/4;svg.append(svgNode('line',{x1:left,y1:y,x2:width-right,y2:y,class:'metric-grid'}),svgNode('text',{x:left-9,y:y+4,class:'metric-axis-label','text-anchor':'end'},value.toFixed(fixedUnit?2:1)))}
-  const xCount=Math.min(5,xMax),xValues=[...new Set(Array.from({length:xCount},(_item,index)=>xMax===1?1:Math.round(1+(xMax-1)*index/Math.max(1,xCount-1))))];for(const value of xValues){const x=left+(xMax===1?0:plotWidth*(value-1)/(xMax-1));svg.append(svgNode('line',{x1:x,y1:top,x2:x,y2:height-bottom,class:'metric-grid vertical'}),svgNode('text',{x,y:height-13,class:'metric-axis-label','text-anchor':'middle'},String(value)))}
-  svg.append(svgNode('text',{x:left+plotWidth/2,y:height-1,class:'metric-axis-title','text-anchor':'middle'},'Epoch'));
-  for(const key of available){const points=rows.map(row=>({epoch:Number(row.epoch),value:Number(row[key])})).filter(point=>Number.isFinite(point.epoch)&&Number.isFinite(point.value));const mapped=points.map(point=>({x:left+(xMax===1?0:plotWidth*(point.epoch-1)/(xMax-1)),y:top+plotHeight*(1-Math.max(0,Math.min(yMax,point.value))/yMax),...point}));if(mapped.length>1)svg.append(svgNode('polyline',{points:mapped.map(point=>`${point.x},${point.y}`).join(' '),fill:'none',stroke:metricColors[key],'stroke-width':2.5,'vector-effect':'non-scaling-stroke'}));for(const point of mapped){const dot=svgNode('circle',{cx:point.x,cy:point.y,r:4,fill:metricColors[key],class:'metric-point',tabindex:0});dot.append(svgNode('title',{},`${metricLabels[key]} · Epoch ${point.epoch} · ${point.value.toFixed(6)}`));svg.append(dot)}}
-  card.append(svg);return card;
-}
-function renderTrainingPlots(run){const rows=state.trainingMetrics?.run?.run_id===run.run_id?state.trainingMetrics.metrics||[]:[];const root=element('div',undefined,'training-plots');const loss=metricChart('訓練損失',rows,['train/loss'],run.config?.epochs),scores=metricChart('驗證指標',rows,['val/mean_iou','val/box_mean_iou','val/recall_50','val/mean_dice','val/accuracy','val/macro_f1','val/macro_recall','val/box_map50_95','val/box_map50','val/mask_map50_95','val/mask_map50'],run.config?.epochs,{fixedUnit:true});if(loss)root.append(loss);if(scores)root.append(scores);if(!root.childElementCount)root.append(element('p',activeRunStates.has(run.status)?'等待第一個 Epoch 指標…':'此執行沒有可繪製的 Epoch 指標。','metric-empty'));else root.append(element('p','座標範圍固定於整個 Run；曲線不會左右掃視。移到數值點可查看精確值。','metric-chart-note'));return root}
-function renderTrainingRun(run){
-  const root=$('trainingRunDetail');root.replaceChildren();
-  if(!run){const empty=element('div',undefined,'report-empty');empty.append(element('span','◴'),element('h3','尚無訓練紀錄'),element('p','開始訓練後在此查看進度、指標與固定設定。'));root.append(empty);return}
-  const heading=element('div',undefined,'run-progress-head'),copy=element('div');copy.append(element('span','TRAINING RUN','eyebrow'),element('h2',`${run.run_id} · ${trainingStatusName(run.status)}`));heading.append(copy,element('strong',`${number(run.progress||0)}%`));root.append(heading);
-  const progress=document.createElement('progress');progress.className='run-progress';progress.max=100;progress.value=Number(run.progress||0);root.append(progress,element('p',run.message||'','muted'),renderTrainingPlots(run));
-  const evaluation=run.evaluation?.test||run.evaluation?.validation;
-  if(evaluation){const values=evaluation.accuracy!==undefined?[['Accuracy',Number(evaluation.accuracy).toFixed(3)],['Macro F1',Number(evaluation.macro_f1).toFixed(3)],['Macro Recall',Number(evaluation.macro_recall).toFixed(3)]]:evaluation.mask_map50_95!==undefined?[['Mask mAP50–95',Number(evaluation.mask_map50_95).toFixed(3)],['Mask mAP50',Number(evaluation.mask_map50).toFixed(3)]]:evaluation.box_map50_95!==undefined?[['Box mAP50–95',Number(evaluation.box_map50_95).toFixed(3)],['Box mAP50',Number(evaluation.box_map50).toFixed(3)]]:evaluation.box_mean_iou!==undefined?[['Box IoU',Number(evaluation.box_mean_iou).toFixed(3)],['Recall@0.5',Number(evaluation.recall_50).toFixed(3)]]:evaluation.mean_dice!==undefined?[['mIoU',Number(evaluation.mean_iou).toFixed(3)],['Dice',Number(evaluation.mean_dice).toFixed(3)]]:[['Mean IoU',Number(evaluation.mean_iou).toFixed(3)]];values.push(['評估圖片',number(evaluation.images)],['模型版本',run.model_version_id]);const metrics=element('div',undefined,'run-metrics');for(const [label,value]of values){const card=element('div',undefined,'run-metric');card.append(element('span',label),element('b',value));metrics.append(card)}root.append(metrics)}
-  if(run.error){const error=element('div',run.error,'readiness-item error');root.append(error)}
-  const config=element('div',undefined,'run-config');for(const [label,value]of [['資料版本',run.dataset_version_id],['引擎',run.engine_name],['調整輪數',run.config?.epochs],['裝置',String(run.config?.device||'cpu').toUpperCase()]]){const item=element('div');item.append(element('span',label),element('b',String(value??'—')));config.append(item)}root.append(config);
+  trainingMonitor.render();
 }
 async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{});await loadTraining();$('trainingDataset').value=created.id;renderTraining();toast(`已建立固定訓練資料 ${created.id}。`)}
 async function startTrainingRun(){
@@ -1488,7 +1459,7 @@ async function startTrainingRun(){
   if(!Number.isInteger(epochs)||epochs<1||epochs>200)throw Error('調整輪數必須是 1–200 的整數。');
   if(!Number.isInteger(seed)||seed<0)throw Error('隨機種子必須是非負整數。');
   const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,epochs,seed,device:$('trainingDevice').value}});
-  state.selectedRun=run.run_id;await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
+  state.selectedRun=run.run_id;trainingMonitor.mode='single';await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
 }
 async function stopTrainingRun(){const run=activeTrainingRun();if(!run)return;await api(projectPath(`/training-runs/${run.run_id}/stop`),'POST',{});await loadTraining();toast(`${run.run_id} 正在安全停止。`)}
 function renderModels(){

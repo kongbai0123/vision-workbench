@@ -12,7 +12,9 @@ from PIL import Image
 from composer_core.geometry import encode_rle
 from workbench.classification_engine import _asset_label
 from workbench.training_engine import atomic_json
-from workbench.ultralytics_engine import prepare_yolo_dataset, train as train_ultralytics
+from workbench.ultralytics_engine import (
+    _numeric_metrics, _result_metrics, prepare_yolo_dataset, train as train_ultralytics,
+)
 
 
 class NewModelAdapterTests(unittest.TestCase):
@@ -56,7 +58,31 @@ class NewModelAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "無法無損"):
                 prepare_yolo_dataset(manifest, root / "converted", "instance_segmentation")
 
-    def test_ultralytics_worker_contract_writes_metrics_checkpoint_and_record(self):
+    def test_ultralytics_metrics_distinguish_map50_from_map50_95(self):
+        trainer = SimpleNamespace(metrics={"metrics/mAP50-95(B)": .31, "metrics/mAP50(B)": .62,
+                                          "metrics/mAP50-95(M)": .23, "metrics/mAP50(M)": .54},
+                                  loss_items=None)
+        self.assertEqual(_numeric_metrics(trainer, "detect"),
+                         {"val/box_map50_95": .31, "val/box_map50": .62})
+        self.assertEqual(_numeric_metrics(trainer, "segment"),
+                         {"val/mask_map50_95": .23, "val/mask_map50": .54})
+
+    def test_ultralytics_metrics_omit_unmeasured_values_and_preserve_real_zero(self):
+        trainer = SimpleNamespace(metrics={"metrics/mAP50-95(M)": float("nan"),
+            "metrics/mAP50(M)": 0., "train/loss": float("inf"), "val/loss": .9}, loss_items=None)
+        self.assertEqual(_numeric_metrics(trainer, "segment"), {"val/mask_map50": 0.})
+        self.assertEqual(_numeric_metrics(SimpleNamespace(metrics={}), "detect"), {})
+        trainer.metrics["train/loss"] = 0.
+        self.assertEqual(_numeric_metrics(trainer, "segment"), {"train/loss": 0., "val/mask_map50": 0.})
+
+    def test_ultralytics_result_omits_missing_metrics_without_faking_scores(self):
+        self.assertEqual(_result_metrics(SimpleNamespace(), "detect", "test", 3),
+                         {"split": "test", "images": 3})
+        result = SimpleNamespace(seg=SimpleNamespace(map=None, map50=0., map75=float("nan")))
+        self.assertEqual(_result_metrics(result, "segment", "val", 2),
+                         {"split": "val", "images": 2, "mask_map50": 0.})
+
+    def _run_fake_ultralytics(self, splits):
         class FakeModel:
             def __init__(self, architecture):
                 self.architecture = architecture; self.callbacks = {}
@@ -78,7 +104,7 @@ class NewModelAdapterTests(unittest.TestCase):
             root = Path(directory); dataset = root / "dataset"; (dataset / "images").mkdir(parents=True)
             assets = []
             import hashlib
-            for index, split in enumerate(("train", "val", "test")):
+            for index, split in enumerate(splits):
                 image = dataset / "images" / f"A{index}.png"; Image.new("RGB", (20, 20), (index, 0, 0)).save(image)
                 shape = {"id": f"s{index}", "type": "rectangle", "label": "part", "x": 2, "y": 3,
                          "width": 10, "height": 8}
@@ -98,6 +124,32 @@ class NewModelAdapterTests(unittest.TestCase):
             self.assertEqual((model_dir / "checkpoint.pt").read_bytes(), b"checkpoint")
             record = json.loads((model_dir / "model.json").read_text(encoding="utf-8"))
             self.assertEqual(record["test"]["box_map50_95"], .4)
+            metrics = [json.loads(row) for row in (run_dir / "metrics.jsonl").read_text().splitlines()]
+            for row in metrics:
+                self.assertEqual(row["val/box_map50"], .62)
+                self.assertNotIn("train/loss", row)
+            data_yaml = json.loads((run_dir / "dataset/data.yaml").read_text(encoding="utf-8"))
+            return result, record, data_yaml
+
+    def test_ultralytics_worker_contract_writes_metrics_checkpoint_and_record(self):
+        result, record, _data = self._run_fake_ultralytics(("train", "val", "test"))
+        self.assertEqual(result["validation_split"], "val")
+        self.assertEqual(record["validation"]["split"], "val")
+        self.assertEqual(record["test"]["split"], "test")
+
+    def test_ultralytics_validation_fallback_records_actual_test_split(self):
+        result, record, data = self._run_fake_ultralytics(("train", "test", "test"))
+        self.assertEqual(result["validation_split"], "test")
+        self.assertEqual(data["val"], "images/test")
+        self.assertEqual(record["validation"]["split"], "test")
+        self.assertEqual(record["validation"]["images"], 2)
+        self.assertEqual(result["evaluation"]["validation"]["split"], "test")
+
+    def test_ultralytics_missing_test_keeps_validation_identity(self):
+        result, record, _data = self._run_fake_ultralytics(("train", "val", "val"))
+        self.assertEqual(result["validation_split"], "val")
+        self.assertEqual(record["test"]["split"], "val")
+        self.assertEqual(record["test"]["images"], 2)
 
 
 if __name__ == "__main__":

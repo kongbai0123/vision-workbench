@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vision Workbench · 視覺資料工作站</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/acquisition.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vision Workbench · 視覺資料工作站</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/acquisition.css"><link rel="stylesheet" href="/training.css"></head>
 <body>
 <div class="app-shell">
  <header class="app-header">
@@ -98,8 +98,9 @@
     <section class="panel training-config-panel"><div class="panel-title"><span>RUN CONFIGURATION</span><h2>參數設定</h2></div><label for="trainingEngine">訓練模型</label><select id="trainingEngine"></select><p id="trainingEngineHint" class="field-note"></p><div id="trainingModelNotice" class="model-install-notice" hidden><b id="trainingModelNoticeTitle"></b><p id="trainingModelNoticeText"></p><button id="openSettingsModels" class="secondary">查看模型與安裝</button></div><div class="training-form-grid"><div><label for="trainingEpochs">訓練輪數</label><input id="trainingEpochs" type="number" min="1" max="200" value="24"></div><div><label for="trainingSeed">隨機種子</label><input id="trainingSeed" type="number" min="0" max="2147483647" value="42"></div><div><label for="trainingDevice">執行裝置</label><select id="trainingDevice"><option value="auto">自動選擇 GPU / CPU</option><option value="cuda">NVIDIA CUDA</option><option value="cpu">CPU</option></select></div><div><label>資料任務</label><div id="trainingTaskLabel" class="training-readonly">依所選模型決定</div></div></div><details class="training-details"><summary>執行與資料說明</summary><p>每個 Run 固定資料版本、引擎、參數與 runtime。離開此頁不會改動執行中的 Run；技術日誌保存在 Run 目錄。</p></details></section>
     <aside class="panel training-action-panel"><div class="panel-title"><span>EXECUTION</span><h2>執行設定</h2></div><dl id="trainingSummary" class="training-summary"></dl><button id="startTraining" class="primary full">開始訓練</button><button id="stopTraining" class="secondary danger full" hidden>停止訓練</button><p id="trainingActionHint" class="field-note">建立資料版本後即可開始。</p></aside>
    </div>
-   <div class="section-heading"><div><span class="eyebrow">RUN HISTORY</span><h2>執行紀錄</h2></div></div>
-   <div class="run-workspace"><div id="trainingRuns" class="run-list"></div><article id="trainingRunDetail" class="panel run-detail"><div class="report-empty"><span>◴</span><h3>尚無訓練紀錄</h3><p>開始訓練後在此查看進度、指標與固定設定。</p></div></article></div>
+   <div class="section-heading training-monitor-heading"><div><span class="eyebrow">TRAINING MONITOR</span><h2>訓練監控與結果</h2></div><div class="training-monitor-actions"><button id="trainingViewSingle" class="secondary" aria-pressed="true">單次訓練</button><button id="trainingViewCompare" class="secondary" aria-pressed="false">Run 疊圖比較</button><button id="openTrainingHistory" class="secondary">執行紀錄 · 0</button></div></div>
+   <div class="run-workspace"><article id="trainingRunDetail" class="panel run-detail"><div class="report-empty"><span>◴</span><h3>尚無訓練紀錄</h3><p>開始訓練後在此查看進度、指標與固定設定。</p></div></article></div>
+   <dialog id="trainingHistoryDialog" class="training-history-dialog" aria-labelledby="trainingHistoryTitle"><div class="training-history-heading"><div><span class="eyebrow">RUN HISTORY</span><h2 id="trainingHistoryTitle">執行紀錄</h2></div><button id="closeTrainingHistory" class="secondary">關閉</button></div><p id="trainingHistoryCount" class="muted"></p><div id="trainingRuns" class="run-list"></div></dialog>
   </section>
   <section id="models" class="page models-page" hidden>
    <div class="page-heading"><div><span class="eyebrow">EVALUATION & MODELS</span><h1>評估與模型</h1><p>查看測試結果、模型來源，並將模型輸出送回人工修改與審核。</p></div><div class="inline"><button id="openExchange" class="secondary">備份與外部交換</button><button id="refreshModels" class="secondary">重新整理</button></div></div>

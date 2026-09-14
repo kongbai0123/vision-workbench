@@ -33,7 +33,9 @@ Vision Workbench 是以 Windows 為主要平台的本地視覺資料與模型工
 - 設定中心羅列可用及規劃中的模型、所需標註、元件狀態與授權；選取未安裝模型只顯示說明，使用者按下安裝後才準備元件。
 - 內建像素原型分割可在未安裝 PyTorch 時立即完成資料到模型的快速基準驗證。
 - 模型輸出先保存為候選；接受後才加入圖片並回到待審核，不會直接覆蓋或核准人工標註。
-- 訓練頁依每個 Epoch 即時顯示 loss 與任務指標；X 軸固定為整個 Run，驗證指標維持 0–1 範圍，數值點可查看精確值。
+- 訓練頁上方三個設定框等高對齊，下方使用完整寬度顯示摘要及雙欄圖表；執行紀錄移至側欄。
+- 訓練頁依實際紀錄提供 Loss、IoU／Dice、Accuracy／F1 或 mAP 等圖表；可疊圖比較最多 4 個相同資料版本的 Run，並同步顯示／隱藏各 Run。
+- X 軸涵蓋完整 Run，比例指標維持 0–1；隱藏曲線不改變座標，缺值不補零。滑鼠、點選或方向鍵可查看同一 Epoch 各 Run 的數值，並提供數值明細與各類別評估。
 - 完成的 ModelVersion 可匯出成獨立 ZIP，包含 checkpoint、設定、評估、指標、來源 lineage 與 SHA-256 manifest，不包含訓練圖片。
 
 ## 系統需求
@@ -92,6 +94,18 @@ RT-DETR 與 YOLO26 Seg 使用 `.venv-models/ultralytics`。請先閱讀模型頁
 8. 建立固定資料版本，選擇實例分割、物件偵測、語意分割或圖片分類模型並啟動 Run；未安裝及規劃中的模型仍可查看用途與準備方式。
 9. 在「評估與模型」查看任務對應指標、匯出模型封裝，或產生預標註候選；接受候選後回到人工審核。
 10. 模型封裝位於 `data/model-exports/{project_id}/{export_id}`；需要資料集備份或外部交換時，再開啟「備份與外部交換」。
+
+### 訓練監控與 Run 比較（2.4）
+
+「單次訓練」先顯示評估摘要、固定執行設定，再顯示 Loss 與主要驗證指標。勾選「顯示圖表」可增加模型已實際記錄的指標；沒有紀錄的 Validation Loss、學習率或硬體數值不會被推測產生。
+
+按「Run 疊圖比較」會選入相同資料版本的近期 Run；從「執行紀錄」可加入或移除比較項目，最多 4 個。點選摘要中的 Run 開關，該 Run 在所有圖表一起顯示或隱藏，顏色與線型保持一致。Epoch 明細跟隨顯示開關；詳細評估與設定仍可查閱每個已選 Run。
+
+比較使用相同資料版本與評估分割。不同引擎的 Loss、Mask IoU 與語意 IoU 可能有不同定義，無法直接比較時會停用該指標疊圖並顯示原因，其餘可比較的指標繼續顯示。未設定 Validation 時，訓練期間使用 Test 的曲線會明確標示；詳細評估提供已記錄的各類別 IoU／Dice／Recall 或分類混淆矩陣。
+
+曲線不會左右掃視，隱藏 Run 不會縮放座標。若新數值超出原 Loss 範圍，座標只擴大到能完整呈現資料並顯示提示，不會持續自動縮小。停止的 Run 或缺少某個 Epoch 指標時保留缺口；數值表以「—」表示缺值。
+
+執行中的桌面程式可從「設定 → 更新與版本 → 檢查本機程式更新」，再按「更新並自動重新開啟」載入 2.4.0。本版未新增套件需求；更新不需要重新安裝模型。
 
 ### 類別管理規則
 
@@ -169,12 +183,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 node --test tests\ui_editor.test.mjs
 node --test tests\ui_cvat.test.mjs
+node --test tests\ui_training_charts.test.mjs
 ```
 
 執行隔離的桌面工作流程驗證：
 
 ```powershell
 .\.venv\Scripts\python.exe tests\desktop_workflow.py
+.\.venv\Scripts\python.exe tests\desktop_training.py
 ```
 
 安裝獨立訓練環境後，可執行一輪真實 CUDA／CPU Mask R-CNN 煙霧測試：
