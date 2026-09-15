@@ -6,7 +6,7 @@
 - Validation 成為訓練與選模必要條件，並須涵蓋所有已有標註的類別；Test 只做最終評估。缺 Test 時保存 `null` 並顯示尚未執行，不再複製 Validation 或用 Test 調門檻、選 checkpoint、控制學習率。
 - Faster R-CNN 評估改為依信心排序的一對一配對，記錄 FP、FN、Precision、Recall、F1 與 AP50；重複框和背景錯誤框會確實扣分。分類指標附上 support，Macro 僅納入該集合有真實樣本的類別。
 - 每份新評估保存計算版本、選模集合、權重來源、Test 是否存在及來源獨立性；來源群組跨集合時列出實際重疊的 session。介面顯示 N/A、實際評估集合與歷史重評原因，不再把 Validation 誤標成 Test。
-- 以原 checkpoint 回測 R001、R004、R005，保留原始評估並新增 `evaluation.v2.json`：R001 修正為 Val 0.332274／Test 0.591665；R004 標為分割無效；R005 在 v2.7.6 部署門檻 0.5 下為 Val Macro IoU 0.840671／Test 0.936755。
+- 支援版本化歷史重評：以 `evaluation.v2.json` 提供修正結果、無效評估原因與來源追溯，並保留原始評估紀錄。
 
 ## 2.7.6 — 2026-09-15
 
