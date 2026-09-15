@@ -12,7 +12,8 @@ import uuid
 import numpy as np
 
 from composer_core.geometry import encode_rle
-from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, _iou, _status, _stopping
+from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, _status, _stopping
+from .evaluation_metrics import PixelMetrics, evaluation_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
 
@@ -93,7 +94,7 @@ def _collate(rows):
 
 
 def _evaluate(model, dataset, device, torch, threshold=0.5):
-    model.eval(); values = defaultdict(list)
+    model.eval(); metrics = PixelMetrics(dataset.manifest["classes"])
     with torch.inference_mode():
         for image, target, _asset in dataset:
             output = model([image.to(device)])[0]
@@ -105,11 +106,12 @@ def _evaluate(model, dataset, device, torch, threshold=0.5):
                 if score >= threshold:
                     predicted[int(label)] |= mask[0] >= 0.5
             for class_id in range(1, len(dataset.manifest["classes"]) + 1):
-                values[class_id].append(_iou(predicted[class_id], expected[class_id]))
-    per_class = {dataset.manifest["classes"][class_id - 1]: round(sum(rows) / max(1, len(rows)), 6)
-                 for class_id, rows in values.items()}
-    return {"split": dataset.assets[0]["split"] if dataset.assets else "", "images": len(dataset),
-            "mean_iou": round(sum(per_class.values()) / max(1, len(per_class)), 6), "per_class_iou": per_class}
+                label = dataset.manifest["classes"][class_id - 1]
+                metrics.update(label, predicted[class_id], expected[class_id])
+    split = dataset.assets[0]["split"] if dataset.assets else ""
+    result = metrics.summary(split, len(dataset))
+    result.update(score_threshold=threshold, metric_scope="class_union_pixels")
+    return result
 
 
 def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
@@ -124,11 +126,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         model, _ = _model(len(manifest["classes"]), image_size)
         model.to(device)
         training = NativeMaskDataset(manifest, dataset_manifest.parent, "train", torch)
-        validation_split = "val" if any(a["split"] == "val" for a in manifest["assets"]) else "test"
-        validation = NativeMaskDataset(manifest, dataset_manifest.parent, validation_split, torch)
+        validation = NativeMaskDataset(manifest, dataset_manifest.parent, "val", torch)
         testing = NativeMaskDataset(manifest, dataset_manifest.parent, "test", torch)
         if not training.assets or not validation.assets:
-            raise RuntimeError("Mask R-CNN 需要非空的 Train 與 Validation/Test 資料")
+            raise RuntimeError("Mask R-CNN 需要非空的 Train 與 Validation；Test 不會替代 Validation")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
         optimizer = create_optimizer(torch, [p for p in model.parameters() if p.requires_grad], run["config"])
@@ -159,20 +160,25 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         checkpoint = model_dir / "checkpoint.pt"
         torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate(model, validation, device, torch)
-        test_result = _evaluate(model, testing, device, torch) if testing.assets else validation_result
+        test_result = _evaluate(model, testing, device, torch) if testing.assets else None
+        protocol = evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets),
+                                       manifest=manifest)
         model_record = {"schema_version": 1, "engine": ENGINE_KEY, "engine_name": ENGINE_NAME,
                         "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                         "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
                         "image_size": image_size, "score_threshold": 0.5, "validation": validation_result,
-                        "test": test_result, "created_at": time.time(), "checkpoint": "checkpoint.pt"}
+                         "test": test_result, "evaluation_protocol": protocol,
+                         "created_at": time.time(), "checkpoint": "checkpoint.pt"}
         atomic_json(model_dir / "model.json", model_record)
-        atomic_json(run_dir / "evaluation.json", {"validation": validation_result, "test": test_result})
+        atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
+                                                   "validation": validation_result, "test": test_result})
         artifacts = []
         for path in (metrics_path, run_dir / "evaluation.json", model_dir / "model.json", checkpoint):
             raw = path.read_bytes(); artifacts.append({"path": path.name, "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
         atomic_json(run_dir / "artifact-manifest.json", {"schema_version": 1, "run_id": run["run_id"], "artifacts": artifacts})
         return _status(run_dir, run, status="completed", message="Mask R-CNN 訓練與評估完成", progress=100,
-                       completed_at=time.time(), evaluation={"validation": validation_result, "test": test_result})
+                       completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
+                                                              "validation": validation_result, "test": test_result})
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())
         raise

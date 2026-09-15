@@ -60,13 +60,38 @@ def dataset_readiness(manifest):
         report["blockers"].append({"code": "empty_dataset", "message": "固定資料版本沒有圖片", "action": "建立有效資料版本"})
     if not report["image_counts"]["train"]:
         report["blockers"].append({"code": "no_train_split", "message": "Train 沒有圖片", "action": "設定資料分割"})
-    if not (report["image_counts"]["val"] or report["image_counts"]["test"]):
-        report["blockers"].append({"code": "no_evaluation_split", "message": "Validation 或 Test 至少需要一張圖片", "action": "設定資料分割"})
+    if not report["image_counts"]["val"]:
+        report["blockers"].append({"code": "no_validation_split", "message": "Validation 沒有圖片，不能安全選模或調整門檻",
+                                   "action": "設定獨立的 Validation；Test 僅供最後評估，不會替代 Validation"})
     if any(a.get("split") not in {"train", "val", "test"} for a in assets):
         report["blockers"].append({"code": "missing_split", "message": "固定資料版本含有未分割圖片", "action": "重新建立資料版本"})
     report["ready"] = not report["blockers"]
     report["stats"] = {"approved": len(assets), "splits": report["image_counts"], "classes": report["class_totals"]}
     return report
+
+
+def _with_evaluation_reassessment(record, directory, *, model=False):
+    """Overlay a versioned reassessment while preserving the historical record."""
+    path = Path(directory) / "evaluation.v2.json"
+    if not path.is_file():
+        return record
+    reassessment = read_json(path)
+    updated = dict(record)
+    updated["evaluation_reassessment"] = {
+        "schema_version": reassessment.get("schema_version"),
+        "created_at": reassessment.get("created_at"),
+        "reason": reassessment.get("reason"),
+        "valid": reassessment.get("valid", True),
+    }
+    if model:
+        updated["legacy_evaluation"] = {"validation": record.get("validation"), "test": record.get("test")}
+        updated["validation"] = reassessment.get("validation")
+        updated["test"] = reassessment.get("test")
+        updated["evaluation_protocol"] = reassessment.get("protocol")
+    else:
+        updated["legacy_evaluation"] = record.get("evaluation")
+        updated["evaluation"] = reassessment
+    return updated
 
 
 class TrainingWorkspace:
@@ -175,8 +200,9 @@ class TrainingWorkspace:
         splits = {name: sum(asset.get("split") == name for asset in approved) for name in ("train", "val", "test")}
         if approved and not splits["train"]:
             blockers.append({"code": "no_train_split", "message": "Train 沒有已核准圖片", "action": "設定資料分割"})
-        if approved and not (splits["val"] or splits["test"]):
-            blockers.append({"code": "no_evaluation_split", "message": "Validation 或 Test 至少需要一張圖片", "action": "設定資料分割"})
+        if approved and not splits["val"]:
+            blockers.append({"code": "no_validation_split", "message": "Validation 沒有已核准圖片，不能安全選模或調整門檻",
+                             "action": "設定獨立的 Validation；Test 僅供最後評估，不會替代 Validation"})
         class_counts = {label: 0 for label in project.get("classes", [])}
         unsupported = []
         for asset in approved:
@@ -502,11 +528,11 @@ class TrainingWorkspace:
         path = self._run_path(project_id, run_id)
         if not path.is_file():
             raise FileNotFoundError("找不到訓練紀錄")
-        return read_json(path)
+        return _with_evaluation_reassessment(read_json(path), path.parent)
 
     def list_runs(self, project_id):
         parent = self.runs / project_id
-        rows = [read_json(item / "run.json") for item in parent.iterdir()
+        rows = [_with_evaluation_reassessment(read_json(item / "run.json"), item) for item in parent.iterdir()
                 if item.is_dir() and (item / "run.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
 
@@ -529,7 +555,7 @@ class TrainingWorkspace:
 
     def list_models(self, project_id):
         parent = self.models / project_id
-        rows = [read_json(item / "model.json") for item in parent.iterdir()
+        rows = [_with_evaluation_reassessment(read_json(item / "model.json"), item, model=True) for item in parent.iterdir()
                 if item.is_dir() and (item / "model.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
 
@@ -537,7 +563,7 @@ class TrainingWorkspace:
         path = self._model_path(project_id, model_id)
         if not path.is_file():
             raise FileNotFoundError("找不到模型版本")
-        return read_json(path)
+        return _with_evaluation_reassessment(read_json(path), path.parent, model=True)
 
     def export_model(self, project_id, model_id, progress=lambda _message, _percent=None: None):
         """Create a self-describing, checksummed model bundle without dataset images."""
@@ -559,7 +585,7 @@ class TrainingWorkspace:
                 for path in sorted(model_dir.iterdir()):
                     if path.is_file() and not path.is_symlink():
                         sources.append((path, f"model/{path.name}"))
-                for name in ("run.json", "metrics.jsonl", "evaluation.json", "artifact-manifest.json"):
+                for name in ("run.json", "metrics.jsonl", "evaluation.json", "evaluation.v2.json", "artifact-manifest.json"):
                     path = run_dir / name
                     if path.is_file() and not path.is_symlink():
                         sources.append((path, f"run/{name}"))

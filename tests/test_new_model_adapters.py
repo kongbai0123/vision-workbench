@@ -77,10 +77,10 @@ class NewModelAdapterTests(unittest.TestCase):
 
     def test_ultralytics_result_omits_missing_metrics_without_faking_scores(self):
         self.assertEqual(_result_metrics(SimpleNamespace(), "detect", "test", 3),
-                         {"split": "test", "images": 3})
+                         {"schema_version": 2, "split": "test", "images": 3})
         result = SimpleNamespace(seg=SimpleNamespace(map=None, map50=0., map75=float("nan")))
         self.assertEqual(_result_metrics(result, "segment", "val", 2),
-                         {"split": "val", "images": 2, "mask_map50": 0.})
+                         {"schema_version": 2, "split": "val", "images": 2, "mask_map50": 0.})
 
     def _run_fake_ultralytics(self, splits, extra_config=None, engine="rt_detr_r50"):
         training_options = []
@@ -140,7 +140,8 @@ class NewModelAdapterTests(unittest.TestCase):
             self.assertEqual(len((run_dir / "metrics.jsonl").read_text().splitlines()), 2)
             self.assertEqual((model_dir / "checkpoint.pt").read_bytes(), b"checkpoint")
             record = json.loads((model_dir / "model.json").read_text(encoding="utf-8"))
-            self.assertEqual(record["test"][f"{metric_prefix}_map50_95"], .4)
+            if record["test"] is not None:
+                self.assertEqual(record["test"][f"{metric_prefix}_map50_95"], .4)
             self.assertEqual(record["data_quality"], data_quality)
             self.assertEqual(result["evaluation"]["data_quality"], data_quality)
             metrics = [json.loads(row) for row in (run_dir / "metrics.jsonl").read_text().splitlines()]
@@ -189,19 +190,16 @@ class NewModelAdapterTests(unittest.TestCase):
         self.assertEqual(record["validation"]["split"], "val")
         self.assertEqual(record["test"]["split"], "test")
 
-    def test_ultralytics_validation_fallback_records_actual_test_split(self):
-        result, record, data = self._run_fake_ultralytics(("train", "test", "test"))
-        self.assertEqual(result["validation_split"], "test")
-        self.assertEqual(data["val"], "images/test")
-        self.assertEqual(record["validation"]["split"], "test")
-        self.assertEqual(record["validation"]["images"], 2)
-        self.assertEqual(result["evaluation"]["validation"]["split"], "test")
+    def test_ultralytics_rejects_test_as_validation_fallback(self):
+        with self.assertRaisesRegex(ValueError, "Validation.*Test"):
+            self._run_fake_ultralytics(("train", "test", "test"))
 
     def test_ultralytics_missing_test_keeps_validation_identity(self):
         result, record, _data = self._run_fake_ultralytics(("train", "val", "val"))
         self.assertEqual(result["validation_split"], "val")
-        self.assertEqual(record["test"]["split"], "val")
-        self.assertEqual(record["test"]["images"], 2)
+        self.assertIsNone(record["test"])
+        self.assertIsNone(result["evaluation"]["test"])
+        self.assertFalse(record["evaluation_protocol"]["test_present"])
 
 
 if __name__ == "__main__":

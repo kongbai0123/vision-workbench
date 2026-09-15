@@ -111,14 +111,30 @@ class TrainingSplitGateTests(unittest.TestCase):
         self.workspace.store.snapshot.assert_not_called()
         self.workspace.store.assign.assert_not_called()
 
-    def test_incomplete_evaluation_coverage_is_visible_without_blocking_launch(self):
+    def test_incomplete_validation_coverage_blocks_launch_and_test_gap_is_visible(self):
         rows = [{'asset_id': str(i), 'split': split, 'shapes': [{'label': label}]}
                 for i, (split, label) in enumerate((('train', 'a'), ('train', 'b'), ('val', 'a'), ('test', 'b')))]
         self.write_manifest('D001', rows)
-        run = self.start_without_worker('D001')
-        missing = {(warning['split'], warning['label']) for warning in run['split_warnings']}
-        self.assertEqual(missing, {('val', 'b'), ('test', 'a')})
-        self.assertTrue(all(warning['code'] == 'evaluation_class_missing' for warning in run['split_warnings']))
+        readiness = self.workspace.dataset('pid', 'D001')['readiness']
+        self.assertFalse(readiness['ready'])
+        self.assertTrue(any(item['code'] == 'validation_class_missing' and item['label'] == 'b'
+                            for item in readiness['blockers']))
+        self.assertTrue(any(item['code'] == 'evaluation_class_missing' and item['split'] == 'test'
+                            and item['label'] == 'a' for item in readiness['warnings']))
+        with self.assertRaisesRegex(ValueError, 'Validation'):
+            self.workspace.start_run('pid', 'D001', {'engine': 'pixel_prototype_v1', 'epochs': 2})
+
+    def test_test_cannot_replace_validation_at_launch(self):
+        rows = [{'asset_id': 'train', 'split': 'train', 'shapes': [{'label': 'part'}]},
+                {'asset_id': 'test', 'split': 'test', 'shapes': [{'label': 'part'}]}]
+        self.write_manifest('D006', rows)
+        readiness = self.workspace.dataset('pid', 'D006')['readiness']
+        self.assertFalse(readiness['ready'])
+        self.assertTrue(any(item['code'] == 'no_validation_split' for item in readiness['blockers']))
+        with patch('workbench.training.subprocess.Popen') as popen:
+            with self.assertRaisesRegex(ValueError, 'Validation'):
+                self.workspace.start_run('pid', 'D006', {'engine': 'pixel_prototype_v1', 'epochs': 2})
+            popen.assert_not_called()
 
     def test_blocked_smart_plan_cannot_mutate_project_even_with_valid_fingerprint(self):
         store = ProjectStore(self.root / 'projects')

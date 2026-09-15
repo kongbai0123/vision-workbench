@@ -11,7 +11,7 @@ from PIL import Image
 
 from composer_core.geometry import decode_rle, encode_rle
 from workbench.store import ProjectStore
-from workbench.training import TrainingWorkspace
+from workbench.training import TrainingWorkspace, _with_evaluation_reassessment
 
 
 class TrainingWorkflowTests(unittest.TestCase):
@@ -150,7 +150,23 @@ class TrainingWorkflowTests(unittest.TestCase):
             "x": 1, "y": 1, "width": 5, "height": 5}]}])
         report = self.workspace.readiness(project["id"])
         codes = {item["code"] for item in report["blockers"]}
-        self.assertIn("no_evaluation_split", codes)
+        self.assertIn("no_validation_split", codes)
+
+    def test_versioned_reassessment_overlays_scores_and_preserves_legacy_values(self):
+        directory = self.root / "historical"
+        directory.mkdir()
+        legacy = {"model_version_id": "M001", "validation": {"mean_iou": .81},
+                  "test": {"mean_iou": .87}}
+        reassessment = {"schema_version": 2, "valid": True, "reason": "metric correction",
+                        "validation": {"mean_iou": .33}, "test": {"mean_iou": .59},
+                        "protocol": {"selection_split": "val", "test_present": True}}
+        (directory / "evaluation.v2.json").write_text(json.dumps(reassessment), encoding="utf-8")
+        current = _with_evaluation_reassessment(legacy, directory, model=True)
+        self.assertEqual(current["validation"]["mean_iou"], .33)
+        self.assertEqual(current["test"]["mean_iou"], .59)
+        self.assertEqual(current["legacy_evaluation"], {"validation": {"mean_iou": .81},
+                                                         "test": {"mean_iou": .87}})
+        self.assertEqual(legacy["validation"]["mean_iou"], .81)
 
     def test_reopen_marks_orphaned_active_run_failed(self):
         run_dir = self.root / "runs" / self.pid / "R099"

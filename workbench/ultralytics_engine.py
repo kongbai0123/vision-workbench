@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .learning_rates import measured_rates
+from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol
 
 from collections.abc import Mapping
 from hashlib import sha256
@@ -85,9 +86,8 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, co
                           (max(0., min(1., float(x) / width)), max(0., min(1., float(y) / height)))]
                 lines.append(str(class_id) + " " + " ".join(f"{value:.8f}" for value in values))
         _label_path(output_dir, split, asset).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    has_val = any(asset["split"] == "val" for asset in manifest["assets"])
     data = {"path": str(output_dir.resolve()), "train": "images/train",
-            "val": "images/val" if has_val else "images/test",
+            "val": "images/val",
             "test": "images/test", "names": {index: name for index, name in enumerate(manifest["classes"])}}
     path = output_dir / "data.yaml"
     # JSON is a valid YAML subset and avoids another dependency in the main app.
@@ -254,7 +254,12 @@ def _result_metrics(result, kind, split, image_count):
     measured = {f"{prefix}_{name}": number for name, attribute in
                 (("map50_95", "map"), ("map50", "map50"), ("map75", "map75"))
                 if (number := _finite_metric(getattr(metrics, attribute, None))) is not None}
-    return {"split": split, "images": image_count, **measured}
+    for key, attribute in (("precision_best_f1", "mp"), ("recall_best_f1", "mr")):
+        number = _finite_metric(getattr(metrics, attribute, None))
+        if number is not None:
+            measured[f"{prefix}_{key}"] = number
+    return {"schema_version": EVALUATION_SCHEMA_VERSION, "split": split,
+            "images": image_count, **measured}
 
 
 def _artifact_manifest(run_dir, model_dir, run_id, checkpoint):
@@ -275,13 +280,16 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         data_yaml = prepare_yolo_dataset(dataset_manifest, run_dir / "dataset", definition["task"], run.get("config"))
         compatibility = (read_json(run_dir / "dataset" / "yolo-compatibility.json")
                          if definition["task"] == "instance_segmentation" else None)
-        validation_split = "val" if any(asset["split"] == "val" for asset in manifest["assets"]) else "test"
+        validation_split = "val"
+        if not any(asset["split"] == "val" for asset in manifest["assets"]):
+            raise ValueError("Validation 沒有圖片；Test 不可用於選擇 YOLO checkpoint")
         metrics_path = run_dir / "metrics.jsonl"; metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3,
                 validation_split=validation_split)
         mode, source = _initialization_source(definition, run["config"])
         _status(run_dir, run, message="載入預訓練權重" if mode == "pretrained" else "建立隨機初始化模型")
-        model = (RTDETR if definition["kind"] == "detect" else YOLO)(source)
+        model_class = RTDETR if definition["kind"] == "detect" else YOLO
+        model = model_class(source)
         initialization = _initialization_record(model, mode, source)
         _status(run_dir, run, initialization=initialization)
         epochs = int(run["config"]["epochs"])
@@ -316,24 +324,28 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         if not best.is_file():
             raise RuntimeError("訓練完成但找不到 checkpoint")
         checkpoint = model_dir / "checkpoint.pt"; shutil.copy2(best, checkpoint)
-        validation_raw = model.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
+        evaluator = model_class(str(checkpoint))
+        validation_raw = evaluator.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
         val_count = sum(asset["split"] == validation_split for asset in manifest["assets"])
         validation = _result_metrics(validation_raw, definition["kind"], validation_split, val_count)
         test_count = sum(asset["split"] == "test" for asset in manifest["assets"])
-        test = (_result_metrics(model.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
-                                definition["kind"], "test", test_count) if test_count else validation)
+        test = (_result_metrics(evaluator.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
+                                definition["kind"], "test", test_count) if test_count else None)
+        protocol = evaluation_protocol(checkpoint="best_validation", has_test=bool(test_count),
+                                       manifest=manifest)
         record = {"schema_version": 1, "engine": run["engine"], "engine_name": definition["name"],
                   "task": definition["task"], "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                   "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
                   "image_size": int(run["config"].get("image_size", 640)), "score_threshold": .5,
-                  "validation": validation, "test": test, "created_at": time.time(), "checkpoint": "checkpoint.pt",
+                  "validation": validation, "test": test, "evaluation_protocol": protocol,
+                  "created_at": time.time(), "checkpoint": "checkpoint.pt",
                   "initialization": initialization, "execution": dict(recorder.execution)}
         if compatibility is not None:
             record["yolo_compatibility"] = compatibility
         if "data_quality" in run:
             record["data_quality"] = run["data_quality"]
         atomic_json(model_dir / "model.json", record)
-        evaluation = {"validation": validation, "test": test}
+        evaluation = {"schema_version": 2, "protocol": protocol, "validation": validation, "test": test}
         if compatibility is not None:
             evaluation["yolo_compatibility"] = compatibility
         if "data_quality" in run:

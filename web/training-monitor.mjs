@@ -5,7 +5,7 @@ const action=(text,fn,className='secondary')=>{const n=el('button',text,classNam
 const finite=value=>typeof value==='number'&&Number.isFinite(value);
 const active=new Set(['queued','preparing','running','stopping']);
 const statusName=value=>({queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value);
-const evaluationNames={mean_iou:'Mask IoU',box_mean_iou:'Box IoU',mean_dice:'Dice',accuracy:'Accuracy',macro_f1:'Macro F1',macro_recall:'Macro Recall',mask_map50_95:'Mask mAP50–95',mask_map50:'Mask mAP50',box_map50_95:'Box mAP50–95',box_map50:'Box mAP50',recall_50:'Recall@0.5'};
+const evaluationNames={mean_iou:'Macro IoU',micro_iou:'Micro IoU',box_mean_iou:'Box IoU',mean_dice:'Dice',accuracy:'Accuracy',macro_f1:'Macro F1',macro_recall:'Macro Recall',mask_map50_95:'Mask mAP50–95',mask_map50:'Mask mAP50',box_map50_95:'Box mAP50–95',box_map50:'Box mAP50',precision_50:'Precision@0.5',recall_50:'Recall@0.5'};
 const executionLabels={batch_size:'每次前向批次大小',gradient_accumulation:'梯度累積步數',effective_batch_size:'有效批次大小',optimizer_step_measurement:'更新次數量測方式',optimizer_steps:'最佳化器累計更新次數'};
 
 export function runAuditSections(run,report){
@@ -20,6 +20,14 @@ export function runAuditSections(run,report){
   if(execution){
     const rows=Object.entries(executionLabels).filter(([key])=>execution[key]!==undefined&&execution[key]!==null).map(([key,label])=>[label,key==='optimizer_step_measurement'?({post_step_hook:'每次實際權重更新後計數',unavailable:'未提供；不以 Batch 數估算'}[execution[key]]||execution[key]):execution[key]]);
     if(rows.length)sections.push({title:'實際執行資訊',rows});
+  }
+  const protocol=recorded.evaluation?.protocol||recorded.evaluation_protocol||run.evaluation?.protocol;
+  if(protocol){
+    const checkpoint={best_validation:'Validation 最佳權重',final_epoch:'最後一輪權重',validation_selected_thresholds:'Validation 選出的門檻'}[protocol.selection_checkpoint]||protocol.selection_checkpoint;
+    const independent=protocol.test_independent_sources===true?'是':protocol.test_independent_sources===false?'否（僅流程驗證）':'未確認';
+    const rows=[['選模資料','Validation'],['評估權重',checkpoint],['獨立 Test',protocol.test_present?'已執行':'未執行'],['Test 來源獨立',protocol.test_present?independent:'不適用']];
+    if(protocol.test_present&&protocol.test_source_overlap_groups?.length)rows.push(['跨集合來源群組',protocol.test_source_overlap_groups.join('、')]);
+    sections.push({title:'評估來源',rows});
   }
   return sections;
 }
@@ -187,9 +195,9 @@ export class TrainingMonitor {
     if(active.has(run.status)){const p=el('progress');p.className='run-progress';p.max=100;p.value=Number(run.progress||0);p.setAttribute('aria-label',`${run.run_id} 訓練進度`);this.root.append(p)}
     if(run.message)this.root.append(el('p',run.message,'muted'));
     if(run.error)this.root.append(el('p',run.error,'readiness-item error'));
-    const {score,split}=this.evaluation(run),best=this.scoreEntries(run,score)[0];
+    const {score,split}=this.evaluation(run),best=this.scoreEntries(run,score)[0],invalid=run.evaluation?.valid===false;
     const cards=el('div',undefined,'run-metrics');
-    for(const [label,value] of [[best?`${split} · ${best.label}`:'評估指標',best?fmt(best.value):'等待評估'],[`${score?split:'評估'} 圖片`,score&&finite(score.images)?`${score.images} 張`:'—'],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);
+    for(const [label,value] of [[best?`${split} · ${best.label}`:'評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],[`${score?split:'評估'} 圖片`,score&&finite(score.images)?`${score.images} 張`:'—'],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
     this.root.append(this.configRow(run));
   }
   configRow(run){
@@ -222,7 +230,7 @@ export class TrainingMonitor {
   }
   renderEvaluation(runs,parent){
     const d=this.details('各類別與詳細評估','evaluation',parent);
-    for(const run of runs){const {score,split}=this.evaluation(run);d.append(el('h3',`${run.run_id} · ${split}`));if(!score){d.append(el('p','尚無評估結果。','muted'));continue}
+    for(const run of runs){const {score,split}=this.evaluation(run);d.append(el('h3',`${run.run_id} · ${split}`));if(!score){d.append(el('p',run.evaluation?.valid===false?(run.evaluation.reason||'歷史評估資料不符合目前規範。'):'尚無評估結果。',run.evaluation?.valid===false?'readiness-item error':'muted'));continue}
       this.table(d,['指標','數值'],this.scoreEntries(run,score).map(m=>[m.label,fmt(m.value)]));
       const iou=score.per_class_iou||{},dice=score.per_class_dice||{};
       const labels=[...new Set([...Object.keys(iou),...Object.keys(dice)])];
@@ -230,7 +238,10 @@ export class TrainingMonitor {
       if(score.per_class_recall)this.table(d,['類別','Recall'],Object.entries(score.per_class_recall).map(([label,value])=>[label,fmt(value)]));
       const matrix=score.confusion_matrix,classes=score.classes||this.overview?.datasets?.find(ds=>ds.id===run.dataset_version_id)?.classes;
       if(Array.isArray(matrix)&&matrix.every(Array.isArray)){d.append(el('p','混淆矩陣：列為真實類別，欄為預測類別。','muted'));this.table(d,['真實／預測',...(classes||matrix.map((_,i)=>String(i)))],matrix.map((row,i)=>[classes?.[i]??String(i),...row]))}
-      if(score.per_class&&typeof score.per_class==='object'){const entries=Object.entries(score.per_class);this.table(d,['類別','Precision','Recall','F1'],entries.map(([label,value])=>[label,fmt(value.precision),fmt(value.recall),fmt(value.f1)]))}
+      if(score.per_class&&typeof score.per_class==='object'){
+        const entries=Object.entries(score.per_class);
+        if(entries.some(([,value])=>'precision' in value||'recall' in value||'f1' in value))this.table(d,['類別','樣本／像素','預測','TP','FP','FN','Precision','Recall','F1'],entries.map(([label,value])=>[label,value.support??value.ground_truth_pixels??'—',value.predictions??value.predicted_pixels??'—',value.tp??'—',value.fp??'—',value.fn??'—',fmt(value.precision),fmt(value.recall),fmt(value.f1)]));
+      }
     }
   }
   renderConfig(runs,parent){

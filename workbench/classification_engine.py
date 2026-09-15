@@ -17,6 +17,7 @@ import numpy as np
 from .training_engine import atomic_json, load_rgb, read_json, _status, _stopping
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
+from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol
 
 
 CLASSIFICATION_ENGINES = {
@@ -90,22 +91,38 @@ def _evaluate(model, dataset, device, torch):
             predicted = int(model(image[None].to(device)).argmax(1).cpu().item())
             confusion[int(expected), predicted] += 1
     recalls, f1s = [], []
+    per_class = {}
     for class_id in range(len(dataset.classes)):
         tp = int(confusion[class_id, class_id])
         fn = int(confusion[class_id, :].sum()) - tp
         fp = int(confusion[:, class_id].sum()) - tp
-        recall = tp / max(1, tp + fn)
-        precision = tp / max(1, tp + fp)
-        recalls.append(recall)
-        f1s.append(2 * precision * recall / max(1e-12, precision + recall))
+        support = tp + fn
+        predicted = tp + fp
+        recall = tp / support if support else None
+        precision = tp / predicted if predicted else None
+        f1 = (2 * precision * recall / (precision + recall)
+              if precision is not None and recall is not None and precision + recall else None)
+        if support:
+            recalls.append(recall)
+            f1s.append(f1 or 0.0)
+        per_class[dataset.classes[class_id]] = {
+            "support": support, "predictions": predicted, "tp": tp, "fp": fp, "fn": fn,
+            "precision": round(precision, 6) if precision is not None else None,
+            "recall": round(recall, 6) if recall is not None else None,
+            "f1": round(f1, 6) if f1 is not None else None,
+        }
     total = int(confusion.sum())
     return {
+        "schema_version": EVALUATION_SCHEMA_VERSION,
         "split": dataset.assets[0]["split"] if dataset.assets else "",
         "images": len(dataset),
         "accuracy": round(float(np.trace(confusion)) / max(1, total), 6),
         "macro_f1": round(sum(f1s) / max(1, len(f1s)), 6),
         "macro_recall": round(sum(recalls) / max(1, len(recalls)), 6),
-        "per_class_recall": {name: round(recalls[index], 6) for index, name in enumerate(dataset.classes)},
+        "per_class_recall": {name: row["recall"] for name, row in per_class.items()},
+        "per_class": per_class,
+        "macro_policy": "ground_truth_supported_classes",
+        "classes": list(dataset.classes),
         "confusion_matrix": confusion.tolist(),
     }
 
@@ -135,11 +152,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         image_size = int(run["config"].get("image_size", 224))
         model, _ = _model(run["engine"], len(manifest["classes"])); model.to(device)
         training = ClassificationDataset(manifest, dataset_manifest.parent, "train", torch, image_size)
-        validation_split = "val" if any(asset["split"] == "val" for asset in manifest["assets"]) else "test"
-        validation = ClassificationDataset(manifest, dataset_manifest.parent, validation_split, torch, image_size)
+        validation = ClassificationDataset(manifest, dataset_manifest.parent, "val", torch, image_size)
         testing = ClassificationDataset(manifest, dataset_manifest.parent, "test", torch, image_size)
         if not training.assets or not validation.assets:
-            raise RuntimeError("影像分類需要非空的 Train 與 Validation/Test 資料")
+            raise RuntimeError("影像分類需要非空的 Train 與 Validation；Test 不會替代 Validation")
         train_classes = {training.targets[index] for index in range(len(training.targets))}
         missing = [name for index, name in enumerate(manifest["classes"]) if index not in train_classes]
         if missing:
@@ -174,17 +190,22 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         checkpoint = model_dir / "checkpoint.pt"
         torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate(model, validation, device, torch)
-        test_result = _evaluate(model, testing, device, torch) if testing.assets else validation_result
+        test_result = _evaluate(model, testing, device, torch) if testing.assets else None
+        protocol = evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets),
+                                       manifest=manifest)
         record = {"schema_version": 1, "engine": run["engine"], "engine_name": CLASSIFICATION_ENGINES[run["engine"]],
                   "task": "image_classification", "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                   "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
                   "image_size": image_size, "validation": validation_result, "test": test_result,
+                  "evaluation_protocol": protocol,
                   "created_at": time.time(), "checkpoint": "checkpoint.pt", "prediction_mode": "image_class"}
         atomic_json(model_dir / "model.json", record)
-        atomic_json(run_dir / "evaluation.json", {"validation": validation_result, "test": test_result})
+        atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
+                                                   "validation": validation_result, "test": test_result})
         _artifacts(run_dir, model_dir, run["run_id"], checkpoint)
         return _status(run_dir, run, status="completed", message=f"{CLASSIFICATION_ENGINES[run['engine']]} 訓練與評估完成",
-                       progress=100, completed_at=time.time(), evaluation={"validation": validation_result, "test": test_result})
+                       progress=100, completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
+                                                                          "validation": validation_result, "test": test_result})
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())
         raise

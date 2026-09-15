@@ -121,8 +121,8 @@ def smart_split(assets, options=None):
     if any(not math.isfinite(x) for x in ratios.values()) or ratios["train"] <= 0:
         raise ValueError("比例必須有限，且 Train 必須大於 0")
     active = [s for s in SPLIT_ORDER if ratios[s] > 0]
-    if len(active) < 2:
-        raise ValueError("至少需要 Train 及 Validation 或 Test")
+    if ratios["val"] <= 0:
+        raise ValueError("Validation 比例必須大於 0；Test 不可替代 Validation")
     assets = list(assets)
     groups = source_groups(assets, options.get("group_overrides"), strategy)
     if len(groups) < len(active):
@@ -149,7 +149,7 @@ def smart_split(assets, options=None):
                 value += ((classes[split][label] - total * ratios[split]) / max(1, total * ratios[split])) ** 2
                 if not classes[split][label]: value += 100 if split == "train" else 4
         return value
-    rng = random.Random(seed); best = None
+    rng = random.Random(seed); best = None; fallback = None
     free = [g for g in groups if g["id"] not in locks]
     # Candidate moves update aggregates, not the full dataset, so large imports
     # remain bounded by group count times class count.
@@ -183,8 +183,16 @@ def smart_split(assets, options=None):
                 changed |= old != split
             if not changed: break
         value=cost(counts,classes)
-        if all(counts[split] for split in active) and (best is None or value < best[0]):
+        nonempty = all(counts[split] for split in active)
+        if nonempty and (fallback is None or value < fallback[0]):
+            fallback = value, assignments, counts, classes
+        complete_training_validation = (
+            all(classes["train"][label] for label in totals)
+            and all(classes["val"][label] for label in totals)
+        )
+        if nonempty and complete_training_validation and (best is None or value < best[0]):
             best = value, assignments, counts, classes
+    best = best or fallback
     if best is None:
         raise ValueError("群組鎖定或資料量使集合無法非空；請解除部分鎖定或補充資料")
     _, assignments, counts, classes = best
@@ -195,17 +203,24 @@ def smart_split(assets, options=None):
         label = blocker["label"]
         carriers = [g for g in groups if g["classes"].get(label)]
         blocker["source_group_count"] = len(carriers)
-        locked_out = all(locks.get(g["id"]) in {"val", "test"} for g in carriers)
-        if locked_out:
-            blocker["action"] = "此類別的所有來源群組均鎖定在評估集合；請解除鎖定或補充可用於 Train 的獨立來源"
-        elif len(carriers) == 1:
-            blocker["action"] = "此類別只有一個來源群組；目前無法同時保持群組完整、所有集合非空及 Train 類別齊全，請補充獨立來源或減少評估集合"
+        if blocker["code"] == "train_class_missing":
+            locked_out = all(locks.get(g["id"]) in {"val", "test"} for g in carriers)
+            if locked_out:
+                blocker["action"] = "此類別的所有來源群組均鎖定在評估集合；請解除鎖定或補充可用於 Train 的獨立來源"
+            elif len(carriers) == 1:
+                blocker["action"] = "此類別只有一個來源群組；無法在保持群組完整時同時提供 Train 與 Validation，請補充另一個獨立來源"
+        elif blocker["code"] == "validation_class_missing":
+            locked_out = all(locks.get(g["id"]) in {"train", "test"} for g in carriers)
+            if locked_out:
+                blocker["action"] = "此類別的所有來源群組均鎖定在 Train 或 Test；請解除鎖定或補充可用於 Validation 的獨立來源"
+            elif len(carriers) == 1:
+                blocker["action"] = "此類別只有一個來源群組；無法在保持群組完整時同時提供 Train 與 Validation，請補充另一個獨立來源"
     if strategy != "smart": warnings.append("類別平衡模式可能拆開拍攝來源，請確認圖片彼此獨立")
     untracked = sum(not a.get("batch_id") and not a.get("source") for a in assets)
     if untracked: warnings.append(f"{untracked} 張圖片缺少來源資訊，請補定義手動群組")
     for g in groups:
         g["proposed"] = assignments[g["id"]]; g["locked"] = g["id"] in locks
-    return {"algorithm_version": 2, "strategy": strategy, "seed": seed, "options": options,
+    return {"algorithm_version": 3, "strategy": strategy, "seed": seed, "options": options,
             "assignments": output, "groups": groups, "warnings": warnings,
             "ready": quality["ready"], "blockers": quality["blockers"], "coverage": quality,
             "image_counts": {s: counts[s] for s in SPLIT_ORDER},

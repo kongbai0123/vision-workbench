@@ -23,9 +23,10 @@ class SplitCoverageTests(unittest.TestCase):
         assets = [{'asset_id': 'a', 'split': 'test', 'shapes': [{'label': 'part'}]},
                   {'asset_id': 'b', 'split': 'train', 'shapes': []}]
         coverage = split_class_coverage(assets, {'a': 'train', 'b': 'val'}, active_splits=('train', 'val'))
-        self.assertTrue(coverage['ready'])
+        self.assertFalse(coverage['ready'])
         self.assertEqual(coverage['missing_evaluation_classes'], {'val': ['part']})
-        self.assertEqual(len(coverage['warnings']), 1)
+        self.assertEqual(coverage['blockers'][0]['code'], 'validation_class_missing')
+        self.assertEqual(coverage['warnings'], [])
         self.assertEqual(assets[0]['split'], 'test')
 
     def test_classes_on_unassigned_images_still_require_training_coverage(self):

@@ -18,13 +18,12 @@ def samples():
 class SmartSplitTests(unittest.TestCase):
     def test_groups_never_split_and_training_keeps_rare_class(self):
         assets=samples();plan=smart_split(assets)
-        self.assertTrue(plan['ready'])
-        self.assertEqual(plan['blockers'], [])
+        self.assertFalse(plan['ready'])
+        self.assertTrue(any(b['code']=='validation_class_missing' and b['label']=='rare' for b in plan['blockers']))
         for batch in 'ABCD':
             self.assertEqual(len({plan['assignments'][a['id']] for a in assets if a['batch_id']==batch}),1)
         self.assertTrue(all(plan['image_counts'].values()))
         self.assertGreater(plan['class_counts']['train']['rare'],0)
-        self.assertTrue(any('rare' in w for w in plan['warnings']))
         self.assertEqual(plan,smart_split(list(reversed(assets))))
 
     def test_source_video_and_duplicates_form_transitive_groups(self):
@@ -72,7 +71,7 @@ class SmartSplitTests(unittest.TestCase):
         self.assertEqual(set(plan['assignments']), {a['id'] for a in assets})
         self.assertTrue(all(plan['image_counts'].values()))
         self.assertTrue(plan['blockers'])
-        self.assertTrue(all(b['code'] == 'train_class_missing' for b in plan['blockers']))
+        self.assertTrue(all(b['code'] in {'train_class_missing','validation_class_missing'} for b in plan['blockers']))
         self.assertTrue(all(b['source_group_count'] == 1 for b in plan['blockers']))
         self.assertTrue(all('一個來源群組' in b['action'] for b in plan['blockers']))
 
@@ -81,13 +80,14 @@ class SmartSplitTests(unittest.TestCase):
                    "shapes": [{"label": f"class-{i}"}] if i < 4 else []}
                   for i in range(6)]
         plan = smart_split(assets, {'ratios': [1, 49, 50]})
-        self.assertTrue(plan['ready'])
+        self.assertFalse(plan['ready'])
         self.assertTrue(all(plan['assignments'][str(i)] == 'train' for i in range(4)))
         self.assertEqual(plan['image_counts'], {'train': 4, 'val': 1, 'test': 1})
-        self.assertEqual(len(plan['coverage']['warnings']), 8)
+        self.assertTrue(any(b['code']=='validation_class_missing' for b in plan['blockers']))
 
     def test_two_evaluation_reservations_do_not_remove_last_class_carriers(self):
-        # Every individual group can leave Train, but A and B cannot both leave.
+        # Rare has two independent carriers, so Train and Validation can both
+        # cover it even while Test remains nonempty.
         labels = {'A': ['rare', 'common'], 'B': ['rare'], 'C': ['common'], 'D': ['common']}
         assets = [{'id': group, 'batch_id': group, 'shapes': [{'label': label} for label in members]}
                   for group, members in labels.items()]
@@ -98,6 +98,8 @@ class SmartSplitTests(unittest.TestCase):
                 self.assertTrue(all(plan['image_counts'].values()))
                 self.assertGreater(plan['class_counts']['train']['rare'], 0)
                 self.assertGreater(plan['class_counts']['train']['common'], 0)
+                self.assertGreater(plan['class_counts']['val']['rare'], 0)
+                self.assertGreater(plan['class_counts']['val']['common'], 0)
 
     def test_locked_evaluation_only_class_blocks_but_preserves_lock(self):
         assets = samples()
