@@ -57,7 +57,7 @@ def parameter_schema(definition):
                          {"value": "strict", "label": "嚴格無損（偵測孔洞即阻擋）"}],
              "description": "只修改本次 Run 的 YOLO 訓練副本；專案 Mask 與固定資料版本不變。"},
             {"key": "tiny_hole_max_pixels", "label": "單一孔洞上限（px）", "type": "integer",
-             "default": 4, "min": 1, "max": 16, "step": 1, "advanced": True,
+             "default": 16, "min": 1, "max": 64, "step": 1, "advanced": True,
              "section": "compatibility", "depends_on": repair_only,
              "description": "單一封閉孔洞超過此面積仍會阻擋訓練。"},
             {"key": "tiny_hole_total_pixels", "label": "單一實例修補總上限（px）", "type": "integer",
@@ -68,7 +68,7 @@ def parameter_schema(definition):
              "section": "compatibility", "depends_on": repair_only,
              "description": "0.0001 等於 0.01%；像素與比例門檻必須同時通過。"},
             {"key": "tiny_hole_max_dimension", "label": "孔洞寬／高上限（px）", "type": "integer",
-             "default": 4, "min": 1, "max": 16, "step": 1, "advanced": True,
+             "default": 16, "min": 1, "max": 64, "step": 1, "advanced": True,
              "section": "compatibility", "depends_on": repair_only,
              "description": "避免細長裂縫被當成雜點填補。"},
         ]

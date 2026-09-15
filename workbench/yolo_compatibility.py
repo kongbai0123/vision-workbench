@@ -11,10 +11,10 @@ from composer_core.geometry import decode_rle, encode_rle, shape_polygons
 
 DEFAULT_POLICY = {
     "yolo_mask_policy": "repair_tiny_holes",
-    "tiny_hole_max_pixels": 4,
+    "tiny_hole_max_pixels": 16,
     "tiny_hole_total_pixels": 16,
     "tiny_hole_max_ratio": .0001,
-    "tiny_hole_max_dimension": 4,
+    "tiny_hole_max_dimension": 16,
 }
 
 

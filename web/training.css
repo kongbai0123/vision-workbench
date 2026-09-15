@@ -9,8 +9,11 @@
 .yolo-compatibility .badge{white-space:nowrap}
 .yolo-compatibility .badge.approved{color:#84e4cf;border-color:#3d8c7e}
 .yolo-compatibility .badge.error{color:#ff9c99;border-color:#a95353}
+.yolo-compatibility .badge.warning{color:#f0c778;border-color:#9c7b3f}
 .yolo-compatibility-summary{margin:12px 0 0;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;font-size:12px;line-height:1.6}
 .yolo-compatibility-summary.error{border-color:#e36c68;background:#302020}
+.yolo-compatibility-summary.warning{border-color:#d8a94c;background:#2c281d;color:#e9d7ad}
+.yolo-compatibility-summary.warning .primary,.yolo-compatibility-summary.warning .secondary{margin-top:10px}
 .yolo-issue-list{display:grid;gap:8px;max-height:260px;overflow:auto;margin-top:10px}
 .yolo-issue{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#13232d;font-size:12px}
 .yolo-issue p{grid-column:1/-1;margin:0;color:var(--muted)}

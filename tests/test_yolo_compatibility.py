@@ -56,6 +56,17 @@ class YoloCompatibilityTests(unittest.TestCase):
             self.assertFalse(report["compatible"])
             self.assertEqual(report["blockers"][0]["code"], "holes_strict")
 
+    def test_default_policy_repairs_human_invisible_holes_up_to_sixteen_pixels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mask = np.zeros((512, 512), np.uint8); mask[2:510, 2:510] = 1
+            mask[100:105, 120] = 0; mask[130:133, 140:143] = 0
+            _path, manifest = self.manifest(root, mask)
+            report = analyze_manifest(manifest, {})
+            self.assertTrue(report["compatible"])
+            self.assertEqual(report["summary"]["holes_repaired"], 2)
+            self.assertEqual(report["summary"]["pixels_repaired"], 14)
+
     def test_large_hole_and_separate_components_stay_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); mask = np.zeros((64, 64), np.uint8); mask[2:62, 2:62] = 1; mask[20:26, 20:26] = 0
