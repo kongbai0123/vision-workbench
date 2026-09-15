@@ -29,6 +29,83 @@ class ConflictError(ValueError):
     pass
 
 
+CATALOG_SCHEMA_VERSION = 3
+
+
+def ensure_catalog_schema(db):
+    """Upgrade a project database to the filesystem artifact catalog schema."""
+    current = db.execute("PRAGMA user_version").fetchone()[0]
+    if current < CATALOG_SCHEMA_VERSION:
+        # Catalog rows are a rebuildable index of immutable filesystem records.
+        # Recreate them when constraints change; project annotations are never
+        # part of these tables.
+        for table in ("prediction_candidates", "model_exports", "model_versions",
+                      "training_runs", "dataset_versions"):
+            db.execute(f"DROP TABLE IF EXISTS {table}")
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS dataset_versions(
+            id TEXT PRIMARY KEY NOT NULL CHECK(id GLOB 'D[0-9]*'),
+            project_revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
+            asset_count INTEGER NOT NULL CHECK(asset_count >= 0),
+            relative_path TEXT NOT NULL UNIQUE,
+            source_dataset_id TEXT,
+            FOREIGN KEY(source_dataset_id) REFERENCES dataset_versions(id)
+        );
+        CREATE TABLE IF NOT EXISTS training_runs(
+            id TEXT PRIMARY KEY NOT NULL CHECK(id GLOB 'R[0-9]*'),
+            dataset_version_id TEXT NOT NULL,
+            proposed_model_id TEXT,
+            engine TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued','preparing','running','stopping','completed','failed','stopped')),
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            relative_path TEXT NOT NULL UNIQUE,
+            FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions(id)
+        );
+        CREATE TABLE IF NOT EXISTS model_versions(
+            id TEXT PRIMARY KEY NOT NULL CHECK(id GLOB 'M[0-9]*'),
+            run_id TEXT NOT NULL UNIQUE,
+            dataset_version_id TEXT NOT NULL,
+            engine TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            relative_path TEXT NOT NULL UNIQUE,
+            FOREIGN KEY(run_id) REFERENCES training_runs(id),
+            FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions(id)
+        );
+        CREATE TABLE IF NOT EXISTS model_exports(
+            id TEXT PRIMARY KEY NOT NULL CHECK(id GLOB 'E[0-9]*'),
+            model_version_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            dataset_version_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+            byte_count INTEGER NOT NULL CHECK(byte_count >= 0),
+            relative_path TEXT NOT NULL UNIQUE,
+            FOREIGN KEY(model_version_id) REFERENCES model_versions(id),
+            FOREIGN KEY(run_id) REFERENCES training_runs(id),
+            FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions(id)
+        );
+        CREATE TABLE IF NOT EXISTS prediction_candidates(
+            id TEXT PRIMARY KEY NOT NULL CHECK(length(id) = 32),
+            model_version_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            candidate_count INTEGER NOT NULL CHECK(candidate_count >= 0),
+            accepted_count INTEGER NOT NULL CHECK(accepted_count >= 0),
+            relative_path TEXT NOT NULL UNIQUE,
+            FOREIGN KEY(model_version_id) REFERENCES model_versions(id),
+            FOREIGN KEY(run_id) REFERENCES training_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_training_runs_dataset ON training_runs(dataset_version_id);
+        CREATE INDEX IF NOT EXISTS idx_models_dataset ON model_versions(dataset_version_id);
+        CREATE INDEX IF NOT EXISTS idx_exports_model ON model_exports(model_version_id);
+        CREATE INDEX IF NOT EXISTS idx_predictions_model ON prediction_candidates(model_version_id);
+    """)
+    db.execute(f"PRAGMA user_version={CATALOG_SCHEMA_VERSION}")
+
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -178,6 +255,9 @@ class ProjectStore:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA synchronous=FULL")
+        if db.execute("PRAGMA user_version").fetchone()[0] < CATALOG_SCHEMA_VERSION:
+            ensure_catalog_schema(db)
+            db.commit()
         try:
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield db
@@ -209,12 +289,88 @@ class ProjectStore:
                     revision INTEGER NOT NULL,action TEXT NOT NULL,created_at TEXT NOT NULL,data TEXT NOT NULL);
                 CREATE TABLE exports(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,data TEXT NOT NULL);
             """)
+            ensure_catalog_schema(db)
             now = timestamp()
             db.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", (pid, name, 1, now, now, "[]"))
             db.commit()
         finally:
             db.close()
         return self.get_project(pid)
+
+    @staticmethod
+    def _catalog_relative_path(value):
+        if not isinstance(value, str) or not value or "\\" in value:
+            raise ValueError("資產索引必須使用專案內的相對 POSIX 路徑")
+        path = Path(value)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise ValueError("資產索引路徑超出專案資料夾")
+        return value
+
+    def replace_artifact_catalog(self, project_id, catalog):
+        """Atomically mirror validated on-disk manifests into relational rows."""
+        required = {"datasets", "runs", "models", "model_exports", "predictions"}
+        if not isinstance(catalog, dict) or not required.issubset(catalog):
+            raise ValueError("專案資產索引無效")
+        datasets = {row["id"]: row for row in catalog["datasets"]}
+        runs = {row["id"]: row for row in catalog["runs"]}
+        models = {row["id"]: row for row in catalog["models"]}
+        for row in runs.values():
+            if row["dataset_version_id"] not in datasets:
+                raise ValueError(f"訓練 {row['id']} 指向不存在的資料版本")
+        for row in models.values():
+            if row["run_id"] not in runs or row["dataset_version_id"] not in datasets:
+                raise ValueError(f"模型 {row['id']} 的來源關聯不存在")
+        for collection in (catalog["model_exports"], catalog["predictions"]):
+            for row in collection:
+                if row["model_version_id"] not in models or row["run_id"] not in runs:
+                    raise ValueError(f"資產 {row['id']} 的模型或訓練來源不存在")
+
+        with self.connection(project_id, write=True) as db:
+            for table in ("prediction_candidates", "model_exports", "model_versions", "training_runs", "dataset_versions"):
+                db.execute(f"DELETE FROM {table}")
+            db.executemany("""INSERT INTO dataset_versions
+                (id,project_revision,created_at,manifest_sha256,asset_count,relative_path,source_dataset_id)
+                VALUES(?,?,?,?,?,?,?)""", [(
+                    row["id"], row["project_revision"], row["created_at"], row["manifest_sha256"],
+                    row["asset_count"], self._catalog_relative_path(row["relative_path"]), row.get("source_dataset_id")
+                ) for row in catalog["datasets"]])
+            db.executemany("""INSERT INTO training_runs
+                (id,dataset_version_id,proposed_model_id,engine,status,created_at,updated_at,relative_path)
+                VALUES(?,?,?,?,?,?,?,?)""", [(
+                    row["id"], row["dataset_version_id"], row.get("proposed_model_id"), row["engine"],
+                    row["status"], row["created_at"], row["updated_at"], self._catalog_relative_path(row["relative_path"])
+                ) for row in catalog["runs"]])
+            db.executemany("""INSERT INTO model_versions
+                (id,run_id,dataset_version_id,engine,created_at,relative_path) VALUES(?,?,?,?,?,?)""", [(
+                    row["id"], row["run_id"], row["dataset_version_id"], row["engine"], row["created_at"],
+                    self._catalog_relative_path(row["relative_path"])
+                ) for row in catalog["models"]])
+            db.executemany("""INSERT INTO model_exports
+                (id,model_version_id,run_id,dataset_version_id,created_at,sha256,byte_count,relative_path)
+                VALUES(?,?,?,?,?,?,?,?)""", [(
+                    row["id"], row["model_version_id"], row["run_id"], row["dataset_version_id"], row["created_at"],
+                    row["sha256"], row["byte_count"], self._catalog_relative_path(row["relative_path"])
+                ) for row in catalog["model_exports"]])
+            db.executemany("""INSERT INTO prediction_candidates
+                (id,model_version_id,run_id,created_at,candidate_count,accepted_count,relative_path)
+                VALUES(?,?,?,?,?,?,?)""", [(
+                    row["id"], row["model_version_id"], row["run_id"], row["created_at"],
+                    row["candidate_count"], row["accepted_count"], self._catalog_relative_path(row["relative_path"])
+                ) for row in catalog["predictions"]])
+
+    def artifact_catalog(self, project_id):
+        with self.connection(project_id) as db:
+            return {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+                    for table in ("dataset_versions", "training_runs", "model_versions",
+                                  "model_exports", "prediction_candidates")}
+
+    def database_integrity(self, project_id):
+        with self.connection(project_id) as db:
+            integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_keys = [dict(row) for row in db.execute("PRAGMA foreign_key_check")]
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        return {"ok": integrity == "ok" and not foreign_keys, "integrity": integrity,
+                "foreign_key_errors": foreign_keys, "schema_version": version}
 
     @staticmethod
     def _name(value):
@@ -751,3 +907,4 @@ class ProjectStore:
                     source={"project_id":source_id,"asset_id":asset["id"],"revision":asset["revision"],
                             "original":asset["source"]}))
         return self.add_assets(project_id, records)
+

@@ -77,8 +77,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -TrainingOnl
 | `main.py`、`workbench/desktop.py` | 啟動入口與桌面容器 |
 | `web/` | 網頁介面、標註畫布與訓練圖表 |
 | `workbench/store.py`、`workbench/server.py` | 專案儲存、本機 API 與工作協調 |
+| `workbench/project_storage.py` | 專案容器路徑、舊版資料遷移與 DatasetVersion 去重 |
 | `workbench/training.py`、`workbench/*engine*.py` | 資料版本、訓練程序、模型評估與推論 |
 | `composer_core/`、`classical_segmentation/`、`sam2_segmentation/` | 幾何結構與分割處理 |
 | `tests/`、`docs/` | 自動測試、整合驗證與技術文件 |
 
 開發資料、模型權重及測試產物應放在已忽略的本機目錄。使用自訂資料目錄時，先確認該路徑已列於 `.gitignore`。
+

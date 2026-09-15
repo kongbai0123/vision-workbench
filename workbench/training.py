@@ -28,6 +28,7 @@ from .ultralytics_engine import ULTRALYTICS_ENGINES
 from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
 from .split_quality import split_class_coverage
+from .project_storage import ProjectStorage
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -50,6 +51,14 @@ def _safe_id(value, prefix):
     if not isinstance(value, str) or not value.startswith(prefix) or not value[len(prefix):].isdigit():
         raise ValueError(f"{prefix} 版本 ID 無效")
     return value
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    """Publish immutable dataset bytes efficiently on the same volume."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
 
 
 def dataset_readiness(manifest):
@@ -103,13 +112,14 @@ class TrainingWorkspace:
     def __init__(self, data_root: Path, store, python_executable=None):
         self.root = Path(data_root).resolve()
         self.store = store
+        self.storage = ProjectStorage(self.root, store)
+        self._project_scoped = True
         self.datasets = self.root / "datasets"
         self.runs = self.root / "runs"
         self.models = self.root / "models"
         self.model_exports = self.root / "model-exports"
         self.predictions = self.root / "predictions"
-        for folder in (self.datasets, self.runs, self.models, self.model_exports, self.predictions):
-            folder.mkdir(parents=True, exist_ok=True)
+        self.migration_reports = self.storage.migrate()
         self.registry = ModelRegistry(Path(__file__).resolve().parents[1], python_executable)
         self.python = str(self.registry.training_python)
         self.lock = threading.RLock()
@@ -117,6 +127,32 @@ class TrainingWorkspace:
         self._review_yolo_cache = {}
         self._maskrcnn_available = self._probe_maskrcnn()
         self._reconcile_runs()
+        self.catalog_issues = {}
+        for project in self.store.list_projects():
+            self._sync_catalog(project["id"])
+
+    def _area(self, project_id, name, *, create=False):
+        if getattr(self, "_project_scoped", False):
+            return self.storage.area(project_id, name, create=create)
+        legacy = getattr(self, name.replace("-", "_")) / project_id
+        if create:
+            legacy.mkdir(parents=True, exist_ok=True)
+        return legacy
+
+    def datasets_dir(self, project_id, *, create=False):
+        return self._area(project_id, "datasets", create=create)
+
+    def runs_dir(self, project_id, *, create=False):
+        return self._area(project_id, "runs", create=create)
+
+    def models_dir(self, project_id, *, create=False):
+        return self._area(project_id, "models", create=create)
+
+    def model_exports_dir(self, project_id, *, create=False):
+        return self._area(project_id, "model-exports", create=create)
+
+    def predictions_dir(self, project_id, *, create=False):
+        return self._area(project_id, "predictions", create=create)
 
     def _probe_maskrcnn(self):
         environment = Path(self.python).parent.parent
@@ -151,7 +187,9 @@ class TrainingWorkspace:
 
     def _reconcile_runs(self):
         active = {"queued", "preparing", "running", "stopping"}
-        for path in self.runs.glob("*/*/run.json"):
+        paths = (path for project in self.store.list_projects()
+                 for path in self.runs_dir(project["id"]).glob("*/run.json"))
+        for path in paths:
             try:
                 run = read_json(path)
                 if run.get("status") in active and not self._pid_alive(run.get("worker_pid")):
@@ -176,9 +214,7 @@ class TrainingWorkspace:
         return self.capabilities()
 
     def install_component(self, component_id, progress):
-        active = [run for project in self.runs.iterdir() if project.is_dir()
-                  for run in self.list_runs(project.name)
-                  if run.get("status") in {"queued", "preparing", "running", "stopping"}]
+        active = self.active_runs()
         if active:
             raise ValueError("訓練正在執行，完成或停止後才能變更模型環境")
         result = self.registry.install(component_id, progress)
@@ -242,8 +278,7 @@ class TrainingWorkspace:
         if not report["ready"]:
             raise ValueError("；".join(item["message"] for item in report["blockers"]))
         project = self.store.snapshot(project_id)
-        parent = self.datasets / project_id
-        parent.mkdir(parents=True, exist_ok=True)
+        parent = self.datasets_dir(project_id, create=True)
         with self.lock:
             dataset_id = _next_id(parent, "D")
             target = parent / dataset_id
@@ -257,7 +292,7 @@ class TrainingWorkspace:
                     source = Path(asset["image_path"])
                     suffix = source.suffix.lower() or ".png"
                     destination = temporary / "images" / f"{asset['id']}{suffix}"
-                    shutil.copy2(source, destination)
+                    _link_or_copy(source, destination)
                     raw = destination.read_bytes()
                     if sha256(raw).hexdigest() != asset["sha256"]:
                         raise ValueError(f"建立資料版本時圖片雜湊不符：{asset['name']}")
@@ -285,11 +320,12 @@ class TrainingWorkspace:
             except BaseException:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
+        self._sync_catalog(project_id)
         return self.dataset(project_id, dataset_id)
 
     def dataset(self, project_id, dataset_id):
         dataset_id = _safe_id(dataset_id, "D")
-        path = self.datasets / project_id / dataset_id / "manifest.json"
+        path = self.datasets_dir(project_id) / dataset_id / "manifest.json"
         if not path.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
         manifest = read_json(path)
@@ -303,7 +339,7 @@ class TrainingWorkspace:
         """Create a separately labelled copy without modifying project splits or history."""
         from .diagnostic_split import diagnostic_temporal_split
         source_dataset_id = _safe_id(source_dataset_id, "D")
-        parent = self.datasets / project_id
+        parent = self.datasets_dir(project_id, create=True)
         source_root = parent / source_dataset_id
         source = read_json(source_root / "manifest.json")
         plan = diagnostic_temporal_split(source["assets"])
@@ -320,7 +356,7 @@ class TrainingWorkspace:
                     if not origin.is_relative_to(source_root.resolve()):
                         raise ValueError("圖片路徑超出原始資料版本")
                     destination = temporary / "images" / origin.name
-                    shutil.copy2(origin, destination)
+                    _link_or_copy(origin, destination)
                     if sha256(destination.read_bytes()).hexdigest() != asset["sha256"]:
                         raise ValueError("來源圖片雜湊不符")
                     asset["image_file"] = f"images/{destination.name}"
@@ -336,24 +372,25 @@ class TrainingWorkspace:
             except BaseException:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
+        self._sync_catalog(project_id)
         return self.dataset(project_id, dataset_id)
 
     def list_datasets(self, project_id):
-        parent = self.datasets / project_id
+        parent = self.datasets_dir(project_id)
         return [self.dataset(project_id, item.name) for item in sorted(parent.iterdir(), reverse=True)
                 if item.is_dir() and item.name.startswith("D")] if parent.is_dir() else []
 
     def _run_path(self, project_id, run_id):
-        return self.runs / project_id / _safe_id(run_id, "R") / "run.json"
+        return self.runs_dir(project_id) / _safe_id(run_id, "R") / "run.json"
 
     def _model_path(self, project_id, model_id):
-        return self.models / project_id / _safe_id(model_id, "M") / "model.json"
+        return self.models_dir(project_id) / _safe_id(model_id, "M") / "model.json"
 
     def start_run(self, project_id, dataset_id, config):
         if not isinstance(config, dict):
             raise ValueError("訓練參數必須是物件")
         dataset_id = _safe_id(dataset_id, "D")
-        manifest = self.datasets / project_id / dataset_id / "manifest.json"
+        manifest = self.datasets_dir(project_id) / dataset_id / "manifest.json"
         if not manifest.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
         if any(run.get("status") in {"queued", "preparing", "running", "stopping"} for run in self.list_runs(project_id)):
@@ -391,10 +428,8 @@ class TrainingWorkspace:
             compatibility = analyze_manifest(immutable, effective_config)
             if not compatibility["compatible"]:
                 raise ValueError(blocker_message(compatibility))
-        project_runs = self.runs / project_id
-        project_models = self.models / project_id
-        project_runs.mkdir(parents=True, exist_ok=True)
-        project_models.mkdir(parents=True, exist_ok=True)
+        project_runs = self.runs_dir(project_id, create=True)
+        project_models = self.models_dir(project_id, create=True)
         with self.lock:
             run_id, model_id = _next_id(project_runs, "R"), _next_id(project_models, "M")
             run_dir, model_dir = project_runs / run_id, project_models / model_id
@@ -437,11 +472,12 @@ class TrainingWorkspace:
             atomic_json(run_dir / "run.json", current)
             threading.Thread(target=self._reap, args=(project_id, run_id, process),
                              name=f"training-{run_id}", daemon=True).start()
+        self._sync_catalog(project_id)
         return current
 
     def yolo_compatibility(self, project_id, dataset_id, config):
         dataset_id = _safe_id(dataset_id, "D")
-        manifest = self.datasets / project_id / dataset_id / "manifest.json"
+        manifest = self.datasets_dir(project_id) / dataset_id / "manifest.json"
         if not manifest.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
         if not isinstance(config, dict):
@@ -531,16 +567,14 @@ class TrainingWorkspace:
         return _with_evaluation_reassessment(read_json(path), path.parent)
 
     def list_runs(self, project_id):
-        parent = self.runs / project_id
+        parent = self.runs_dir(project_id)
         rows = [_with_evaluation_reassessment(read_json(item / "run.json"), item) for item in parent.iterdir()
                 if item.is_dir() and (item / "run.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
 
     def active_runs(self):
-        if not self.runs.is_dir():
-            return []
-        return [run for project in self.runs.iterdir() if project.is_dir()
-                for run in self.list_runs(project.name)
+        return [run for project in self.store.list_projects()
+                for run in self.list_runs(project["id"])
                 if run.get("status") in {"queued", "preparing", "running", "stopping"}]
 
     def stop_run(self, project_id, run_id):
@@ -554,7 +588,7 @@ class TrainingWorkspace:
         return run
 
     def list_models(self, project_id):
-        parent = self.models / project_id
+        parent = self.models_dir(project_id)
         rows = [_with_evaluation_reassessment(read_json(item / "model.json"), item, model=True) for item in parent.iterdir()
                 if item.is_dir() and (item / "model.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
@@ -572,8 +606,7 @@ class TrainingWorkspace:
         model_dir = self._model_path(project_id, model_id).parent
         run_id = _safe_id(model.get("run_id"), "R")
         run_dir = self._run_path(project_id, run_id).parent
-        parent = self.model_exports / project_id
-        parent.mkdir(parents=True, exist_ok=True)
+        parent = self.model_exports_dir(project_id, create=True)
         with self.lock:
             export_id = _next_id(parent, "E")
             target = parent / export_id
@@ -619,17 +652,18 @@ class TrainingWorkspace:
             except BaseException:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
+        self._sync_catalog(project_id)
         return self.model_export(project_id, export_id)
 
     def model_export(self, project_id, export_id):
         export_id = _safe_id(export_id, "E")
-        path = self.model_exports / project_id / export_id / "record.json"
+        path = self.model_exports_dir(project_id) / export_id / "record.json"
         if not path.is_file():
             raise FileNotFoundError("找不到模型匯出版本")
         return read_json(path)
 
     def list_model_exports(self, project_id):
-        parent = self.model_exports / project_id
+        parent = self.model_exports_dir(project_id)
         rows = [read_json(item / "record.json") for item in parent.iterdir()
                 if item.is_dir() and (item / "record.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", ""), reverse=True)
@@ -655,9 +689,10 @@ class TrainingWorkspace:
             if not definition.get("train"):
                 raise RuntimeError(definition.get("unavailable_reason") or "模型執行環境不可用")
             token = uuid.uuid4().hex
-            request_path = self.predictions / f".{token}.request.json"
-            output_path = self.predictions / f".{token}.output.json"
-            stderr_path = self.predictions / f".{token}.stderr.log"
+            prediction_dir = self.predictions_dir(project_id, create=True)
+            request_path = prediction_dir / f".{token}.request.json"
+            output_path = prediction_dir / f".{token}.output.json"
+            stderr_path = prediction_dir / f".{token}.stderr.log"
             atomic_json(request_path, {"model_path": str(self._model_path(project_id, model_id)), "device": "auto",
                         "assets": [{"asset_id": asset["id"], "image_path": asset["image_path"],
                                     "width": asset["width"], "height": asset["height"]} for asset in selected]})
@@ -690,12 +725,13 @@ class TrainingWorkspace:
         candidate_id = uuid.uuid4().hex
         record = {"schema_version": 1, "candidate_id": candidate_id, "project_id": project_id,
                   "model_version_id": model_id, "run_id": model["run_id"], "created_at": timestamp(), "assets": records}
-        atomic_json(self.predictions / f"{candidate_id}.json", record)
+        atomic_json(self.predictions_dir(project_id, create=True) / f"{candidate_id}.json", record)
+        self._sync_catalog(project_id)
         return record
 
     def list_predictions(self, project_id):
         rows = []
-        for path in self.predictions.glob("*.json"):
+        for path in self.predictions_dir(project_id).glob("*.json"):
             try:
                 record = read_json(path)
                 if record.get("project_id") == project_id:
@@ -707,8 +743,10 @@ class TrainingWorkspace:
     def accept_predictions(self, candidate_id, asset_ids=None):
         if not isinstance(candidate_id, str) or len(candidate_id) != 32:
             raise ValueError("候選標註 ID 無效")
-        path = self.predictions / f"{candidate_id}.json"
-        if not path.is_file():
+        matches = [self.predictions_dir(project["id"]) / f"{candidate_id}.json"
+                   for project in self.store.list_projects()]
+        path = next((item for item in matches if item.is_file()), None)
+        if path is None:
             raise FileNotFoundError("找不到候選標註")
         record = read_json(path)
         requested = set(asset_ids or [row["asset_id"] for row in record["assets"] if row["status"] == "candidate"])
@@ -723,16 +761,150 @@ class TrainingWorkspace:
             row.update(status="accepted", accepted_revision=saved["revision"], accepted_at=timestamp())
             accepted.append(row["asset_id"])
         atomic_json(path, record)
+        self._sync_catalog(record["project_id"])
         return {"candidate_id": candidate_id, "accepted": accepted,
                 "project": self.store.get_project(record["project_id"])}
 
+    def _sync_catalog(self, project_id):
+        """Rebuild the SQL index from authoritative project-owned manifests."""
+        if not getattr(self, "_project_scoped", False):
+            return
+        issues = []
+        datasets, runs, models, exports, predictions = [], [], [], [], []
+        dataset_ids, run_ids, model_ids = set(), set(), set()
+
+        for directory in sorted(self.datasets_dir(project_id).glob("D*")):
+            path = directory / "manifest.json"
+            if not path.is_file():
+                continue
+            try:
+                row = read_json(path)
+                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
+                if dataset_id != directory.name:
+                    raise ValueError("資料版本 ID 與資料夾不一致")
+                source_id = (row.get("data_quality") or {}).get("source_dataset_version_id")
+                datasets.append({
+                    "id": dataset_id,
+                    "project_revision": int(row["project_revision"]),
+                    "created_at": str(row["created_at"]),
+                    "manifest_sha256": str(row["manifest_sha256"]),
+                    "asset_count": len(row.get("assets", [])),
+                    "relative_path": f"datasets/{dataset_id}/manifest.json",
+                    "source_dataset_id": source_id,
+                })
+                dataset_ids.add(dataset_id)
+            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
+                issues.append({"path": str(path), "message": str(error)})
+
+        # A diagnostic version may sort before its source only by an unusual ID.
+        for row in datasets:
+            if row["source_dataset_id"] not in dataset_ids:
+                row["source_dataset_id"] = None
+
+        for directory in sorted(self.runs_dir(project_id).glob("R*")):
+            path = directory / "run.json"
+            if not path.is_file():
+                continue
+            try:
+                row = read_json(path)
+                run_id = _safe_id(row.get("run_id"), "R")
+                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
+                if run_id != directory.name or dataset_id not in dataset_ids:
+                    raise ValueError("訓練 ID 或資料版本關聯無效")
+                created = float(row.get("created_at", 0))
+                runs.append({
+                    "id": run_id,
+                    "dataset_version_id": dataset_id,
+                    "proposed_model_id": row.get("model_version_id"),
+                    "engine": str(row["engine"]),
+                    "status": str(row["status"]),
+                    "created_at": created,
+                    "updated_at": float(row.get("updated_at", created)),
+                    "relative_path": f"runs/{run_id}/run.json",
+                })
+                run_ids.add(run_id)
+            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
+                issues.append({"path": str(path), "message": str(error)})
+
+        for directory in sorted(self.models_dir(project_id).glob("M*")):
+            path = directory / "model.json"
+            if not path.is_file():
+                continue
+            try:
+                row = read_json(path)
+                model_id = _safe_id(row.get("model_version_id"), "M")
+                run_id = _safe_id(row.get("run_id"), "R")
+                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
+                if model_id != directory.name or run_id not in run_ids or dataset_id not in dataset_ids:
+                    raise ValueError("模型 ID 或來源關聯無效")
+                created = row.get("created_at", 0)
+                models.append({
+                    "id": model_id, "run_id": run_id, "dataset_version_id": dataset_id,
+                    "engine": str(row["engine"]), "created_at": float(created),
+                    "relative_path": f"models/{model_id}/model.json",
+                })
+                model_ids.add(model_id)
+            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
+                issues.append({"path": str(path), "message": str(error)})
+
+        for directory in sorted(self.model_exports_dir(project_id).glob("E*")):
+            path = directory / "record.json"
+            if not path.is_file():
+                continue
+            try:
+                row = read_json(path)
+                export_id = _safe_id(row.get("export_id"), "E")
+                model_id = _safe_id(row.get("model_version_id"), "M")
+                run_id = _safe_id(row.get("run_id"), "R")
+                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
+                if export_id != directory.name or model_id not in model_ids or run_id not in run_ids or dataset_id not in dataset_ids:
+                    raise ValueError("模型匯出來源關聯無效")
+                exports.append({
+                    "id": export_id, "model_version_id": model_id, "run_id": run_id,
+                    "dataset_version_id": dataset_id, "created_at": str(row["created_at"]),
+                    "sha256": str(row["sha256"]), "byte_count": int(row["bytes"]),
+                    "relative_path": f"model-exports/{export_id}/record.json",
+                })
+            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
+                issues.append({"path": str(path), "message": str(error)})
+
+        for path in sorted(self.predictions_dir(project_id).glob("*.json")):
+            try:
+                row = read_json(path)
+                candidate_id = str(row["candidate_id"])
+                model_id = _safe_id(row.get("model_version_id"), "M")
+                run_id = _safe_id(row.get("run_id"), "R")
+                if path.stem != candidate_id or model_id not in model_ids or run_id not in run_ids:
+                    raise ValueError("候選標註 ID 或模型來源關聯無效")
+                assets = row.get("assets", [])
+                predictions.append({
+                    "id": candidate_id, "model_version_id": model_id, "run_id": run_id,
+                    "created_at": str(row["created_at"]),
+                    "candidate_count": sum(item.get("status") == "candidate" for item in assets),
+                    "accepted_count": sum(item.get("status") == "accepted" for item in assets),
+                    "relative_path": f"predictions/{path.name}",
+                })
+            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
+                issues.append({"path": str(path), "message": str(error)})
+
+        self.store.replace_artifact_catalog(project_id, {
+            "datasets": datasets, "runs": runs, "models": models,
+            "model_exports": exports, "predictions": predictions,
+        })
+        self.catalog_issues[project_id] = issues
+
     def overview(self, project_id):
+        self._sync_catalog(project_id)
         return {"readiness": self.readiness(project_id), "datasets": self.list_datasets(project_id),
                 "runs": self.list_runs(project_id), "models": self.list_models(project_id),
                 "model_exports": self.list_model_exports(project_id),
-                "predictions": self.list_predictions(project_id), "capabilities": self.capabilities()}
+                "predictions": self.list_predictions(project_id), "capabilities": self.capabilities(),
+                "storage": {"layout": "project-scoped", "root": str(self.store.directory(project_id)),
+                            "database": self.store.database_integrity(project_id),
+                            "catalog_issues": self.catalog_issues.get(project_id, [])}}
 
     def close(self):
         # Workers write only to immutable Run/Model directories.  They may finish
         # after the UI closes; reopening Workbench reads their persisted state.
         self.processes.clear()
+

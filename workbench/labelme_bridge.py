@@ -73,9 +73,9 @@ def create_labelme_editor(store, pid, data_root, asset_id=None):
             self.store=store;self.pid=pid;self.current_asset=None;self.last_sync_error=''
             snapshot=store.snapshot(pid)
             self.assets={os.path.normpath(a['image_path']):a['id'] for a in snapshot['assets']}
-            self.session_folder=Path(data_root)/'labelme'/pid
+            self.session_folder=store.directory(pid)/'integrations'/'labelme'
             self.session_folder.mkdir(parents=True,exist_ok=True)
-            config=Path(data_root)/'labelme'/'config.yaml'
+            config=self.session_folder/'config.yaml'
             if not config.exists(): config.write_text('{}\n','utf-8')
             super().__init__(config_file=config,config_overrides={'auto_save':False,'labels':snapshot['classes'],
                 'keep_prev':False,'with_image_data':False},output_dir=str(self.session_folder))
@@ -165,3 +165,4 @@ def create_labelme_editor(store, pid, data_root, asset_id=None):
             if host is not self:host.close()
 
     return ProjectLabelme()
+

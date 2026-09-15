@@ -378,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.app.cvat.launch()
                     self.app._cvat_session = list(result.get("auth_cookies", []))
                     from .cvat_bridge import CvatProjectBridge
-                    linked = CvatProjectBridge(self.app.data_root).ensure_project(
+                    linked = CvatProjectBridge(self.app.data_root, self.app.store).ensure_project(
                         snapshot, result.get("auth_cookies", []), progress, store=self.app.store)
                     self.app._cvat_baseline = self.app.store.snapshot(pid)
                     asset_ids=linked.get('asset_ids',[])
@@ -399,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                     from .cvat_bridge import CvatProjectBridge
                     from .editor_sync import commit_updates
                     progress("讀取 CVAT 已儲存標註",20)
-                    bridge=CvatProjectBridge(self.app.data_root)
+                    bridge=CvatProjectBridge(self.app.data_root, self.app.store)
                     updates = bridge.read_annotations(snapshot,self.app._cvat_session)
                     updated=commit_updates(self.app.store,pid,updates,source='cvat')
                     self.app._cvat_baseline=self.app.store.snapshot(pid)
@@ -410,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get("model_export_id"):
                     pid, export_id = payload.get("project_id"), payload["model_export_id"]
                     self.app.training.model_export(pid, export_id)
-                    folder = (self.app.training.model_exports / pid / export_id).resolve()
+                    folder = self.app.training.model_exports_dir(pid) / export_id
                 elif payload.get("export_id"):
                     project = self.app.store.get_project(payload.get("project_id"))
                     item = next((e for e in project["exports"] if e["id"] == payload["export_id"]), None)
@@ -533,3 +533,4 @@ class Handler(BaseHTTPRequestHandler):
             raise FileNotFoundError("找不到 API")
         except Exception as exc:
             self.handle_error(exc)
+

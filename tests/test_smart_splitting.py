@@ -134,7 +134,7 @@ class SmartSplitStoreTests(unittest.TestCase):
     def test_preview_is_read_only_apply_is_atomic_and_versions_are_immutable(self):
         workspace=TrainingWorkspace(self.root,self.store)
         old=workspace.create_dataset_version(self.pid)
-        path=workspace.datasets/self.pid/old['id']/'manifest.json';before=path.read_bytes()
+        path=workspace.datasets_dir(self.pid)/old['id']/'manifest.json';before=path.read_bytes()
         snapshot=self.store.snapshot(self.pid);plan=self.store.preview_split(self.pid,{})
         unchanged=self.store.snapshot(self.pid)
         self.assertEqual({k:v for k,v in snapshot.items() if k!='snapshot_at'}, {k:v for k,v in unchanged.items() if k!='snapshot_at'})
@@ -143,7 +143,7 @@ class SmartSplitStoreTests(unittest.TestCase):
         for a,b in zip(snapshot['assets'],after['assets']):
             self.assertEqual(a['shapes'],b['shapes']);self.assertEqual(a['batch_id'],b['batch_id']);self.assertEqual(b['review_state'],'approved')
         new=workspace.create_dataset_version(self.pid)
-        manifest=json.loads((workspace.datasets/self.pid/new['id']/'manifest.json').read_text(encoding='utf-8'))
+        manifest=json.loads((workspace.datasets_dir(self.pid)/new['id']/'manifest.json').read_text(encoding='utf-8'))
         self.assertTrue(manifest['split_plan']['current']);self.assertEqual(path.read_bytes(),before)
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
         workspace.close()
@@ -152,3 +152,4 @@ class SmartSplitStoreTests(unittest.TestCase):
         asset=self.store.snapshot(self.pid)['assets'][0]
         self.store.assign(self.pid,[asset['id']],split='test')
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
+

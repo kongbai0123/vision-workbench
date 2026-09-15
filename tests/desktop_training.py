@@ -219,7 +219,7 @@ def main():
             wait("document.querySelectorAll('#trainingPlots svg').length===2")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
             # The split manager stays accessible even when readiness is already true.
-            old_manifest = service.training.datasets / pid / "D001" / "manifest.json"
+            old_manifest = service.training.datasets_dir(pid) / "D001" / "manifest.json"
             old_bytes = old_manifest.read_bytes()
             click("#prepareAutoSplit")
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
@@ -431,3 +431,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

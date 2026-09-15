@@ -86,7 +86,7 @@ class EditorSyncTests(unittest.TestCase):
         self.editor._canvas_widgets.canvas.shapes[0].label='local';self.editor.mark_dirty()
         self.assertFalse(self.editor.flush());self.assertTrue(self.editor._is_changed)
         self.assertEqual(self.asset()['shapes'],[])
-        self.assertTrue(list((self.root/'labelme'/self.pid).glob('*.json')))
+        self.assertTrue(list((self.store.directory(self.pid)/'integrations'/'labelme').glob('*.json')))
 
     def test_atomic_import_rolls_back_earlier_images_and_classes_on_conflict(self):
         second=self.root/'second.png';Image.new('RGB',(80,60),'red').save(second)
@@ -132,3 +132,4 @@ class EditorSyncTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+

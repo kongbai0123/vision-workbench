@@ -62,7 +62,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         dataset = self.workspace.create_dataset_version(self.pid)
         self.assertEqual(dataset["id"], "D001")
         self.assertEqual(dataset["splits"], {"train": 2, "val": 2, "test": 2})
-        manifest_path = self.workspace.datasets / self.pid / "D001" / "manifest.json"
+        manifest_path = self.workspace.datasets_dir(self.pid) / "D001" / "manifest.json"
         before = manifest_path.read_bytes()
         manifest = json.loads(before)
         shape = manifest["assets"][0]["shapes"][0]
@@ -97,7 +97,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         finished = self.wait_run(run["run_id"])
         self.assertEqual(finished["status"], "completed", finished)
         self.assertGreaterEqual(finished["evaluation"]["test"]["mean_iou"], .95)
-        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        metrics = [json.loads(row) for row in (self.workspace.runs_dir(self.pid) / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
         self.assertEqual(metrics[0]["threshold"], .5)
         self.assertEqual(metrics[-1]["threshold"], 2.5)
         model_id = finished["model_version_id"]
@@ -136,7 +136,7 @@ class TrainingWorkflowTests(unittest.TestCase):
                                                                 "threshold_min": 1e-8, "threshold_max": 1e-7})
         finished = self.wait_run(run["run_id"])
         self.assertEqual(finished["status"], "completed", finished)
-        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        metrics = [json.loads(row) for row in (self.workspace.runs_dir(self.pid) / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
         self.assertEqual([row["threshold"] for row in metrics], [1e-8, 1e-7])
         model = self.workspace.model(self.pid, finished["model_version_id"])
         self.assertTrue(all(1e-8 <= value <= 1e-7 for value in model["thresholds"].values()))
@@ -179,3 +179,4 @@ class TrainingWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.0 — 2026-09-15
+
+- DatasetVersion、Run、Model、候選標註、模型匯出與編輯器同步資料改為保存在所屬專案資料夾；專案改名、備份與刪除會涵蓋完整模型生命週期。
+- 啟動時安全遷移舊版全域目錄；既有 DatasetVersion 圖片經 SHA-256 驗證後以 NTFS hard link 共用不可變原圖，後續版本建立時沿用相同機制。
+- 專案 SQLite 新增資料版本、訓練、模型、模型匯出與候選標註 catalog，使用外鍵、非空 ID、格式與狀態約束保存 lineage，並提供 integrity 與 filesystem catalog 檢查。
+
 ## 2.7.7 — 2026-09-15
 
 - 評估改用資料集整體累積 TP／FP／FN；空白標註與空白預測列為 N/A，不再替漏分割累加 1.0。Mask R-CNN、內建像素模型與 DeepLabV3 同步套用，保存 Macro／Micro IoU、像素數與各類別明細。
@@ -145,3 +151,4 @@
 ## 1.0.0
 
 - Initial Vision Workbench release for acquisition, annotation, review, validation, and dataset export.
+
