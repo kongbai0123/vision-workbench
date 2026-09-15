@@ -360,8 +360,16 @@ class Predictor:
         self.device = "0" if requested_device == "cuda" else "cpu" if requested_device == "cpu" else None
 
     def predict(self, rgb, width, height):
-        import cv2
-        result = self.model.predict(source=np.asarray(rgb, dtype=np.uint8), imgsz=int(self.record.get("image_size", 640)),
+        width, height = int(width), int(height)
+        pixels = np.asarray(rgb, dtype=np.uint8)
+        if pixels.shape != (height, width, 3):
+            raise ValueError(f"推論圖片必須是 {width} × {height} 的 RGB 影像；實際尺寸為 {pixels.shape}")
+        # The worker supplies RGB; Ultralytics interprets numpy images as BGR.
+        # Native masks remove letterbox padding and return original-image pixels.
+        source = np.ascontiguousarray(pixels[..., ::-1])
+        threshold = float(self.record.get("score_threshold", .5))
+        result = self.model.predict(source=source, imgsz=int(self.record.get("image_size", 640)),
+                                    conf=threshold, retina_masks=self.definition["kind"] == "segment",
                                     device=self.device, verbose=False)[0]
         shapes, boxes = [], getattr(result, "boxes", None)
         if boxes is None:
@@ -369,7 +377,7 @@ class Predictor:
         labels = boxes.cls.cpu().tolist(); scores = boxes.conf.cpu().tolist()
         if self.definition["kind"] == "detect":
             for label_id, score, box in zip(labels, scores, boxes.xyxy.cpu().tolist()):
-                if score < float(self.record.get("score_threshold", .5)) or not 0 <= int(label_id) < len(self.record["classes"]): continue
+                if score < threshold or not 0 <= int(label_id) < len(self.record["classes"]): continue
                 x1, y1, x2, y2 = map(float, box)
                 shapes.append({"id": uuid.uuid4().hex, "type": "rectangle", "label": self.record["classes"][int(label_id)],
                                "x": max(0., x1), "y": max(0., y1), "width": max(1., min(width, x2)-max(0., x1)),
@@ -379,9 +387,13 @@ class Predictor:
         else:
             masks = getattr(result, "masks", None)
             if masks is None: return shapes
-            for label_id, score, raw in zip(labels, scores, masks.data.cpu().numpy()):
-                if score < float(self.record.get("score_threshold", .5)) or not 0 <= int(label_id) < len(self.record["classes"]): continue
-                bitmap = cv2.resize(raw.astype(np.float32), (int(width), int(height)), interpolation=cv2.INTER_NEAREST) >= .5
+            raw_masks = masks.data.cpu().numpy()
+            if raw_masks.ndim != 3 or raw_masks.shape[1:] != (height, width):
+                raise ValueError(f"模型未回傳原圖尺寸的遮罩（預期 {width} × {height}，實際 {raw_masks.shape}）；"
+                                 "已停止匯入，避免遮罩位置錯誤")
+            for label_id, score, raw in zip(labels, scores, raw_masks):
+                if score < threshold or not 0 <= int(label_id) < len(self.record["classes"]): continue
+                bitmap = raw >= .5
                 if not bitmap.any(): continue
                 ys, xs = np.nonzero(bitmap)
                 shapes.append({"id": uuid.uuid4().hex, "type": "mask", "label": self.record["classes"][int(label_id)],
