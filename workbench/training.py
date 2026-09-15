@@ -356,6 +356,27 @@ class TrainingWorkspace:
         effective = validate_config(definition, config)
         return analyze_manifest(read_json(manifest), effective)
 
+    def review_yolo_compatibility(self, project_id, config=None):
+        """Check the latest review candidates before an immutable dataset exists."""
+        project = self.store.snapshot(project_id)
+        assets = [asset for asset in project.get("assets", [])
+                  if asset.get("review_state") in {"pending", "approved"}]
+        manifest = {"assets": [{
+            "asset_id": asset["id"], "name": asset["name"],
+            "width": asset["width"], "height": asset["height"],
+            "split": asset.get("split"), "shapes": asset.get("shapes", []),
+        } for asset in assets]}
+        report = analyze_manifest(manifest, config or {})
+        report.update(
+            project_revision=project["revision"],
+            review_scope={
+                "pending": sum(asset.get("review_state") == "pending" for asset in assets),
+                "approved": sum(asset.get("review_state") == "approved" for asset in assets),
+                "excluded_rejected": project.get("stats", {}).get("rejected", 0),
+            },
+        )
+        return report
+
     def _reap(self, project_id, run_id, process):
         return_code = process.wait()
         with self.lock:

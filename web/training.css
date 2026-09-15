@@ -4,6 +4,7 @@
 .training-schedule{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px}
 .training-schedule summary{cursor:pointer;color:var(--accent);margin-bottom:14px}
 .yolo-compatibility{margin:2px 0 18px;padding:16px;border:1px solid #3d5965;border-radius:6px;background:#101e27}
+.review-compatibility{margin-top:18px}
 .yolo-compatibility-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
 .yolo-compatibility-heading p{margin:5px 0 0;color:var(--muted);font-size:12px}
 .yolo-compatibility .badge{white-space:nowrap}

@@ -236,6 +236,17 @@ def main():
             wait("document.querySelector('#trainingDataset').value==='D002'")
             assert old_manifest.read_bytes() == old_bytes
             assert service.store.get_project(pid)['split_plan']['current']
+            # YOLO Seg compatibility is visible during review and checks current annotations.
+            click("[data-stage=review]")
+            wait("window.workbenchState().stage==='review'&&!window.workbenchState().transitioning")
+            wait("document.querySelector('#yoloCompatibilityBadge').textContent==='需要處理'")
+            capture("32-yolo-compatibility-review", target="#yoloCompatibilityPanel")
+            click("#yoloCompatibilityReport .yolo-issue .text-button")
+            wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
+            capture("33-yolo-hole-location", target="#formDialog")
+            click("#cancelDialog")
+            click("[data-stage=split]")
+            wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             # Parameter forms expose the selected engine's actual supported schema.
@@ -256,22 +267,14 @@ def main():
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             for key, value in values.items():
                 assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
-            # YOLO Seg exposes an explicit full-dataset compatibility preflight.
+            # YOLO Seg keeps conversion policy controls; the fixed version is rechecked at Run start.
             fill("#trainingEngine", "yolo26n_seg")
-            wait("!document.querySelector('#yoloCompatibilityPanel').hidden")
             assert js("document.querySelector('#trainingParam-yolo_mask_policy').value") == "repair_tiny_holes"
             click("#trainingCompatibilitySettings summary")
             fill("#trainingParam-yolo_mask_policy", "strict")
             assert js("document.querySelector('#trainingParam-tiny_hole_max_pixels').getClientRects().length===0")
             fill("#trainingParam-yolo_mask_policy", "repair_tiny_holes")
             fill("#trainingParam-tiny_hole_max_ratio", "0.01")
-            click("#checkYoloCompatibility")
-            wait("document.querySelector('#yoloCompatibilityBadge').textContent==='檢查通過'")
-            capture("32-yolo-compatibility-preflight", target="#yoloCompatibilityPanel")
-            click("#yoloCompatibilityReport .yolo-issue .text-button")
-            wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
-            capture("33-yolo-hole-location", target="#formDialog")
-            click("#cancelDialog")
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             click("#trainingSchedule summary")

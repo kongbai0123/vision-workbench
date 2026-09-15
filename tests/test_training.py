@@ -72,6 +72,24 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.store.save_asset(self.pid, current["id"], [], current["revision"])
         self.assertEqual(manifest_path.read_bytes(), before)
 
+    def test_review_compatibility_scans_latest_pending_and_approved_annotations(self):
+        initial = self.workspace.review_yolo_compatibility(self.pid)
+        self.assertTrue(initial["compatible"], initial)
+        self.assertEqual(initial["review_scope"], {"pending": 0, "approved": 6, "excluded_rejected": 0})
+
+        asset = self.store.get_asset(self.pid, self.store.get_project(self.pid)["assets"][0]["id"])
+        mask = decode_rle(asset["shapes"][0]["counts"], asset["width"], asset["height"])
+        mask[14:20, 14:20] = 0
+        shapes = list(asset["shapes"]); shapes[0] = dict(shapes[0], counts=encode_rle(mask))
+        self.store.save_asset(self.pid, asset["id"], shapes, asset["revision"])
+
+        current = self.store.get_project(self.pid)
+        report = self.workspace.review_yolo_compatibility(self.pid)
+        self.assertEqual(report["project_revision"], current["revision"])
+        self.assertEqual(report["review_scope"]["pending"], 1)
+        self.assertFalse(report["compatible"])
+        self.assertEqual(report["summary"]["blocked_assets"], 1)
+
     def test_real_train_evaluate_predict_accept_roundtrip(self):
         dataset = self.workspace.create_dataset_version(self.pid)
         run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 6,
