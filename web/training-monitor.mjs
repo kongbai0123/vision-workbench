@@ -6,6 +6,23 @@ const finite=value=>typeof value==='number'&&Number.isFinite(value);
 const active=new Set(['queued','preparing','running','stopping']);
 const statusName=value=>({queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value);
 const evaluationNames={mean_iou:'Mask IoU',box_mean_iou:'Box IoU',mean_dice:'Dice',accuracy:'Accuracy',macro_f1:'Macro F1',macro_recall:'Macro Recall',mask_map50_95:'Mask mAP50–95',mask_map50:'Mask mAP50',box_map50_95:'Box mAP50–95',box_map50:'Box mAP50',recall_50:'Recall@0.5'};
+const executionLabels={batch_size:'每次前向批次大小',gradient_accumulation:'梯度累積步數',effective_batch_size:'有效批次大小',optimizer_step_measurement:'更新次數量測方式',optimizer_steps:'最佳化器累計更新次數'};
+
+export function runAuditSections(run,report){
+  const recorded=report?.run?.run_id===run.run_id?report.run:run,sections=[];
+  const initialization=recorded.initialization||run.initialization;
+  if(initialization){
+    const mode={pretrained:'預訓練權重',random:'從零開始（隨機初始化）',scratch:'從零開始（隨機初始化）'}[initialization.mode]||initialization.mode;
+    const rows=[['初始化方式',mode],['權重來源',initialization.source],['權重檔案',initialization.weights_path],['權重 SHA-256',initialization.weights_sha256]].filter(([,value])=>value!==undefined&&value!==null&&value!=='');
+    if(rows.length)sections.push({title:'模型初始化',rows});
+  }
+  const execution=recorded.execution||run.execution;
+  if(execution){
+    const rows=Object.entries(executionLabels).filter(([key])=>execution[key]!==undefined&&execution[key]!==null).map(([key,label])=>[label,key==='optimizer_step_measurement'?({post_step_hook:'每次實際權重更新後計數',unavailable:'未提供；不以 Batch 數估算'}[execution[key]]||execution[key]):execution[key]]);
+    if(rows.length)sections.push({title:'實際執行資訊',rows});
+  }
+  return sections;
+}
 
 export class TrainingMonitor {
   constructor({loadReport,onSelect,onModel}) {
@@ -166,6 +183,7 @@ export class TrainingMonitor {
     const hasModel=this.overview?.models?.some(model=>model.model_version_id===run.model_version_id);
     if(hasModel)heading.append(action('評估與模型',()=>this.onModel(run.model_version_id)));
     this.root.append(heading);
+    this.renderDataQuality(run,this.root);
     if(active.has(run.status)){const p=el('progress');p.className='run-progress';p.max=100;p.value=Number(run.progress||0);p.setAttribute('aria-label',`${run.run_id} 訓練進度`);this.root.append(p)}
     if(run.message)this.root.append(el('p',run.message,'muted'));
     if(run.error)this.root.append(el('p',run.error,'readiness-item error'));
@@ -184,16 +202,22 @@ export class TrainingMonitor {
     runs.forEach((run,index)=>{const card=el('section',undefined,'training-comparison-card'),appearance=runAppearance(run,index),head=el('div',undefined,'training-comparison-heading');card.dataset.runId=run.run_id;
       const name=el('b',`${run.model_version_id} · ${run.run_id}`);name.style.color=appearance.color;
       head.append(name,el('span',statusName(run.status),'run-status '+run.status));card.append(head,el('p',run.engine_name,'muted'));
+      this.renderDataQuality(run,card);
       const {score,split}=this.evaluation(run),metric=this.scoreEntries(run,score)[0];card.append(el('p',metric?`${split} ${metric.label} ${fmt(metric.value)} · ${run.model_version_id||'尚無模型版本'}`:'等待評估結果','training-comparison-score'),el('small',`Epoch ${run.epoch??'—'} / ${run.config?.epochs??'—'}`));
       if(run.error)card.append(el('p',run.error,'readiness-item error'));list.append(card);
     });this.root.append(list);
+  }
+  renderDataQuality(run,parent){
+    const report=this.reports.get(run.run_id),quality=report?.run?.run_id===run.run_id?report.run.data_quality||run.data_quality:run.data_quality;
+    if(quality?.purpose==='diagnostic')parent.append(el('p','流程驗證 · 同拍攝批次跨集合，非獨立泛化評估','readiness-item warning'));
   }
   details(title,key,parent=this.root){const d=el('details',undefined,'training-monitor-details');d.dataset.detailKey=key;d.open=this.detailOpen.get(key)||false;d.append(el('summary',title));d.addEventListener('toggle',()=>{if(d.isConnected){this.detailOpen.set(key,d.open);if(d.open)this.restoreView()}});parent.append(d);return d}
   table(parent,headers,rows,scrollKey){const wrap=el('div',undefined,'training-table-wrap'),table=el('table'),head=el('thead'),tr=el('tr');headers.forEach(h=>{const th=el('th',h);th.scope='col';tr.append(th)});head.append(tr);table.append(head);const body=el('tbody');rows.forEach(values=>{const row=el('tr');values.forEach(v=>row.append(el('td',String(v??'—'))));body.append(row)});table.append(body);wrap.append(table);if(scrollKey){wrap.dataset.scrollKey=scrollKey;wrap.addEventListener('scroll',()=>this.rememberScroll(wrap))}parent.append(wrap);return wrap}
   renderEpochTable(runs,descriptors){
     const d=this.details('Epoch 數值明細','epochs'),rows=[];
-    for(const run of runs)for(const row of normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]))rows.push([run.run_id,row.epoch,...descriptors.map(metric=>fmt(row[metric.key]))]);
-    if(rows.length){d.append(el('p',`共 ${rows.length} 筆 · 一次顯示最多 10 列，捲動查看全部 Epoch。`,'muted'));const wrap=this.table(d,['Run','Epoch',...descriptors.map(m=>m.label)],rows,'epochs');wrap.classList.add('training-epoch-scroll');wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Epoch 數值明細，可捲動查看全部資料')}
+    const counts=[['train/optimizer_steps_epoch','本輪權重更新次數'],['train/optimizer_steps','累計權重更新次數']].filter(([key])=>runs.some(run=>normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]).some(row=>finite(row[key]))));
+    for(const run of runs)for(const row of normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]))rows.push([run.run_id,row.epoch,...descriptors.map(metric=>fmt(row[metric.key])),...counts.map(([key])=>finite(row[key])?String(row[key]):'—')]);
+    if(rows.length){d.append(el('p',`共 ${rows.length} 筆 · 一次顯示最多 10 列，捲動查看全部 Epoch。`,'muted'));const wrap=this.table(d,['Run','Epoch',...descriptors.map(m=>m.label),...counts.map(([,label])=>label)],rows,'epochs');wrap.classList.add('training-epoch-scroll');wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Epoch 數值明細，可捲動查看全部資料')}
     else d.append(el('p','沒有可顯示的 Epoch 數值。','muted'));
   }
   renderEvaluation(runs,parent){
@@ -212,13 +236,19 @@ export class TrainingMonitor {
   renderConfig(runs,parent){
     const d=this.details('完整執行設定','config',parent);
     const labels={epochs:'訓練輪數',device:'裝置設定',seed:'隨機種子',image_size:'輸入影像尺寸',batch_size:'批次大小',learning_rate:'初始學習率',scheduler:'學習率策略',min_learning_rate:'最低學習率',warmup_epochs:'暖身輪數',lr_patience:'降率耐心輪數',lr_factor:'降率倍率',engine:'訓練模型',weight_decay:'權重衰減',momentum:'動量',optimizer:'最佳化器',threshold_min:'門檻搜尋下限',threshold_max:'門檻搜尋上限',patience:'提前停止耐心輪數',workers:'資料載入程序數',pretrained:'使用預訓練權重'};
-    const entries=(value,path=[])=>{if(value&&typeof value==='object')return Object.entries(value).flatMap(([key,item])=>entries(item,[...path,key]));return [[path.map(key=>labels[key]||key).join(' / '),value===null?'未設定':typeof value==='boolean'?(value?'開啟':'關閉'):String(value??'—')]]};
+    Object.assign(labels,{initialization:'模型初始權重',gradient_accumulation:'梯度累積批次數'});
+    const entries=(value,path=[])=>{if(value&&typeof value==='object')return Object.entries(value).flatMap(([key,item])=>entries(item,[...path,key]));const shown=path.at(-1)==='initialization'?({pretrained:'預訓練權重微調',scratch:'從零開始（隨機初始化）'}[value]||value):value;return [[path.map(key=>labels[key]||key).join(' / '),shown===null?'未設定':typeof shown==='boolean'?(shown?'開啟':'關閉'):String(shown??'—')]]};
     for(const run of runs){
       d.append(el('h3',`${run.model_version_id||'尚未產生模型'} · ${run.run_id}`));
       labels.epochs=run.engine==='pixel_prototype_v1'?'門檻搜尋次數':'訓練輪數';
       const list=el('dl',undefined,'training-parameter-list');
       for(const [name,value]of [['資料版本',run.dataset_version_id],['訓練模型',run.engine_name],...entries(run.config||{})]){list.append(el('dt',name),el('dd',value))}
       d.append(list);
+      for(const section of runAuditSections(run,this.reports.get(run.run_id))){
+        d.append(el('h4',section.title));const observed=el('dl',undefined,'training-parameter-list');
+        for(const [name,value]of section.rows)observed.append(el('dt',name),el('dd',String(value)));
+        d.append(observed);
+      }
     }
   }
 }

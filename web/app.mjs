@@ -1455,6 +1455,7 @@ async function renderSplitPage(){
     const bar=element('div',undefined,'split-flow-bar'),fill=element('i');fill.style.width=`${Math.min(100,count/approved*100)}%`;bar.append(fill);row.append(copy,bar);distribution.append(row);
   }
   const statusRoot=$('splitFlowStatus');statusRoot.replaceChildren();
+  if(stats.class_counts){const table=element('table'),head=element('tr');for(const label of ['類別','Train','Validation','Test'])head.append(element('th',label));table.append(head);for(const label of Object.keys(stats.classes||{})){const row=element('tr');row.append(element('td',label));for(const split of ['train','val','test']){const count=stats.class_counts[split]?.[label]||0;const cell=element('td',String(count));if(!count)cell.className=split==='train'?'error':'warning';row.append(cell)}table.append(row)}const wrap=element('div',undefined,'training-table-wrap');wrap.append(table);statusRoot.append(wrap)}
   if(readiness.ready)statusRoot.append(element('div','資料分割符合建立固定資料版本的條件。','readiness-item'));
   for(const item of readiness.blockers||[]){const row=element('div',undefined,'readiness-item error');row.append(element('b',item.message),element('span',item.action));statusRoot.append(row)}
   for(const item of readiness.warnings||[]){const row=element('div',undefined,'readiness-item warning');row.append(element('b',item.message),element('span',item.action));statusRoot.append(row)}
@@ -1560,12 +1561,14 @@ async function checkYoloCompatibility(){
 function renderTraining(){
   if(!state.training)return;
   const {readiness,datasets=[],runs=[],capabilities}=state.training,active=activeTrainingRun();
-  renderReadiness(readiness);
   const datasetSelect=$('trainingDataset'),remember=datasetSelect.value;datasetSelect.replaceChildren();
   if(!datasets.length)datasetSelect.append(new Option('尚無資料版本',''));
-  for(const item of datasets)datasetSelect.append(new Option(`${item.id} · ${number(item.asset_count)} 張 · ${date(item.created_at)}`,item.id));
+  for(const item of datasets)datasetSelect.append(new Option(`${item.id}${item.data_quality?.purpose==='diagnostic'?' · 流程驗證':''} · ${number(item.asset_count)} 張 · ${date(item.created_at)}`,item.id));
   datasetSelect.value=datasets.some(item=>item.id===remember)?remember:datasets[0]?.id||'';
   const dataset=selectedDataset();$('trainingDatasetCurrent').textContent=dataset?.id||'尚未建立';
+  renderReadiness(dataset?.readiness||readiness);
+  if(dataset?.data_quality?.purpose==='diagnostic')$('trainingReadiness').append(element('div','流程驗證：同拍攝批次跨集合，分數不代表新場景泛化能力。','readiness-item warning'));
+  if(dataset&&!readiness.ready)$('trainingReadiness').append(element('div','目前專案的分割尚需處理；建立新版本前請前往資料分割。此處檢查結果屬於所選固定版本。','readiness-item warning'));
   $('trainingDatasetHint').textContent=dataset?`${number(dataset.asset_count)} 張 · Train ${number(dataset.splits.train)} / Val ${number(dataset.splits.val)} / Test ${number(dataset.splits.test)}`:'只會固定已核准且完成分割的資料。';
   if(dataset&&dataset.project_revision!==readiness.project_revision)$('trainingDatasetHint').textContent+=' · 目前專案已變動，建立新版本才會套用。';
   $('prepareAutoSplit').hidden=false;$('prepareAutoSplit').disabled=false;
@@ -1584,7 +1587,7 @@ function renderTraining(){
   const summary=$('trainingSummary');summary.replaceChildren();
   const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
   for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
-  $('startTraining').disabled=!dataset||!engine?.train||!engine?.parameters?.length||!!active;
+  $('startTraining').disabled=!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
   if(engine?.key?.startsWith('yolo26')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
@@ -1593,6 +1596,7 @@ function renderTraining(){
 async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{});state.yoloCompatibility=null;state.yoloCompatibilitySignature='';await loadTraining();$('trainingDataset').value=created.id;renderTraining();toast(`已建立固定訓練資料 ${created.id}。`);return created}
 async function startTrainingRun(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
+  if(dataset.readiness?.ready===false)throw Error(dataset.readiness.blockers.map(item=>item.message).join('；'));
   const config=trainingParameters.collect();
   if($('trainingEngine').value.startsWith('yolo26')){const signature=yoloCompatibilitySignature(dataset,config),report=state.yoloCompatibilitySignature===signature?state.yoloCompatibility:await checkYoloCompatibility();if(!report?.compatible)throw Error('YOLO Seg 固定資料版本複查未通過；請回到「資料審核」查看標出的圖片與孔洞位置。')}
   const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...config}});

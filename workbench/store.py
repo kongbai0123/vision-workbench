@@ -688,6 +688,8 @@ class ProjectStore:
         plan = self.preview_split(project_id, options)
         if type(revision) is not int or revision != plan["project_revision"] or fingerprint != plan["fingerprint"]:
             raise ConflictError("資料或分割設定已變動，請重新預覽")
+        if plan.get("blockers"):
+            raise ValueError("；".join(item["message"] for item in plan["blockers"]))
         with self.connection(project_id, write=True) as db:
             current = db.execute("SELECT revision FROM project").fetchone()["revision"]
             if current != revision:

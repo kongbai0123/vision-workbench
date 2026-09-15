@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finiteMetric, normalizedMetricRows, metricDescriptors, defaultMetricKeys,
   runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
+import {buildLearningRateChartModel, buildChartModels} from '../web/training-charts.mjs';
+import {runAuditSections} from '../web/training-monitor.mjs';
 
 const run = (id, options = {}) => ({run_id: id, engine: 'maskrcnn_resnet50_fpn',
   dataset_version_id: 'D001', config: {epochs: 10, image_size: 640}, ...options});
@@ -201,4 +203,83 @@ test('actual LR plots use a useful small scale and keep it when hiding runs',()=
   const full=buildChartModel(options,'train/learning_rate');assert.ok(full.yMax>=.002&&full.yMax<.01);
   const hidden=buildChartModel({...options,visibleRunIds:new Set(['R1'])},'train/learning_rate');
   assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
+});
+
+test('identical learning-rate groups share one panel and one curve per Run without removing other metrics',()=>{
+  const first=run('R1'),second=run('R2');
+  const rows=rate=>[1,2].map(epoch=>({epoch,'train/loss':1/epoch,'val/mean_iou':.7,
+    'train/learning_rate':rate/epoch,'lr/group_0':rate/epoch,'lr/group_1':rate/epoch,'lr/group_2':rate/epoch}));
+  const reports=reportsFor([first,rows(.001)],[second,rows(.002)]),options={runs:[first,second],reports};
+  const keys=metricDescriptors(options.runs,reports).map(metric=>metric.key);
+  const models=buildChartModels(options,keys),lr=models.find(model=>model.key==='train/learning_rate');
+  assert.deepEqual(models.map(model=>model.key).sort(),['train/learning_rate','train/loss','val/mean_iou']);
+  assert.equal(lr.series.length,2);
+  assert.deepEqual(lr.metricGroups,[['train/learning_rate','lr/group_0','lr/group_1','lr/group_2']]);
+  assert.deepEqual(valuesAtEpoch(lr,2).map(item=>item.value),[.0005,.001]);
+  assert.match(lr.series[0].label,/R1.*參數組 0.*參數組 1.*參數組 2/);
+  assert.equal(models.find(model=>model.key==='train/loss').series.length,2);
+});
+
+test('a group differing in any selected Run remains visible with its own label and style',()=>{
+  const first=run('R1'),second=run('R2');
+  const reports=reportsFor([first,[{epoch:1,'train/learning_rate':.001,'lr/group_0':.001,'lr/group_1':.001}]],
+    [second,[{epoch:1,'train/learning_rate':.002,'lr/group_0':.002,'lr/group_1':.003}]]);
+  const model=buildLearningRateChartModel({runs:[first,second],reports});
+  assert.deepEqual(model.metricGroups,[['train/learning_rate','lr/group_0'],['lr/group_1']]);
+  assert.equal(model.series.length,4);
+  const a=model.series.filter(series=>series.run.run_id==='R1');
+  assert.equal(a[0].color,a[1].color);assert.notEqual(a[0].dash,a[1].dash);
+  assert.match(a[1].label,/參數組 1/);
+  assert.deepEqual(valuesAtEpoch(model,1).map(item=>item.value),[.001,.002,.001,.003]);
+});
+
+test('learning-rate grouping compares complete Epoch series including missing observations',()=>{
+  const item=run('R1'),reports=reportsFor([item,[
+    {epoch:1,'train/learning_rate':.002,'lr/group_0':.002,'lr/group_1':.003},
+    {epoch:2,'train/learning_rate':.001,'lr/group_0':null,'lr/group_1':.001}]]);
+  const model=buildLearningRateChartModel({runs:[item],reports});
+  assert.equal(model.metricGroups.length,3);
+  assert.deepEqual(valuesAtEpoch(model,2).map(item=>item.value),[.001,null,.001]);
+});
+
+test('removing a comparison Run may merge LR aliases but cannot shrink shared axes or hide future Epochs',()=>{
+  const first=run('R1',{appearanceIndex:0}),second=run('R2',{appearanceIndex:1});
+  const reports=reportsFor([first,[{epoch:1,'train/learning_rate':.001,'lr/group_1':.001}]],
+    [second,[{epoch:51,'train/learning_rate':.02,'lr/group_1':.03}]]);
+  const options={runs:[first,second],domainRuns:[first,second],reports,domains:new Map()};
+  const full=buildLearningRateChartModel(options),remaining=buildLearningRateChartModel({...options,runs:[first]});
+  assert.equal(full.metricGroups.length,2);assert.equal(remaining.metricGroups.length,1);
+  assert.equal(full.xMax,51);assert.equal(remaining.xMax,51);
+  assert.equal(full.yMax,remaining.yMax);assert.ok(full.yMax>=.03);
+  assert.equal(full.series[0].color,remaining.series[0].color);
+});
+
+test('new LR group divergence is exposed during refresh and axes never follow falling rates',()=>{
+  const item=run('R1'),domains=new Map();
+  const options={runs:[item],domains,reports:reportsFor([item,[{epoch:1,'train/learning_rate':.003,'lr/group_0':.003}]])};
+  const initial=buildLearningRateChartModel(options);
+  const changed=buildLearningRateChartModel({...options,reports:reportsFor([item,[{epoch:1,'train/learning_rate':.003,'lr/group_0':.003},
+    {epoch:2,'train/learning_rate':.001,'lr/group_0':.0005}]])});
+  assert.equal(initial.metricGroups.length,1);assert.equal(changed.metricGroups.length,2);
+  assert.equal(initial.yMax,changed.yMax);
+});
+
+test('optimizer update counters are details rather than metric chart panels',()=>{
+  const item=run('R1'),reports=reportsFor([item,[{epoch:1,'train/loss':.4,
+    'train/optimizer_steps':12,'train/optimizer_steps_epoch':12}]]);
+  assert.deepEqual(metricDescriptors([item],reports).map(metric=>metric.key),['train/loss']);
+  assert.equal(normalizedMetricRows(reports.get('R1').metrics)[0]['train/optimizer_steps'],12);
+});
+
+test('run details expose recorded initialization and actual batching without inventing absent values',()=>{
+  const item=run('R1');
+  assert.deepEqual(runAuditSections(item),[]);
+  const recorded={...item,initialization:{mode:'pretrained',source:'local.pt',weights_sha256:'abc'},
+    execution:{batch_size:1,gradient_accumulation:8,effective_batch_size:8,optimizer_steps:0}};
+  const sections=runAuditSections(item,{run:recorded});
+  assert.equal(sections.length,2);
+  assert.deepEqual(sections[0].rows[0],['初始化方式','預訓練權重']);
+  assert.ok(sections[1].rows.some(([label,value])=>label==='有效批次大小'&&value===8));
+  assert.ok(sections[1].rows.some(([label,value])=>label==='最佳化器累計更新次數'&&value===0));
+  assert.deepEqual(runAuditSections(item,{run:{...recorded,run_id:'R2'}}),[]);
 });

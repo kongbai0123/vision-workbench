@@ -36,7 +36,7 @@ def parameter_schema(definition):
          "description": "模型輸入尺寸；Ultralytics 需要 32 的倍數。" if ultralytics else "模型內部縮放尺寸；不會修改專案原始圖片。"},
         {"key": "batch_size", "label": "批次大小", "type": "integer", "default": 1,
          "min": 1, "max": 16, "step": 1, "advanced": True,
-         "description": "每次參數更新使用的圖片數；較大數值會增加記憶體用量。"
+         "description": "每個小批次讀取的圖片數；梯度累積會影響實際更新頻率。較大數值會增加記憶體用量。"
                         + ("單張批次使用 BatchNorm 既有統計值。" if definition.get("task") == "semantic_segmentation" else "")},
         {"key": "learning_rate", "label": "學習率", "type": "number", "default": .0005,
          "min": 1e-8, "max": 1, "step": .0001, "advanced": True,
@@ -48,7 +48,16 @@ def parameter_schema(definition):
          "options": [{"value": "AdamW", "label": "AdamW"}, {"value": "SGD", "label": "SGD"}],
          "advanced": True, "description": "SGD 使用固定動量 0.9（Nesterov）。" if ultralytics else "選擇參數更新演算法；SGD 不使用動量。"},
     ]
+    if ultralytics:
+        parameters.append({"key": "gradient_accumulation", "label": "梯度累積批次數", "type": "integer",
+                           "default": 1, "min": 1, "max": 64, "step": 1, "advanced": True,
+                           "description": "累積幾個小批次後更新權重；有效批次＝批次大小 × 累積批次數。小資料集建議從 1 開始。"})
     if definition["key"].startswith("yolo26"):
+        parameters.append({"key": "initialization", "label": "模型初始權重", "type": "select",
+                           "default": "pretrained", "advanced": True,
+                           "options": [{"value": "pretrained", "label": "預訓練權重微調（建議）"},
+                                       {"value": "scratch", "label": "隨機權重 · 從零訓練"}],
+                           "description": "首次開始預訓練微調時會下載官方權重，之後使用本機快取；選取選項本身不下載。"})
         repair_only = {"key": "yolo_mask_policy", "values": ["repair_tiny_holes"]}
         parameters += [
             {"key": "yolo_mask_policy", "label": "YOLO Seg 遮罩相容方式", "type": "select",

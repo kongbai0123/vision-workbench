@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .learning_rates import measured_rates
 
+from collections.abc import Mapping
 from hashlib import sha256
 import json
 import math
@@ -117,17 +118,134 @@ def _numeric_metrics(trainer, kind):
                 return value
         return None
 
-    loss_items = getattr(trainer, "loss_items", None)
-    try:
-        loss = _finite_metric(loss_items.detach().sum().cpu())
-    except Exception:
-        loss = None
-    if loss is None:
-        loss = values.get("train/loss", values.get("loss"))
+    # tloss is the running mean for the whole epoch. loss_items contains only
+    # the final batch and is not a substitute for an epoch-average loss.
+    average = getattr(trainer, "tloss", None)
+    components = {}
+    if average is not None:
+        label = getattr(trainer, "label_loss_items", None)
+        if callable(label):
+            try:
+                labeled = label(average, prefix="train")
+                if isinstance(labeled, Mapping):
+                    components = dict(labeled)
+            except (AttributeError, TypeError, ValueError):
+                pass
+        if not components and isinstance(average, Mapping):
+            components = {f"train/{key}": value for key, value in average.items()}
+        elif not components:
+            if hasattr(average, "detach"):
+                average = average.detach().cpu()
+            try:
+                entries = average.reshape(-1).tolist() if hasattr(average, "reshape") else list(average)
+            except TypeError:
+                entries = [average]
+            names = getattr(trainer, "loss_names", ())
+            components = {f"train/{names[i] if i < len(names) else f'loss_component_{i + 1}'}": value
+                          for i, value in enumerate(entries)}
+    finite_components = {key: number for key, value in components.items()
+                         if (number := _finite_metric(value)) is not None}
+    loss = (_finite_metric(sum(finite_components.values()))
+            if components and len(finite_components) == len(components)
+            else values.get("train/loss", values.get("loss")))
     prefix, suffix = ("box", "b") if kind == "detect" else ("mask", "m")
-    measured = {"train/loss": loss, f"val/{prefix}_map50_95": get(f"map50-95({suffix})"),
+    measured = {**finite_components, "train/loss": loss, f"val/{prefix}_map50_95": get(f"map50-95({suffix})"),
                 f"val/{prefix}_map50": get(f"map50({suffix})")}
     return {key: value for key, value in measured.items() if value is not None}
+
+
+class _RunMetricsRecorder:
+    """Record real training epochs and successful optimizer updates only."""
+
+    def __init__(self, run_dir, run, definition):
+        self.run_dir, self.run, self.definition = Path(run_dir), run, definition
+        self.path = self.run_dir / "metrics.jsonl"
+        self.epochs = int(run["config"]["epochs"])
+        self.pending_epoch = None
+        self.completed_epochs = set()
+        self.optimizer = None
+        self.hook = None
+        self.optimizer_steps = 0
+        self.epoch_start_steps = 0
+        self.last_step_rates = {}
+        self.execution = {}
+
+    def close(self):
+        if self.hook is not None:
+            self.hook.remove()
+            self.hook = None
+
+    def _after_optimizer_step(self, optimizer, _args, _kwargs):
+        # GradScaler does not call optimizer.step when it skips an update for
+        # non-finite gradients, so this hook does not count those attempts.
+        self.optimizer_steps += 1
+        self.last_step_rates = measured_rates(optimizer)
+
+    def on_epoch_start(self, trainer):
+        epoch = int(trainer.epoch) + 1
+        if self.pending_epoch != epoch:
+            self.epoch_start_steps = self.optimizer_steps
+            self.last_step_rates = {}
+        self.pending_epoch = epoch
+        optimizer = getattr(trainer, "optimizer", None)
+        if optimizer is not self.optimizer:
+            self.close()
+            self.optimizer = optimizer
+            register = getattr(optimizer, "register_step_post_hook", None)
+            if callable(register):
+                self.hook = register(self._after_optimizer_step)
+        config = self.run["config"]
+        batch = int(getattr(trainer, "batch_size", config.get("batch_size", 1)))
+        accumulation = int(getattr(trainer, "accumulate", config.get("gradient_accumulation", 1)))
+        self.execution = {"batch_size": batch, "gradient_accumulation": accumulation,
+                          "effective_batch_size": batch * accumulation,
+                          "optimizer_step_measurement": "post_step_hook" if self.hook is not None else "unavailable"}
+
+    def on_epoch_end(self, trainer):
+        epoch = int(trainer.epoch) + 1
+        # final_eval also emits on_fit_epoch_end, including after early stopping.
+        # Only an epoch armed by on_train_epoch_start can enter the time series.
+        if self.pending_epoch != epoch or epoch in self.completed_epochs:
+            return
+        self.pending_epoch = None
+        self.completed_epochs.add(epoch)
+        row = {"epoch": epoch, **_numeric_metrics(trainer, self.definition["kind"])}
+        if self.hook is not None:
+            row.update(self.last_step_rates)
+            row.update({"train/optimizer_steps": self.optimizer_steps,
+                        "train/optimizer_steps_epoch": self.optimizer_steps - self.epoch_start_steps})
+            self.execution["optimizer_steps"] = self.optimizer_steps
+            self.execution["learning_rate_source"] = "last_successful_optimizer_step"
+        else:
+            row.update(measured_rates(getattr(trainer, "optimizer", None)))
+            self.execution["learning_rate_source"] = "optimizer_groups_at_epoch_end"
+        accumulation = int(getattr(trainer, "accumulate", self.execution["gradient_accumulation"]))
+        self.execution.update(gradient_accumulation=accumulation,
+                              effective_batch_size=self.execution["batch_size"] * accumulation)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        _status(self.run_dir, self.run, status="running", message=f"{self.definition['name']} {epoch} / {self.epochs}",
+                epoch=epoch, progress=5 + round(epoch / self.epochs * 82), metrics=row,
+                execution=dict(self.execution))
+        if _stopping(self.run_dir):
+            trainer.stop = True
+
+
+def _initialization_source(definition, config):
+    mode = config.get("initialization", "pretrained" if definition["kind"] == "segment" else "scratch")
+    if mode not in {"pretrained", "scratch"}:
+        raise ValueError("模型初始化必須選擇 pretrained 或 scratch")
+    source = definition["architecture"].replace(".yaml", ".pt") if mode == "pretrained" else definition["architecture"]
+    return mode, source
+
+
+def _initialization_record(model, mode, source):
+    record = {"mode": mode, "source": source}
+    candidate = getattr(model, "ckpt_path", None)
+    if mode == "pretrained" and candidate and Path(candidate).is_file():
+        path = Path(candidate).resolve()
+        record.update(weights_path=str(path), weights_sha256=sha256(path.read_bytes()).hexdigest())
+    return record
 
 
 def _result_metrics(result, kind, split, image_count):
@@ -150,6 +268,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
     dataset_manifest, run_dir, model_dir = map(Path, (dataset_manifest, run_dir, model_dir))
     manifest, run = read_json(dataset_manifest), read_json(run_dir / "run.json")
     definition = ULTRALYTICS_ENGINES[run["engine"]]
+    recorder = None
     try:
         os.environ.setdefault("YOLO_OFFLINE", "true")
         from ultralytics import RTDETR, YOLO
@@ -160,24 +279,23 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         metrics_path = run_dir / "metrics.jsonl"; metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3,
                 validation_split=validation_split)
-        model = (RTDETR if definition["kind"] == "detect" else YOLO)(definition["architecture"])
+        mode, source = _initialization_source(definition, run["config"])
+        _status(run_dir, run, message="載入預訓練權重" if mode == "pretrained" else "建立隨機初始化模型")
+        model = (RTDETR if definition["kind"] == "detect" else YOLO)(source)
+        initialization = _initialization_record(model, mode, source)
+        _status(run_dir, run, initialization=initialization)
         epochs = int(run["config"]["epochs"])
-        def on_epoch(trainer):
-            epoch = int(getattr(trainer, "epoch", 0)) + 1
-            row = {"epoch": epoch, **_numeric_metrics(trainer, definition["kind"]), **measured_rates(getattr(trainer, "optimizer", None))}
-            with metrics_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            _status(run_dir, run, status="running", message=f"{definition['name']} {epoch} / {epochs}", epoch=epoch,
-                    progress=5 + round(epoch / epochs * 82), metrics=row)
-            if _stopping(run_dir):
-                trainer.stop = True
-        model.add_callback("on_fit_epoch_end", on_epoch)
+        recorder = _RunMetricsRecorder(run_dir, run, definition)
+        model.add_callback("on_train_epoch_start", recorder.on_epoch_start)
+        model.add_callback("on_fit_epoch_end", recorder.on_epoch_end)
         requested = run["config"].get("device", "auto")
         device = "0" if requested == "cuda" else "cpu" if requested == "cpu" else None
         schedule = run["config"].get("scheduler", "linear")
         initial_lr = float(run["config"].get("learning_rate", .0005))
+        batch_size = int(run["config"].get("batch_size", 1))
+        accumulation = int(run["config"].get("gradient_accumulation", 1))
         model.train(data=str(data_yaml), epochs=epochs, imgsz=int(run["config"].get("image_size", 640)),
-                             batch=int(run["config"].get("batch_size", 1)), device=device, workers=0,
+                             batch=batch_size, nbs=batch_size * accumulation, device=device, workers=0,
                              lr0=initial_lr, cos_lr=schedule == "cosine",
                              lrf=1.0 if schedule == "fixed" else float(run["config"].get("min_learning_rate", initial_lr*.01))/initial_lr,
                              warmup_epochs=0 if schedule == "fixed" else int(run["config"].get("warmup_epochs", 0)),
@@ -186,7 +304,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                              optimizer=run["config"].get("optimizer", "AdamW"),
                              **({"momentum": float(run["config"].get("momentum", .9))}
                                 if run["config"].get("optimizer") == "SGD" else {}),
-                             project=str(run_dir / "ultralytics"), name="fit", exist_ok=True, pretrained=False,
+                             project=str(run_dir / "ultralytics"), name="fit", exist_ok=True, pretrained=mode == "pretrained",
                              plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)))
         if _stopping(run_dir):
             return _status(run_dir, run, status="stopped", message="已安全停止", progress=None, completed_at=time.time())
@@ -208,13 +326,18 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                   "task": definition["task"], "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                   "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
                   "image_size": int(run["config"].get("image_size", 640)), "score_threshold": .5,
-                  "validation": validation, "test": test, "created_at": time.time(), "checkpoint": "checkpoint.pt"}
+                  "validation": validation, "test": test, "created_at": time.time(), "checkpoint": "checkpoint.pt",
+                  "initialization": initialization, "execution": dict(recorder.execution)}
         if compatibility is not None:
             record["yolo_compatibility"] = compatibility
+        if "data_quality" in run:
+            record["data_quality"] = run["data_quality"]
         atomic_json(model_dir / "model.json", record)
         evaluation = {"validation": validation, "test": test}
         if compatibility is not None:
             evaluation["yolo_compatibility"] = compatibility
+        if "data_quality" in run:
+            evaluation["data_quality"] = run["data_quality"]
         atomic_json(run_dir / "evaluation.json", evaluation)
         _artifact_manifest(run_dir, model_dir, run["run_id"], checkpoint)
         return _status(run_dir, run, status="completed", message=f"{definition['name']} 訓練與評估完成", progress=100,
@@ -222,6 +345,9 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())
         raise
+    finally:
+        if recorder is not None:
+            recorder.close()
 
 
 class Predictor:

@@ -45,6 +45,12 @@ class TrainingParameterTests(unittest.TestCase):
             validate_config(definition, {"lern_rate": .001})
 
     def test_model_specific_constraints_and_baseline_legacy_defaults(self):
+        defaults = validate_config(self.definition("yolo26n_seg"), {})
+        self.assertEqual(defaults["initialization"], "pretrained")
+        self.assertEqual(defaults["gradient_accumulation"], 1)
+        for invalid in ({"gradient_accumulation": 0}, {"gradient_accumulation": 1.5}, {"initialization": "unknown"}):
+            with self.assertRaises(ValueError):
+                validate_config(self.definition("yolo26n_seg"), invalid)
         with self.assertRaisesRegex(ValueError, "32"):
             validate_config(self.definition("yolo26n_seg"), {"image_size": 641})
         ultra = validate_config(self.definition("yolo26n_seg"), {"optimizer": "SGD"})
@@ -67,7 +73,7 @@ class TrainingParameterTests(unittest.TestCase):
             workspace._maskrcnn_available = False
             workspace.registry = SimpleNamespace(model=lambda _key: self.definition("maskrcnn_resnet50_fpn"))
             manifest = workspace.datasets / "project" / "D001" / "manifest.json"
-            manifest.parent.mkdir(parents=True); manifest.write_text("{}")
+            manifest.parent.mkdir(parents=True); manifest.write_text(json.dumps({"assets":[{"split":"train","shapes":[{"label":"a"}]},{"split":"test","shapes":[{"label":"a"}]}]}))
             for invalid in ({"device": "invalid"}, {"learning_rate": float("nan")}, {"batch_size": 200},
                             {"seed": False}, {"image_size": 3.5}, {"weight_decay": -1}, {"scheduler":"plateau"}):
                 with self.subTest(config=invalid), patch("workbench.training.subprocess.Popen") as process:
@@ -86,7 +92,7 @@ class TrainingParameterTests(unittest.TestCase):
             workspace.registry = SimpleNamespace(model=lambda _key: self.definition("maskrcnn_resnet50_fpn"),
                                                   component_python=lambda _component: "python")
             manifest = workspace.datasets / "project" / "D001" / "manifest.json"
-            manifest.parent.mkdir(parents=True); manifest.write_text("{}")
+            manifest.parent.mkdir(parents=True); manifest.write_text(json.dumps({"assets":[{"split":"train","shapes":[{"label":"a"}]},{"split":"val","shapes":[{"label":"a"}]}]}))
             submitted = {"engine": "maskrcnn_resnet50_fpn", "epochs": 7, "seed": 9, "device": "cpu",
                          "image_size": 512, "batch_size": 3, "learning_rate": .012, "weight_decay": .023, "optimizer": "SGD",
                          "scheduler":"cosine", "min_learning_rate":.00012, "warmup_epochs":2}

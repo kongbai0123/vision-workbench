@@ -22,7 +22,9 @@ const DEFINITIONS = {
 };
 const PRIORITY = ['train/loss', 'val/mean_iou', 'val/box_mean_iou', 'val/accuracy',
   'val/mask_map50_95', 'val/box_map50_95', 'val/loss'];
-const META_KEYS = new Set(['epoch', 'step', 'timestamp', 'time', 'created_at', 'progress']);
+const META_KEYS = new Set(['epoch', 'step', 'timestamp', 'time', 'created_at', 'progress',
+  'optimizer_steps', 'optimizer_steps_total', 'effective_batch_size', 'gradient_accumulation',
+  'train/optimizer_steps', 'train/optimizer_steps_epoch']);
 const PALETTE = ['#55d4bd', '#8ebdff', '#efb35b', '#c795f5', '#f28fab', '#c4d46e'];
 const DASHES = ['', '7 4', '2 3', '10 3 2 3', '9 5', '3 2 3 6'];
 
@@ -216,7 +218,61 @@ export function buildChartModel(options, key) {
 
 export function valuesAtEpoch(model, epoch) {
   return model.series.map(series => ({runId: series.run.run_id, color: series.color,
+    label: series.label || series.run.run_id,
     value: series.points.find(point => point.epoch === epoch)?.value ?? null}));
+}
+
+const isLearningRate = key => key === 'train/learning_rate' || key.startsWith('lr/');
+const rateGroupLabel = key => key === 'train/learning_rate' ? '主學習率' : key.replace(/^lr\/group_/, '參數組 ');
+
+/** One LR panel; merge aliases only when every selected Run has identical points. */
+export function buildLearningRateChartModel(options = {}) {
+  const runs = options.runs || [], reports = options.reports || new Map();
+  const domainRuns = options.domainRuns || runs, domains = options.domains || new Map();
+  const keys = metricDescriptors(runs, reports).map(item => item.key).filter(isLearningRate)
+    .sort((a, b) => a === 'train/learning_rate' ? -1 : b === 'train/learning_rate' ? 1 : a.localeCompare(b, undefined, {numeric: true}));
+  const domainKeys = metricDescriptors(domainRuns, reports).map(item => item.key).filter(isLearningRate);
+  const models = new Map([...new Set([...keys, ...domainKeys])].map(key => [key, buildChartModel({...options, domains}, key)]));
+  const groups = [];
+  for (const key of keys) {
+    const model = models.get(key);
+    const signature = JSON.stringify(model.allSeries.map(series => [series.run.run_id, series.points]));
+    const same = groups.find(group => group.signature === signature);
+    if (same) same.keys.push(key);
+    else groups.push({signature, keys: [key], model});
+  }
+  const domainKey = JSON.stringify([domainRuns.map(run => run.run_id).sort(), 'learning-rate-panel']);
+  const prior = domains.get(domainKey);
+  const bounds = [...models.values()];
+  const xMax = Math.max(1, prior?.xMax || 1, ...bounds.map(model => model.xMax));
+  const yMax = Math.max(1e-12, prior?.yMax || 0, ...bounds.map(model => model.yMax));
+  const yMin = Math.min(0, prior?.yMin || 0, ...bounds.map(model => model.yMin));
+  const expanded = Boolean(prior?.expanded || (prior && (xMax > prior.xMax || yMax > prior.yMax || yMin < prior.yMin)));
+  domains.set(domainKey, {xMax, yMax, yMin, expanded});
+  const series = groups.flatMap((group, index) => group.model.series.filter(item => item.points.length).map(item => ({
+    ...item, metricKeys: group.keys, label: `${item.run.run_id} · ${group.keys.map(rateGroupLabel).join('／')}`,
+    // Run identity stays in its color; distinguish parameter groups by line style.
+    dash: groups.length === 1 ? item.dash : DASHES[index % DASHES.length],
+  })));
+  const warnings = [...new Set(groups.flatMap(group => group.model.warnings))];
+  if (expanded && !warnings.some(message => message.includes('已擴大座標'))) warnings.push('新資料超出原座標範圍，已擴大座標以完整顯示；之後不會自動縮小。');
+  const notes = ['每輪最後一步的實測學習率；顏色代表 Run，線型代表不同參數組。'];
+  if (groups.some(group => group.keys.length > 1)) notes.push('所選 Run 中完全相同的學習率序列已合併，圖例列出其參數組；Epoch 明細保留各組數值。');
+  return {...definition('train/learning_rate'), xMax, yMax, yMin, expanded, incompatible: false,
+    outOfRange: false, series, allSeries: groups.flatMap(group => group.model.allSeries), warnings, notes,
+    metricGroups: groups.map(group => group.keys)};
+}
+
+export function buildChartModels(options, keys) {
+  const models = [];
+  let hasRate = false;
+  for (const key of new Set(keys)) {
+    if (isLearningRate(key)) {
+      if (!hasRate) models.push(buildLearningRateChartModel(options));
+      hasRate = true;
+    } else models.push(buildChartModel(options, key));
+  }
+  return models;
 }
 
 function html(document, tag, className, text) {
@@ -249,7 +305,7 @@ export function createTrainingCharts(container, options = {}) {
   const descriptors = metricDescriptors(options.runs, options.reports);
   const keys = options.metricKeys === undefined ? defaultMetricKeys(descriptors) : options.metricKeys;
   const grid = html(document, 'div', 'training-chart-grid');
-  const models = [...new Set(keys)].map(key => buildChartModel(options, key));
+  const models = buildChartModels(options, keys);
   const charts = [];
   let destroyed = false;
   function showEpoch(epoch) {
@@ -287,7 +343,7 @@ export function createTrainingCharts(container, options = {}) {
       for (const point of series.points) {
         const dot = svgNode(document, 'circle', {cx: x(point.epoch), cy: y(point.value), r: 3,
           fill: series.color, 'data-run-id': series.run.run_id, 'data-epoch': point.epoch});
-        dot.append(svgNode(document, 'title', {}, `${series.run.run_id} · Epoch ${point.epoch} · ${format(point.value)}`));
+        dot.append(svgNode(document, 'title', {}, `${series.label || series.run.run_id} · Epoch ${point.epoch} · ${format(point.value)}`));
         svg.append(dot);
       }
     }
@@ -301,7 +357,7 @@ export function createTrainingCharts(container, options = {}) {
       guide.setAttribute('x1', x(bounded)); guide.setAttribute('x2', x(bounded));
       guide.setAttribute('visibility', model.series.length ? 'visible' : 'hidden');
       const values = valuesAtEpoch(model, bounded);
-      hover.textContent = values.length ? `Epoch ${bounded} · ${values.map(item => `${item.runId} ${item.value === null ? '無資料' : format(item.value)}`).join('　｜　')}` : model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
+      hover.textContent = values.length ? `Epoch ${bounded} · ${values.map(item => `${item.label} ${item.value === null ? '無資料' : format(item.value)}`).join('　｜　')}` : model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
       hit.setAttribute('aria-valuenow', bounded);
       hit.setAttribute('aria-valuetext', hover.textContent);
     };
@@ -332,14 +388,24 @@ export function createTrainingCharts(container, options = {}) {
     heading.append(html(document, 'h3', '', model.label));
     const latest = html(document, 'div', 'training-chart-latest');
     for (const series of model.series) {
-      const point = series.points.at(-1), chip = html(document, 'span', '', `${series.run.run_id} 最新 ${point ? `${format(point.value)} · E${point.epoch}` : '無資料'}`);
+      const point = series.points.at(-1), chip = html(document, series.metricKeys ? 'div' : 'span', '', `${series.label || series.run.run_id} 最新 ${point ? `${format(point.value)} · E${point.epoch}` : '無資料'}`);
       chip.style.setProperty('--series-color', series.color);
+      chip.dataset.metricKeys = (series.metricKeys || [model.key]).join(',');
+      chip.title = series.dash ? '虛線：' + (series.metricKeys || [model.key]).map(rateGroupLabel).join('／') : '實線';
+      if (series.metricKeys) {
+        chip.style.cssText += ';display:flex;align-items:center;gap:5px;color:#c4d9e0;min-width:0';
+        const swatch = svgNode(document, 'svg', {width: 28, height: 10, 'aria-hidden': 'true'});
+        swatch.style.flexShrink = '0';
+        swatch.append(svgNode(document, 'line', {x1: 0, y1: 5, x2: 28, y2: 5, stroke: series.color, 'stroke-width': 2, 'stroke-dasharray': series.dash}));
+        chip.insertBefore(swatch, chip.firstChild);
+      }
       latest.append(chip);
     }
     heading.append(latest); card.append(heading);
     const host = html(document, 'div', 'training-chart-host'), hover = html(document, 'p', 'training-chart-hover', '移到圖表或點選 Epoch，可同時查看各 Run 的數值。');
     if (model.incompatible || !model.series.length) hover.textContent = model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
     card.append(host, hover);
+    for (const note of model.notes || []) card.append(html(document, 'p', 'metric-chart-note', note));
     if (model.direction) card.append(html(document, 'p', 'training-chart-direction', model.direction === 'lower' ? '越低越好' : '越高越好'));
     for (const warning of model.warnings) card.append(html(document, 'p', 'training-chart-warning', warning));
     grid.append(card); charts.push({host, model, hover});

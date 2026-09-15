@@ -40,13 +40,13 @@ export class SplitManager {
   invalidate(){this.plan=null;this.apply.disabled=true;this.create.disabled=true;this.message.textContent='設定已變更，請重新預覽。'}
   async work(fn){if(this.busy)return;this.busy=true;const controls=[...this.dialog.querySelectorAll('input,select,button')];const disabled=controls.map(x=>x.disabled);controls.forEach(x=>x.disabled=true);
     try{await fn()}catch(e){this.message.textContent=e.message;this.message.setAttribute('role','alert')}
-    finally{controls.forEach((x,i)=>x.disabled=disabled[i]);this.busy=false;this.apply.disabled=this.create.disabled=!this.plan;this.message.setAttribute('aria-live','polite')}
+    finally{controls.forEach((x,i)=>x.disabled=disabled[i]);this.busy=false;this.apply.disabled=this.create.disabled=!this.plan||this.plan.ready===false||!!this.plan.blockers?.length;this.message.setAttribute('aria-live','polite')}
   }
   async runPreview(){this.plan=null;await this.work(async()=>{
     const plan=await this.api(`/api/projects/${this.pid}/split-preview`,'POST',{options:this.options});this.plan=plan;
     this.summary.replaceChildren();for(const s of ['train','val','test'])this.summary.append(node('div',`${s.toUpperCase()} · ${plan.image_counts[s]} 張 · ${plan.actual_ratios[s].toFixed(1)}%`));
     this.renderGroups(plan.groups);this.renderClasses(plan);
-    this.message.textContent=`預覽：將調整 ${plan.changed} 張。${plan.warnings.join('；')||'來源群組完整，請確認實際比例。'}`;
+    this.message.textContent=`${plan.blockers?.length?'無法套用：'+plan.blockers.map(x=>x.message).join('；'):`預覽：將調整 ${plan.changed} 張。`} ${plan.warnings.join('；')||'來源群組完整，請確認實際比例。'}`;
   })}
   renderGroups(groups){this.groups.replaceChildren();const table=node('table'),head=node('thead'),tr=node('tr');for(const t of ['來源／群組','圖片','目前集合','建議集合','指定／鎖定'])tr.append(node('th',t));head.append(tr);table.append(head);const body=node('tbody');
     for(const group of groups){const row=node('tr');row.dataset.groupId=group.id;
@@ -56,7 +56,7 @@ export class SplitManager {
       select.onchange=()=>{if(select.value)this.options.locks[group.id]=select.value;else delete this.options.locks[group.id];this.invalidate()};cell.append(select);row.append(cell);body.append(row)}table.append(body);this.groups.append(table)
   }
   renderClasses(plan){const table=node('table'),head=node('tr');for(const s of ['類別實例數','Train','Val','Test'])head.append(node('th',s));table.append(head);for(const name of Object.keys(plan.class_totals)){const row=node('tr');row.append(node('td',name));for(const s of ['train','val','test'])row.append(node('td',String(plan.class_counts[s][name]||0)));table.append(row)}this.groups.append(node('h3','類別分布'),table)}
-  async runApply(createVersion){if(!this.plan)return;const plan=this.plan;await this.work(async()=>{
+  async runApply(createVersion){if(!this.plan||this.plan.ready===false||this.plan.blockers?.length)return;const plan=this.plan;await this.work(async()=>{
     const result=await this.api(`/api/projects/${this.pid}/split-apply`,'POST',{options:plan.options,revision:plan.project_revision,fingerprint:plan.fingerprint});this.plan=null;
     await this.onApplied(result,this.pid,createVersion);this.dialog.close();
   })}

@@ -6,6 +6,55 @@ import math
 import random
 
 from .splitting import SPLIT_ORDER, _ratios
+from .split_quality import split_class_coverage
+
+
+def _covered_seed(groups, locks, active, ordered):
+    """Find a feasible starting point before optimizing soft balance targets.
+
+    All unlocked groups can initially go to Train. At most two groups then need
+    reserving for empty evaluation splits. Trying these reservations completely
+    decides feasibility for the hard nonempty-split and Train-coverage rules.
+    """
+    assignments = {g["id"]: locks.get(g["id"], "train") for g in groups}
+    train = [g for g in groups if assignments[g["id"]] == "train"]
+    totals = Counter()
+    train_classes = Counter()
+    for group in groups:
+        totals.update(group["classes"])
+    for group in train:
+        train_classes.update(group["classes"])
+    train_images = sum(g["images"] for g in train)
+    if not train_images or any(not train_classes[label] for label in totals):
+        return None
+    occupied = set(assignments.values())
+    reserve = [split for split in active if split != "train" and split not in occupied]
+    if not reserve:
+        return assignments
+
+    def removable(*selected):
+        if sum(g["images"] for g in selected) >= train_images:
+            return False
+        removed = Counter()
+        for group in selected:
+            removed.update(group["classes"])
+        return all(train_classes[label] > count for label, count in removed.items())
+
+    candidates = [g for g in ordered if removable(g)]
+    selected = None
+    if len(reserve) == 1 and candidates:
+        selected = candidates[:1]
+    elif len(reserve) == 2:
+        for index, first in enumerate(candidates):
+            second = next((g for g in candidates[index + 1:] if removable(first, g)), None)
+            if second is not None:
+                selected = [first, second]
+                break
+    if selected is None:
+        return None
+    for group, split in zip(selected, reserve):
+        assignments[group["id"]] = split
+    return assignments
 
 
 def source_groups(assets, overrides=None, strategy="smart"):
@@ -107,20 +156,25 @@ def smart_split(assets, options=None):
     for attempt in range(min(24, max(4, 1200 // len(groups)))):
         ordered = sorted(free, key=lambda g: (-sum(v / totals[k] for k,v in g["classes"].items()), -g["images"], g["id"]))
         if attempt: rng.shuffle(ordered)
-        assignments = dict(locks); counts = Counter(); classes = {s: Counter() for s in active}
+        covered = _covered_seed(groups, locks, active, ordered)
+        assignments = covered or dict(locks); counts = Counter(); classes = {s: Counter() for s in active}
         def place(group, split, direction):
             counts[split] += direction * group["images"]
             for label, value in group["classes"].items(): classes[split][label] += direction * value
         for group in groups:
-            if group["id"] in locks: place(group,locks[group["id"]],1)
+            if group["id"] in assignments: place(group,assignments[group["id"]],1)
         def choose(group, preferred=None):
             choices=[]
             for split in active:
-                place(group,split,1);value=cost(counts,classes);place(group,split,-1)
-                choices.append((value,split != preferred,SPLIT_ORDER.index(split),split))
+                place(group,split,1)
+                valid = covered is None or (all(counts[s] for s in active) and
+                                            all(classes["train"][label] for label in totals))
+                value=cost(counts,classes);place(group,split,-1)
+                if valid: choices.append((value,split != preferred,SPLIT_ORDER.index(split),split))
             return min(choices)[-1]
-        for group in ordered:
-            split=choose(group);assignments[group["id"]]=split;place(group,split,1)
+        if covered is None:
+            for group in ordered:
+                split=choose(group);assignments[group["id"]]=split;place(group,split,1)
         for _ in range(3):
             changed=False
             for group in ordered:
@@ -134,18 +188,26 @@ def smart_split(assets, options=None):
     if best is None:
         raise ValueError("群組鎖定或資料量使集合無法非空；請解除部分鎖定或補充資料")
     _, assignments, counts, classes = best
-    warnings = []
-    for label in sorted(totals):
-        missing = [s for s in active if not classes[s][label]]
-        if missing: warnings.append(f"類別「{label}」未涵蓋 {' / '.join(missing)}；保持群組完整，建議補充獨立來源")
+    output = {aid: assignments[g["id"]] for g in groups for aid in g["asset_ids"]}
+    quality = split_class_coverage(assets, output, active_splits=active)
+    warnings = [item["message"] for item in quality["warnings"]]
+    for blocker in quality["blockers"]:
+        label = blocker["label"]
+        carriers = [g for g in groups if g["classes"].get(label)]
+        blocker["source_group_count"] = len(carriers)
+        locked_out = all(locks.get(g["id"]) in {"val", "test"} for g in carriers)
+        if locked_out:
+            blocker["action"] = "此類別的所有來源群組均鎖定在評估集合；請解除鎖定或補充可用於 Train 的獨立來源"
+        elif len(carriers) == 1:
+            blocker["action"] = "此類別只有一個來源群組；目前無法同時保持群組完整、所有集合非空及 Train 類別齊全，請補充獨立來源或減少評估集合"
     if strategy != "smart": warnings.append("類別平衡模式可能拆開拍攝來源，請確認圖片彼此獨立")
     untracked = sum(not a.get("batch_id") and not a.get("source") for a in assets)
     if untracked: warnings.append(f"{untracked} 張圖片缺少來源資訊，請補定義手動群組")
-    output = {aid: assignments[g["id"]] for g in groups for aid in g["asset_ids"]}
     for g in groups:
         g["proposed"] = assignments[g["id"]]; g["locked"] = g["id"] in locks
-    return {"algorithm_version": 1, "strategy": strategy, "seed": seed, "options": options,
+    return {"algorithm_version": 2, "strategy": strategy, "seed": seed, "options": options,
             "assignments": output, "groups": groups, "warnings": warnings,
+            "ready": quality["ready"], "blockers": quality["blockers"], "coverage": quality,
             "image_counts": {s: counts[s] for s in SPLIT_ORDER},
             "ratios": {s: ratios[s] * 100 for s in SPLIT_ORDER},
             "actual_ratios": {s: counts[s] / n * 100 for s in SPLIT_ORDER},

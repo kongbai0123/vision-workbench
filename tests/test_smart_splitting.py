@@ -18,6 +18,8 @@ def samples():
 class SmartSplitTests(unittest.TestCase):
     def test_groups_never_split_and_training_keeps_rare_class(self):
         assets=samples();plan=smart_split(assets)
+        self.assertTrue(plan['ready'])
+        self.assertEqual(plan['blockers'], [])
         for batch in 'ABCD':
             self.assertEqual(len({plan['assignments'][a['id']] for a in assets if a['batch_id']==batch}),1)
         self.assertTrue(all(plan['image_counts'].values()))
@@ -61,6 +63,59 @@ class SmartSplitTests(unittest.TestCase):
         for options in ({'ratios':[70,None,10]},{'ratios':[float('nan'),20,10]}, {'ratios':[100,0,0]},
                         {'seed':True},{'seed':-1},{'strategy':'random'},{'locks':{'missing':'test'}}):
             with self.subTest(options=options),self.assertRaises(ValueError):smart_split(samples(),options)
+
+    def test_one_source_per_class_returns_blocked_preview(self):
+        assets = [{"id": str(i), "batch_id": f"capture-{i}", "shapes": [{"label": f"class-{i}"}]}
+                  for i in range(4)]
+        plan = smart_split(assets)
+        self.assertFalse(plan['ready'])
+        self.assertEqual(set(plan['assignments']), {a['id'] for a in assets})
+        self.assertTrue(all(plan['image_counts'].values()))
+        self.assertTrue(plan['blockers'])
+        self.assertTrue(all(b['code'] == 'train_class_missing' for b in plan['blockers']))
+        self.assertTrue(all(b['source_group_count'] == 1 for b in plan['blockers']))
+        self.assertTrue(all('一個來源群組' in b['action'] for b in plan['blockers']))
+
+    def test_train_coverage_is_hard_even_with_tiny_train_target(self):
+        assets = [{"id": str(i), "batch_id": f"capture-{i}",
+                   "shapes": [{"label": f"class-{i}"}] if i < 4 else []}
+                  for i in range(6)]
+        plan = smart_split(assets, {'ratios': [1, 49, 50]})
+        self.assertTrue(plan['ready'])
+        self.assertTrue(all(plan['assignments'][str(i)] == 'train' for i in range(4)))
+        self.assertEqual(plan['image_counts'], {'train': 4, 'val': 1, 'test': 1})
+        self.assertEqual(len(plan['coverage']['warnings']), 8)
+
+    def test_two_evaluation_reservations_do_not_remove_last_class_carriers(self):
+        # Every individual group can leave Train, but A and B cannot both leave.
+        labels = {'A': ['rare', 'common'], 'B': ['rare'], 'C': ['common'], 'D': ['common']}
+        assets = [{'id': group, 'batch_id': group, 'shapes': [{'label': label} for label in members]}
+                  for group, members in labels.items()]
+        for seed in range(6):
+            with self.subTest(seed=seed):
+                plan = smart_split(assets, {'seed': seed, 'ratios': [10, 45, 45]})
+                self.assertTrue(plan['ready'])
+                self.assertTrue(all(plan['image_counts'].values()))
+                self.assertGreater(plan['class_counts']['train']['rare'], 0)
+                self.assertGreater(plan['class_counts']['train']['common'], 0)
+
+    def test_locked_evaluation_only_class_blocks_but_preserves_lock(self):
+        assets = samples()
+        group = next(g for g in source_groups(assets) if g['sources'] == ['D'])
+        plan = smart_split(assets, {'locks': {group['id']: 'test'}})
+        self.assertFalse(plan['ready'])
+        self.assertTrue(all(plan['assignments'][aid] == 'test' for aid in group['asset_ids']))
+        blocked = next(b for b in plan['blockers'] if b['label'] == 'rare')
+        self.assertIn('鎖定', blocked['action'])
+
+    def test_preserve_test_cannot_hide_missing_training_class(self):
+        assets = samples()
+        for a in assets:
+            a['split'] = 'test' if a['batch_id'] == 'D' else 'train'
+        plan = smart_split(assets, {'preserve_test': True})
+        self.assertFalse(plan['ready'])
+        self.assertIn('rare', plan['coverage']['missing_train_classes'])
+        self.assertTrue(all(plan['assignments'][a['id']] == 'test' for a in assets if a['batch_id'] == 'D'))
 
 
 class SmartSplitStoreTests(unittest.TestCase):

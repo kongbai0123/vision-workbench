@@ -27,6 +27,7 @@ from .classification_engine import CLASSIFICATION_ENGINES
 from .ultralytics_engine import ULTRALYTICS_ENGINES
 from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
+from .split_quality import split_class_coverage
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -49,6 +50,23 @@ def _safe_id(value, prefix):
     if not isinstance(value, str) or not value.startswith(prefix) or not value[len(prefix):].isdigit():
         raise ValueError(f"{prefix} 版本 ID 無效")
     return value
+
+
+def dataset_readiness(manifest):
+    assets = manifest.get("assets", [])
+    active = {a.get("split") for a in assets}
+    report = split_class_coverage(assets, active_splits=active)
+    if not assets:
+        report["blockers"].append({"code": "empty_dataset", "message": "固定資料版本沒有圖片", "action": "建立有效資料版本"})
+    if not report["image_counts"]["train"]:
+        report["blockers"].append({"code": "no_train_split", "message": "Train 沒有圖片", "action": "設定資料分割"})
+    if not (report["image_counts"]["val"] or report["image_counts"]["test"]):
+        report["blockers"].append({"code": "no_evaluation_split", "message": "Validation 或 Test 至少需要一張圖片", "action": "設定資料分割"})
+    if any(a.get("split") not in {"train", "val", "test"} for a in assets):
+        report["blockers"].append({"code": "missing_split", "message": "固定資料版本含有未分割圖片", "action": "重新建立資料版本"})
+    report["ready"] = not report["blockers"]
+    report["stats"] = {"approved": len(assets), "splits": report["image_counts"], "classes": report["class_totals"]}
+    return report
 
 
 class TrainingWorkspace:
@@ -185,9 +203,13 @@ class TrainingWorkspace:
         if leaked:
             warnings.append({"code": "source_group_leak", "message": f"{len(leaked)} 個拍攝批次跨越不同資料分割",
                              "action": "若批次內影像高度相似，建議調整分割後再建立資料版本"})
+        coverage = split_class_coverage(approved, active_splits=[s for s, count in splits.items() if count])
+        blockers.extend(coverage["blockers"])
+        warnings.extend(coverage["warnings"])
         return {"ready": not blockers, "project_id": project_id, "project_revision": project["revision"],
                 "stats": {"approved": len(approved), "excluded": project["stats"]["total"] - len(approved),
-                          "splits": splits, "classes": class_counts}, "blockers": blockers, "warnings": warnings}
+                          "splits": splits, "classes": class_counts, "class_counts": coverage["class_counts"]},
+                "blockers": blockers, "warnings": warnings}
 
     def create_dataset_version(self, project_id):
         report = self.readiness(project_id)
@@ -248,7 +270,47 @@ class TrainingWorkspace:
         return {"id": dataset_id, "project_id": project_id, "project_revision": manifest["project_revision"],
                 "created_at": manifest["created_at"], "classes": manifest["classes"],
                 "asset_count": len(manifest["assets"]), "splits": {name: sum(a["split"] == name for a in manifest["assets"])
-                for name in ("train", "val", "test")}, "manifest_sha256": manifest["manifest_sha256"]}
+                for name in ("train", "val", "test")}, "manifest_sha256": manifest["manifest_sha256"],
+                "data_quality": manifest.get("data_quality"), "readiness": dataset_readiness(manifest)}
+
+    def create_diagnostic_dataset_version(self, project_id, source_dataset_id):
+        """Create a separately labelled copy without modifying project splits or history."""
+        from .diagnostic_split import diagnostic_temporal_split
+        source_dataset_id = _safe_id(source_dataset_id, "D")
+        parent = self.datasets / project_id
+        source_root = parent / source_dataset_id
+        source = read_json(source_root / "manifest.json")
+        plan = diagnostic_temporal_split(source["assets"])
+        with self.lock:
+            dataset_id = _next_id(parent, "D")
+            temporary = parent / f".{dataset_id}-{uuid.uuid4().hex}.tmp"
+            (temporary / "images").mkdir(parents=True)
+            try:
+                manifest = json.loads(dump(source))
+                manifest["assets"] = [a for a in manifest["assets"] if a["asset_id"] in plan["assignments"]]
+                for asset in manifest["assets"]:
+                    asset["split"] = plan["assignments"][asset["asset_id"]]
+                    origin = (source_root / asset["image_file"]).resolve()
+                    if not origin.is_relative_to(source_root.resolve()):
+                        raise ValueError("圖片路徑超出原始資料版本")
+                    destination = temporary / "images" / origin.name
+                    shutil.copy2(origin, destination)
+                    if sha256(destination.read_bytes()).hexdigest() != asset["sha256"]:
+                        raise ValueError("來源圖片雜湊不符")
+                    asset["image_file"] = f"images/{destination.name}"
+                quality = {**plan["data_quality"], "source_dataset_version_id": source_dataset_id,
+                           "source_manifest_sha256": source["manifest_sha256"]}
+                manifest.update(dataset_version_id=dataset_id, created_at=timestamp(), data_quality=quality,
+                                split_plan={"strategy": "diagnostic_temporal", "blocks": plan["blocks"]},
+                                readiness={**plan["coverage"], "stats": {"splits": plan["coverage"]["image_counts"]}})
+                manifest.pop("manifest_sha256", None)
+                manifest["manifest_sha256"] = _canonical_hash(manifest)
+                atomic_json(temporary / "manifest.json", manifest)
+                temporary.replace(parent / dataset_id)
+            except BaseException:
+                shutil.rmtree(temporary, ignore_errors=True)
+                raise
+        return self.dataset(project_id, dataset_id)
 
     def list_datasets(self, project_id):
         parent = self.datasets / project_id
@@ -278,6 +340,9 @@ class TrainingWorkspace:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         effective_config = validate_config(definition, config)
         immutable = read_json(manifest)
+        coverage = dataset_readiness(immutable)
+        if not coverage["ready"]:
+            raise ValueError("固定資料版本的分割不適合訓練：" + "；".join(item["message"] for item in coverage["blockers"]))
         if effective_config.get("scheduler") == "plateau" and not any(a["split"] == "val" for a in immutable.get("assets", [])):
             raise ValueError("Validation 停滯下降需要獨立 Validation 集合，不能使用 Test 調整學習率")
         if engine in CLASSIFICATION_ENGINES:
@@ -316,6 +381,10 @@ class TrainingWorkspace:
                    "config": effective_config,
                    "status": "queued", "message": "等待訓練程序", "progress": 0,
                    "created_at": time.time(), "updated_at": time.time()}
+            if immutable.get("data_quality"):
+                run["data_quality"] = immutable["data_quality"]
+            if coverage["warnings"]:
+                run["split_warnings"] = coverage["warnings"]
             if compatibility is not None:
                 run["yolo_compatibility"] = compatibility
             atomic_json(run_dir / "run.json", run)
