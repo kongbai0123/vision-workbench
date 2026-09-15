@@ -1072,6 +1072,19 @@ def segment_image(image_path, engine="sam2", points=None, negative_points=None, 
         raise AcquisitionCancelled("分割已取消；候選結果未儲存")
     if mask.shape != (height, width) or not np.any(mask):
         raise AcquisitionError("分割沒有產生可用前景，請調整選取框與提示點。")
+    cleanup = None
+    if engine == "sam2":
+        from composer_core.mask_cleanup import repair_tiny_holes
+        mask, cleanup = repair_tiny_holes(
+            mask,
+            protected_background_points=negative,
+        )
+        diagnostics["mask_cleanup"] = cleanup
+        if cleanup["pixels_filled"]:
+            diagnostics["message"] = (
+                f"已在候選 Mask 自動填補 {cleanup['holes_filled']} 個微小孔洞"
+                f"（共 {cleanup['pixels_filled']} px）；接受候選前仍可檢查。"
+            )
     from sam2_segmentation.training_dataset import encode_coco_uncompressed_rle
     rle = encode_coco_uncompressed_rle(mask)
     diagnostics.update(engine=engine, elapsed_ms=round((time.monotonic() - started) * 1000, 1),
@@ -1082,5 +1095,6 @@ def segment_image(image_path, engine="sam2", points=None, negative_points=None, 
                           "review_state": "pending", "generated_at": datetime.now(timezone.utc).isoformat(),
                           "points": [list(point) for point in positive],
                           "negative_points": [list(point) for point in negative],
-                          "box": list(box) if box is not None else None}},
+                          "box": list(box) if box is not None else None,
+                          **({"mask_cleanup": cleanup} if cleanup is not None else {})}},
             "diagnostics": diagnostics}

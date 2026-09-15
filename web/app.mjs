@@ -198,6 +198,10 @@ const saver = new SaveQueue((id,payload)=>api(projectPath(`/assets/${id}`),'PUT'
   onSaved:(asset,saved)=>{
     const meta=state.project?.assets.find(a=>a.id===asset.id);
     if(meta)Object.assign(meta,{revision:saved.revision,review_state:saved.review_state||'pending',shape_count:asset.shapes.length});
+    if(state.asset?.id===asset.id&&saved.mask_cleanup?.pixels_filled&&Array.isArray(saved.shapes)){
+      state.asset.shapes=structuredClone(saved.shapes);editor.render();
+      toast(`已自動填補 ${number(saved.mask_cleanup.holes_filled)} 個微小孔洞（共 ${number(saved.mask_cleanup.pixels_filled)} px）。`);
+    }
     updateAssetHeader();renderAssetList();
     status(`已儲存 ${asset.name} · 修訂 ${String(saved.revision).slice(0,8)}`);
   },

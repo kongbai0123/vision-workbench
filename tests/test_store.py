@@ -6,7 +6,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image
+from composer_core.geometry import decode_rle, encode_rle
 from workbench.store import ProjectStore, ConflictError
 
 
@@ -50,6 +52,33 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(Path(snapshot["assets"][0]["image_path"]).read_bytes(),self.image.read_bytes())
         reopened = ProjectStore(self.root/"projects")
         self.assertEqual(reopened.get_asset(self.pid,asset["id"])["shapes"],edited["shapes"])
+
+    def test_editor_save_repairs_tiny_mask_hole_and_returns_audit(self):
+        self.define("工件")
+        large_image = self.root / "大圖.png"
+        Image.new("RGB", (256, 256), (110, 150, 70)).save(large_image)
+        mask = np.zeros((256, 256), np.uint8)
+        mask[2:254, 2:254] = 1
+        shape = dict(
+            id="mask-object", type="mask", label="工件", hidden=False,
+            counts=encode_rle(mask), metadata={"source": "ai_candidate"},
+        )
+        result = self.store.add_assets(
+            self.pid, [dict(path=large_image, shapes=[shape], batch_id="mask")],
+        )
+        asset = self.store.get_asset(self.pid, result["asset_ids"][0])
+        edited = json.loads(json.dumps(asset["shapes"]))
+        changed = decode_rle(edited[0]["counts"], 256, 256)
+        changed[20, 20] = 0
+        edited[0]["counts"] = encode_rle(changed)
+        saved = self.store.save_asset(self.pid, asset["id"], edited, asset["revision"])
+        final = decode_rle(saved["shapes"][0]["counts"], 256, 256)
+        self.assertTrue(final[20, 20])
+        self.assertEqual(saved["mask_cleanup"]["pixels_filled"], 1)
+        self.assertEqual(
+            saved["shapes"][0]["metadata"]["mask_cleanup"]["stage"],
+            "editor_save",
+        )
 
     def test_conflicting_editor_does_not_overwrite_saved_work(self):
         asset = self.add()

@@ -81,6 +81,23 @@ class YoloCompatibilityTests(unittest.TestCase):
             self.assertFalse(report["compatible"])
             self.assertEqual(report["blockers"][0]["code"], "multiple_components")
 
+    def test_diagonal_one_pixel_gap_is_repaired_before_worker_conversion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mask = np.zeros((512, 512), np.uint8)
+            mask[2:510, 2:510] = 1
+            mask[100:, 100:] = 0
+            mask[99, 99] = 0
+            manifest_path, manifest = self.manifest(root, mask)
+            report = analyze_manifest(manifest, {})
+            self.assertTrue(report["compatible"])
+            self.assertEqual(report["summary"]["holes_repaired"], 1)
+            self.assertEqual(report["summary"]["pixels_repaired"], 1)
+            prepare_yolo_dataset(
+                manifest_path, root / "run-copy", "instance_segmentation", {},
+            )
+            self.assertTrue((root / "run-copy/labels/train/A001.txt").read_text().strip())
+
 
 if __name__ == "__main__":
     unittest.main()

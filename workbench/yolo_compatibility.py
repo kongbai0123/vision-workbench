@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from composer_core.geometry import decode_rle, encode_rle, shape_polygons
+from composer_core.mask_cleanup import enclosed_background_components
 
 
 DEFAULT_POLICY = {
@@ -24,22 +25,8 @@ def policy_from_config(config=None):
 
 
 def _hole_components(mask):
-    """Return enclosed background components; the image border is outside."""
-    background = (mask == 0).astype(np.uint8)
-    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(background, 8)
-    height, width = mask.shape
-    holes = []
-    for component in range(1, count):
-        x, y, w, h, pixels = map(int, stats[component])
-        if x == 0 or y == 0 or x + w == width or y + h == height:
-            continue
-        ys, xs = np.nonzero(labels[y:y + h, x:x + w] == component)
-        holes.append({
-            "pixels": pixels,
-            "bbox": [x, y, w, h],
-            "points": [[int(px + x), int(py + y)] for px, py in zip(xs, ys)],
-        })
-    return holes
+    """Return every pixel that an outer YOLO polygon would fill as a hole."""
+    return enclosed_background_components(mask, include_points=True)
 
 
 def _issue(asset, shape, shape_index, **details):
@@ -72,7 +59,9 @@ def compatible_shape(asset, shape, shape_index, config=None):
 
     mask = decode_rle(shape.get("counts"), width, height) > 0
     foreground = int(np.count_nonzero(mask))
-    component_count = int(cv2.connectedComponents(mask.astype(np.uint8), 8)[0] - 1)
+    component_count = int(cv2.connectedComponents(
+        mask.astype(np.uint8), connectivity=8,
+    )[0] - 1)
     holes = _hole_components(mask)
     if component_count != 1:
         return shape, None, _issue(asset, shape, shape_index, code="multiple_components",
@@ -83,7 +72,8 @@ def compatible_shape(asset, shape, shape_index, config=None):
             polygons, diagnostics = shape_polygons(shape, width, height, tolerance=0)
         except ValueError as exc:
             return shape, None, _issue(asset, shape, shape_index, code="invalid_geometry", message=str(exc))
-        if len(polygons) != 1 or diagnostics.get("pixel_iou", 1) < .999:
+        if (len(polygons) != 1 or diagnostics.get("holes_omitted")
+                or diagnostics.get("pixel_iou", 1) < .999):
             return shape, None, _issue(asset, shape, shape_index, code="lossy_geometry",
                 message="遮罩轉為 YOLO Seg 多邊形後的像素 IoU 低於 99.9%", diagnostics=diagnostics)
         return shape, None, None

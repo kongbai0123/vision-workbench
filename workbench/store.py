@@ -21,6 +21,9 @@ import uuid
 
 from PIL import Image
 
+from composer_core.geometry import decode_rle, encode_rle
+from composer_core.mask_cleanup import repair_tiny_holes
+
 
 class ConflictError(ValueError):
     pass
@@ -94,6 +97,35 @@ def clean_shapes(shapes, width, height):
             raise ValueError(f"不支援的標註類型：{kind}")
         cleaned.append(shape)
     return cleaned
+
+
+def repair_saved_mask_holes(shapes, width, height):
+    """Apply the same conservative cleanup after editor changes."""
+    repaired_shapes, audits = [], []
+    for shape in shapes:
+        if shape.get("type") != "mask":
+            repaired_shapes.append(shape)
+            continue
+        metadata = shape.get("metadata") if isinstance(shape.get("metadata"), dict) else {}
+        mask = decode_rle(shape["counts"], width, height)
+        repaired, report = repair_tiny_holes(
+            mask,
+            protected_background_points=metadata.get("negative_points", []),
+        )
+        if not report["pixels_filled"]:
+            repaired_shapes.append(shape)
+            continue
+        updated = json.loads(dump(shape))
+        updated["counts"] = encode_rle(repaired)
+        updated_metadata = updated.setdefault("metadata", {})
+        updated_metadata["mask_cleanup"] = {**report, "stage": "editor_save"}
+        audits.append({
+            "shape_id": updated["id"],
+            "label": updated["label"],
+            **report,
+        })
+        repaired_shapes.append(updated)
+    return repaired_shapes, audits
 
 
 class ProjectStore:
@@ -544,6 +576,9 @@ class ProjectStore:
             if type(revision) is not int or revision != asset["revision"]:
                 raise ConflictError("圖片已有新版本；保留目前編輯，請重新載入後整合修改")
             cleaned = clean_shapes(shapes, asset["width"], asset["height"])
+            cleaned, mask_repairs = repair_saved_mask_holes(
+                cleaned, asset["width"], asset["height"],
+            )
             names = json.loads(db.execute("SELECT classes FROM project").fetchone()[0])
             unknown = list(dict.fromkeys(shape["label"] for shape in cleaned if shape["label"] not in names))
             if unknown:
@@ -555,7 +590,15 @@ class ProjectStore:
                            (serialized, next_revision, timestamp(), asset_id))
                 self._history(db, asset_id, next_revision, "edit", {"shapes":cleaned,"review_state":"pending"})
                 self._touch(db)
-        return self.get_asset(project_id, asset_id)
+        result = self.get_asset(project_id, asset_id)
+        if mask_repairs:
+            result["mask_cleanup"] = {
+                "shapes_repaired": len(mask_repairs),
+                "holes_filled": sum(item["holes_filled"] for item in mask_repairs),
+                "pixels_filled": sum(item["pixels_filled"] for item in mask_repairs),
+                "repairs": mask_repairs,
+            }
+        return result
 
     def review(self, project_id, asset_ids, state, revisions=None):
         if state not in {"pending", "approved", "rejected"} or not isinstance(asset_ids, list) or not asset_ids:

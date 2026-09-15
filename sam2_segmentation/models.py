@@ -98,8 +98,13 @@ class Sam2Config:
     mask_threshold: float = 0.0
     iou_score_window: float = 0.06
     prompt_search_radius_ratio: float = 0.005
-    smart_boundary_smoothing: bool = True
+    smart_boundary_smoothing: bool = False
     boundary_smoothing_radius: int = 4
+    repair_tiny_holes: bool = True
+    tiny_hole_max_pixels: int = 16
+    tiny_hole_total_pixels: int = 16
+    tiny_hole_max_ratio: float = .0001
+    tiny_hole_max_dimension: int = 16
     local_files_only: bool = False
 
     def __post_init__(self) -> None:
@@ -125,6 +130,7 @@ class Sam2Config:
             "allow_cpu_fallback",
             "multimask_output",
             "smart_boundary_smoothing",
+            "repair_tiny_holes",
             "local_files_only",
         ):
             if not isinstance(getattr(self, name), bool):
@@ -150,6 +156,19 @@ class Sam2Config:
         if smoothing_radius > 32:
             raise ValueError("boundary_smoothing_radius must not exceed 32")
         object.__setattr__(self, "boundary_smoothing_radius", smoothing_radius)
+        for name in (
+            "tiny_hole_max_pixels",
+            "tiny_hole_total_pixels",
+            "tiny_hole_max_dimension",
+        ):
+            value = _validate_nonnegative_integer(getattr(self, name), name)
+            object.__setattr__(self, name, value)
+        if self.tiny_hole_total_pixels < self.tiny_hole_max_pixels:
+            raise ValueError("tiny_hole_total_pixels must be at least tiny_hole_max_pixels")
+        cleanup_ratio = _finite_float(self.tiny_hole_max_ratio, "tiny_hole_max_ratio")
+        if not 0.0 <= cleanup_ratio <= 1.0:
+            raise ValueError("tiny_hole_max_ratio must be within [0, 1]")
+        object.__setattr__(self, "tiny_hole_max_ratio", cleanup_ratio)
 
 
 @dataclass(frozen=True, eq=False)
@@ -214,6 +233,9 @@ class Sam2Diagnostics:
     background_point_count: int
     processing_time_ms: float
     model_load_time_ms: float = 0.0
+    holes_detected: int = 0
+    holes_filled: int = 0
+    hole_pixels_filled: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_size", _validate_size(self.source_size, "source_size"))
@@ -241,6 +263,9 @@ class Sam2Diagnostics:
             "prompt_violation_count",
             "foreground_point_count",
             "background_point_count",
+            "holes_detected",
+            "holes_filled",
+            "hole_pixels_filled",
         ):
             object.__setattr__(
                 self,
