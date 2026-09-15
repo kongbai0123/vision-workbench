@@ -152,6 +152,17 @@ export class AnnotationEditor {
     }
     this.transform();
   }
+  focusPoint(x, y, targetPixelSize = 7) {
+    if (!this.asset) return;
+    this.fit();
+    this.zoom = Math.max(1, Math.min(24, targetPixelSize / Math.max(this.scale, .001)));
+    this.pan = {
+      x: -(x - this.asset.width / 2) * this.scale * this.zoom,
+      y: -(y - this.asset.height / 2) * this.scale * this.zoom,
+    };
+    this.transform();
+    this.notice(`已定位至 X=${Math.round(x)}、Y=${Math.round(y)}；可直接使用遮罩筆刷或橡皮擦。`);
+  }
   point(event) {
     const rect = this.$('overlay').getBoundingClientRect();
     return {x: Math.max(0, Math.min(this.asset.width, (event.clientX - rect.left) / rect.width * this.asset.width)),

@@ -1,5 +1,6 @@
 """Dataset versions, training runs, model versions, and prediction candidates."""
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 
 from hashlib import sha256
 import json
@@ -70,6 +71,7 @@ class TrainingWorkspace:
         self.python = str(self.registry.training_python)
         self.lock = threading.RLock()
         self.processes = {}
+        self._review_yolo_cache = {}
         self._maskrcnn_available = self._probe_maskrcnn()
         self._reconcile_runs()
 
@@ -361,12 +363,47 @@ class TrainingWorkspace:
         project = self.store.snapshot(project_id)
         assets = [asset for asset in project.get("assets", [])
                   if asset.get("review_state") in {"pending", "approved"}]
-        manifest = {"assets": [{
+        records = [{
             "asset_id": asset["id"], "name": asset["name"],
             "width": asset["width"], "height": asset["height"],
             "split": asset.get("split"), "shapes": asset.get("shapes", []),
-        } for asset in assets]}
-        report = analyze_manifest(manifest, config or {})
+        } for asset in assets]
+        effective = config or {}
+        config_key = _canonical_hash(effective)
+
+        def inspect(record):
+            key = (project_id, record["asset_id"], _canonical_hash(record["shapes"]), config_key)
+            with self.lock:
+                cached = self._review_yolo_cache.get(key)
+            if cached is not None:
+                return cached
+            result = analyze_manifest({"assets": [record]}, effective)
+            with self.lock:
+                self._review_yolo_cache[key] = result
+                if len(self._review_yolo_cache) > 1024:
+                    self._review_yolo_cache = dict(list(self._review_yolo_cache.items())[-768:])
+            return result
+
+        workers = min(4, max(1, len(records)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="yolo-review") as pool:
+            parts = list(pool.map(inspect, records))
+        repairs = [item for part in parts for item in part.get("repairs", [])]
+        blockers = [item for part in parts for item in part.get("blockers", [])]
+        report = {
+            "schema_version": 1, "compatible": not blockers,
+            "policy": parts[0]["policy"] if parts else analyze_manifest({"assets": []}, effective)["policy"],
+            "summary": {
+                "assets_scanned": len(records),
+                "shapes_scanned": sum(part["summary"]["shapes_scanned"] for part in parts),
+                "affected_assets": len({item["asset_id"] for item in repairs}),
+                "affected_shapes": len(repairs),
+                "holes_repaired": sum(len(item.get("holes", [])) for item in repairs),
+                "pixels_repaired": sum(item.get("hole_pixels", 0) for item in repairs),
+                "blocked_assets": len({item["asset_id"] for item in blockers}),
+            },
+            "repairs": repairs, "blockers": blockers, "source_annotations_unchanged": True,
+            "metric_label_space": "yolo_compatible_copy" if repairs else "source_annotations",
+        }
         report.update(
             project_revision=project["revision"],
             review_scope={

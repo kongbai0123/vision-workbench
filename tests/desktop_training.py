@@ -48,7 +48,8 @@ def seed_reports(service, folder):
         shape = {"id": f"part-{index}", "type": "rectangle", "label": "工件" if index % 2 else "配件",
                  "x": 8, "y": 6, "width": 25, "height": 24}
         if index == 0:
-            mask = np.zeros((36, 48), np.uint8); mask[6:30, 8:33] = 1; mask[15, 20] = 0
+            mask = np.zeros((36, 48), np.uint8); mask[6:30, 8:33] = 1
+            mask[15, 20] = 0; mask[18, 22:25] = 0
             shape = {"id": f"part-{index}", "type": "mask", "label": "配件", "x": 0, "y": 0,
                      "width": 48, "height": 36, "counts": encode_rle(mask)}
         assets.append({"path": str(source), "name": source.name, "split": split,
@@ -243,6 +244,9 @@ def main():
             capture("32-yolo-compatibility-review", target="#yoloCompatibilityPanel")
             click("#yoloCompatibilityReport .yolo-issue .text-button")
             wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
+            assert js("document.querySelectorAll('.yolo-hole-card').length") == 2
+            click(".yolo-hole-card:nth-child(2)")
+            wait("document.querySelector('.yolo-hole-counter').textContent==='2 / 2'&&document.querySelector('.yolo-location-canvas').dataset.ready==='true'")
             capture("33-yolo-hole-location", target="#formDialog")
             click("#cancelDialog")
             click("[data-stage=split]")

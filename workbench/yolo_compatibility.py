@@ -111,9 +111,11 @@ def compatible_shape(asset, shape, shape_index, config=None):
     repaired = deepcopy(shape)
     repaired["counts"] = encode_rle(repaired_mask)
     polygons, diagnostics = shape_polygons(repaired, width, height, tolerance=0)
-    if len(polygons) != 1 or diagnostics.get("holes_omitted") or diagnostics.get("pixel_iou", 1) < .999:
+    remaining_holes = _hole_components(repaired_mask)
+    if len(polygons) != 1 or remaining_holes or diagnostics.get("pixel_iou", 1) < .999:
         return shape, None, _issue(asset, shape, shape_index, code="repair_still_lossy",
             message="修補微小孔洞後仍無法安全轉成 YOLO Seg 多邊形", holes=public_holes,
+            remaining_holes=[{k: v for k, v in hole.items() if k != "points"} for hole in remaining_holes],
             diagnostics=diagnostics)
     repair = _issue(asset, shape, shape_index, code="tiny_holes_repaired",
         message=f"Run 相容副本將修補 {len(holes)} 個微小孔洞（共 {total} px）", holes=public_holes,

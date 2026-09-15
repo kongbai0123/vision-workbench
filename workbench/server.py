@@ -285,7 +285,29 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json(self.app.store.get_asset(pid, aid))
                     if len(parts) == 6 and parts[5] == "image":
                         image = self.app.store.image_path(pid, aid)
-                        if parse_qs(urlsplit(self.path).query).get("thumbnail", ["0"])[0] == "1":
+                        image_query = parse_qs(urlsplit(self.path).query)
+                        crop_value = image_query.get("crop", [""])[0]
+                        if crop_value:
+                            from PIL import Image
+                            import io
+                            try:
+                                x, y, width, height = [int(value) for value in crop_value.split(",")]
+                                max_width, max_height = [int(value) for value in image_query.get("max", ["760,420"])[0].split(",")]
+                            except (TypeError, ValueError):
+                                raise ValueError("圖片裁切參數無效")
+                            if width < 1 or height < 1 or not (64 <= max_width <= 1200 and 64 <= max_height <= 900):
+                                raise ValueError("圖片裁切範圍無效")
+                            with Image.open(image) as source:
+                                left, top = max(0, x), max(0, y)
+                                right, bottom = min(source.width, x + width), min(source.height, y + height)
+                                if right <= left or bottom <= top:
+                                    raise ValueError("圖片裁切位置超出範圍")
+                                preview = source.convert("RGB").crop((left, top, right, bottom))
+                                preview.thumbnail((max_width, max_height))
+                                buffer = io.BytesIO()
+                                preview.save(buffer, "JPEG", quality=88, optimize=True)
+                            return self.send_bytes(buffer.getvalue(), "image/jpeg")
+                        if image_query.get("thumbnail", ["0"])[0] == "1":
                             from PIL import Image
                             import io
                             with Image.open(image) as source:

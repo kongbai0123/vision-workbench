@@ -20,6 +20,16 @@
 .yolo-issue p{grid-column:1/-1;margin:0;color:var(--muted)}
 .yolo-location-canvas{display:block;width:100%;max-height:430px;margin:12px 0;background:#080d11;image-rendering:pixelated;border:1px solid var(--line)}
 .yolo-coordinate-list{max-height:160px;overflow:auto;font:12px/1.7 Consolas,monospace}
+.diagnostic-dialog{width:min(900px,94vw)}
+.yolo-diagnostic .yolo-location-canvas{aspect-ratio:760/420;margin-bottom:8px}
+.yolo-preview-status{min-height:24px;color:#c8d6dc;font:12px/1.6 Consolas,monospace}
+.yolo-hole-controls{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;margin:10px 0}
+.yolo-hole-controls .yolo-hole-counter{text-align:center;color:var(--accent)}
+.yolo-hole-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:190px;overflow:auto;margin:10px 0 14px}
+.yolo-hole-card{min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#13232d;text-align:left}
+.yolo-hole-card b,.yolo-hole-card span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.yolo-hole-card span{margin-top:3px;color:var(--muted);font:12px Consolas,monospace}
+.yolo-hole-card.active{border-color:var(--accent);background:#193b3a}
 .training-layout > .panel {display:flex;flex-direction:column;min-width:0;margin:0}
 .training-layout .panel-title {min-height:49px;margin-bottom:18px}
 .training-layout input,.training-layout select,.training-readonly {min-height:42px;width:100%}
