@@ -116,11 +116,14 @@ def smart_split(assets, options=None):
     if not isinstance(options, dict):
         raise ValueError("分割設定必須是物件")
     strategy = options.get("strategy", "smart")
-    if strategy not in {"smart", "class_balanced", "multilabel"}:
+    if strategy not in {"smart", "class_balanced", "multilabel", "random_loose"}:
         raise ValueError("不支援的分割策略")
     isolate = options.get('source_isolation', strategy != 'class_balanced')
     if type(isolate) is not bool:
         raise ValueError('來源隔離必須為布林值')
+    loose = strategy == 'random_loose'
+    if loose:
+        isolate = False
     mode = options.get('balance_mode', 'hybrid')
     if mode not in {'hybrid', 'presence', 'instances', 'cooccurrence'}:
         raise ValueError('不支援的多類別平衡目標')
@@ -135,9 +138,11 @@ def smart_split(assets, options=None):
     if any(not math.isfinite(x) for x in ratios.values()) or ratios["train"] <= 0:
         raise ValueError("比例必須有限，且 Train 必須大於 0")
     active = [s for s in SPLIT_ORDER if ratios[s] > 0]
-    if ratios["val"] <= 0:
+    if ratios["val"] <= 0 and not loose:
         raise ValueError("Validation 比例必須大於 0；Test 不可替代 Validation")
     assets = list(assets)
+    if not assets or any(not a.get('id') for a in assets) or len({a['id'] for a in assets}) != len(assets):
+        raise ValueError('需要已核准圖片，且每張圖片必須有唯一 id')
     groups = source_groups(assets, options.get("group_overrides"), 'smart' if isolate else 'class_balanced')
     if len(groups) < len(active):
         raise ValueError(f"只有 {len(groups)} 個獨立來源群組，無法建立 {len(active)} 個非空集合；請補充獨立來源、整理手動群組或減少集合，系統不會拆開群組")
@@ -182,9 +187,30 @@ def smart_split(assets, options=None):
         return value
     rng = random.Random(seed); best = None; fallback = None
     free = [g for g in groups if g["id"] not in locks]
+    if loose:
+        # Shuffle whole image units, then fill image-count deficits. Labels do
+        # not influence allocation; duplicate/manual groups and locks survive.
+        ordered = list(free)
+        rng.shuffle(ordered)
+        assignments = dict(locks)
+        counts = Counter()
+        classes = {s: Counter() for s in active}
+        for group in groups:
+            if group['id'] in locks:
+                counts[locks[group['id']]] += group['images']
+        for index, group in enumerate(ordered):
+            empty = [s for s in active if not counts[s]]
+            choices = empty if len(ordered)-index <= len(empty) else active
+            split = max(choices, key=lambda s: (n*ratios[s]-counts[s], -SPLIT_ORDER.index(s)))
+            assignments[group['id']] = split
+            counts[split] += group['images']
+        if all(counts[s] for s in active):
+            for group in groups:
+                classes[assignments[group['id']]].update(group['classes'])
+            best = 0, assignments, counts, classes
     # Candidate moves update aggregates, not the full dataset, so large imports
     # remain bounded by group count times class count.
-    for attempt in range(min(24, max(4, 1200 // len(groups)))):
+    for attempt in range(0 if loose else min(24, max(4, 1200 // len(groups)))):
         ordered = sorted(free, key=lambda g: (-sum(v / totals[k] for k,v in g["classes"].items()), -g["images"], g["id"]))
         if attempt: rng.shuffle(ordered)
         if multilabel:
@@ -249,7 +275,7 @@ def smart_split(assets, options=None):
         raise ValueError("群組鎖定或資料量使集合無法非空；請解除部分鎖定或補充資料")
     _, assignments, counts, classes = best
     output = {aid: assignments[g["id"]] for g in groups for aid in g["asset_ids"]}
-    quality = split_class_coverage(assets, output, active_splits=active)
+    quality = split_class_coverage(assets, output, active_splits=active, loose=loose)
     warnings = [item["message"] for item in quality["warnings"]]
     for blocker in quality["blockers"]:
         label = blocker["label"]
@@ -287,7 +313,7 @@ def smart_split(assets, options=None):
         for split in active:
             if split != 'train' and class_images[split][label] < 5: details.append(f'{split} 少於 5 張，評估可能不穩定')
         if details: scarcity.append({'label': label, 'messages': details})
-    return {"algorithm_version": 4, "strategy": strategy, "seed": seed, "options": options,
+    return {"algorithm_version": 5, "strategy": strategy, "seed": seed, "options": options,
             'source_isolation': isolate, 'balance_mode': mode if multilabel else 'instances',
             'class_image_totals': dict(presence_totals),
             'class_image_counts': {s: dict(class_images[s]) for s in SPLIT_ORDER},

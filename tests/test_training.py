@@ -56,6 +56,33 @@ class TrainingWorkflowTests(unittest.TestCase):
             time.sleep(.04)
         self.fail("training worker timed out")
 
+    def test_loose_split_creates_version_and_trains_missing_classes(self):
+        pid = self.store.create_project('loose unique classes')['id']
+        records = json.loads(json.dumps(self.records))
+        for i, record in enumerate(records):
+            record['batch_id'] = 'single-source'
+            record['split'] = ''
+            record['shapes'][0]['label'] = f'unique-{i}'
+        self.store.add_assets(pid, records)
+        options = {'strategy': 'random_loose'}
+        plan = self.store.preview_split(pid, options)
+        self.store.apply_split(pid, options, plan['project_revision'], plan['fingerprint'])
+        self.assertTrue(self.workspace.readiness(pid)['ready'])
+        dataset = self.workspace.create_dataset_version(pid)
+        self.assertTrue(dataset['readiness']['ready'])
+        self.assertEqual(dataset['data_quality']['purpose'], 'experimental')
+        run = self.workspace.start_run(pid, dataset['id'], {'engine': 'pixel_prototype_v1', 'epochs': 2})
+        original_pid = self.pid
+        self.pid = pid
+        try:
+            completed = self.wait_run(run['run_id'])
+            self.assertEqual(completed['status'], 'completed', completed)
+        finally:
+            self.pid = original_pid
+        model = json.loads((self.workspace.models_dir(pid) / run['model_version_id'] / 'model.json').read_text(encoding='utf-8'))
+        self.assertTrue(model['unlearned_classes'])
+        self.assertTrue(model['uncalibrated_classes'])
+
     def test_dataset_version_is_immutable_and_preserves_native_masks(self):
         report = self.workspace.readiness(self.pid)
         self.assertTrue(report["ready"], report)
@@ -179,4 +206,3 @@ class TrainingWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

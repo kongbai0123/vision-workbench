@@ -27,7 +27,7 @@ from .classification_engine import CLASSIFICATION_ENGINES
 from .ultralytics_engine import ULTRALYTICS_ENGINES
 from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
-from .split_quality import split_class_coverage
+from .split_quality import split_class_coverage, loose_split_applies
 from .project_storage import ProjectStorage
 
 
@@ -64,7 +64,8 @@ def _link_or_copy(source: Path, destination: Path) -> None:
 def dataset_readiness(manifest):
     assets = manifest.get("assets", [])
     active = {a.get("split") for a in assets}
-    report = split_class_coverage(assets, active_splits=active)
+    report = split_class_coverage(assets, active_splits=active,
+                                  loose=loose_split_applies(manifest.get('split_plan'), assets))
     if not assets:
         report["blockers"].append({"code": "empty_dataset", "message": "固定資料版本沒有圖片", "action": "建立有效資料版本"})
     if not report["image_counts"]["train"]:
@@ -265,7 +266,8 @@ class TrainingWorkspace:
         if leaked:
             warnings.append({"code": "source_group_leak", "message": f"{len(leaked)} 個拍攝批次跨越不同資料分割",
                              "action": "若批次內影像高度相似，建議調整分割後再建立資料版本"})
-        coverage = split_class_coverage(approved, active_splits=[s for s, count in splits.items() if count])
+        coverage = split_class_coverage(approved, active_splits=[s for s, count in splits.items() if count],
+                                        loose=loose_split_applies(project.get('split_plan'), approved))
         blockers.extend(coverage["blockers"])
         warnings.extend(coverage["warnings"])
         return {"ready": not blockers, "project_id": project_id, "project_revision": project["revision"],
@@ -314,6 +316,9 @@ class TrainingWorkspace:
                             "class_mapping": [{"class_id": index, "name": name} for index, name in enumerate(project["classes"])],
                             "readiness": report, "assets": records,
                             "split_plan": project.get("split_plan")}
+                if loose_split_applies(project.get('split_plan'), records):
+                    manifest['data_quality'] = {'purpose': 'experimental', 'independent_sources': False,
+                                                'warnings': [item['message'] for item in report['warnings']]}
                 manifest["manifest_sha256"] = _canonical_hash(manifest)
                 atomic_json(temporary / "manifest.json", manifest)
                 temporary.replace(target)
@@ -421,7 +426,7 @@ class TrainingWorkspace:
             train_labels = {shape.get("label") for asset in immutable["assets"] if asset["split"] == "train"
                             for shape in asset.get("shapes", [])}
             missing_classes = [name for name in immutable["classes"] if name not in train_labels]
-            if missing_classes:
+            if missing_classes and not loose_split_applies(immutable.get('split_plan'), immutable['assets']):
                 raise ValueError(f"Train 缺少分類樣本：{'、'.join(missing_classes)}")
         compatibility = None
         if engine.startswith("yolo26"):
@@ -907,4 +912,3 @@ class TrainingWorkspace:
         # Workers write only to immutable Run/Model directories.  They may finish
         # after the UI closes; reopening Workbench reads their persisted state.
         self.processes.clear()
-

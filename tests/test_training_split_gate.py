@@ -136,6 +136,18 @@ class TrainingSplitGateTests(unittest.TestCase):
                 self.workspace.start_run('pid', 'D006', {'engine': 'pixel_prototype_v1', 'epochs': 2})
             popen.assert_not_called()
 
+    def test_explicit_loose_plan_launches_and_preserves_warnings(self):
+        rows = [{'asset_id': str(i), 'split': split, 'shapes': [{'label': label}]}
+                for i, (split, label) in enumerate((('train', 'a'), ('val', 'b'), ('test', 'c')))]
+        source = self.write_manifest('D007', rows)
+        path = source / 'manifest.json'
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        manifest['split_plan'] = {'strategy': 'random_loose',
+                                  'assignments': {a['asset_id']: a['split'] for a in rows}}
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        run = self.start_without_worker('D007')
+        self.assertIn('loose_split', [item['code'] for item in run['split_warnings']])
+
     def test_blocked_smart_plan_cannot_mutate_project_even_with_valid_fingerprint(self):
         store = ProjectStore(self.root / 'projects')
         project_id = store.create_project('split safety')['id']

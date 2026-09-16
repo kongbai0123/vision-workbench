@@ -54,6 +54,13 @@ def main():
             assert project['split_plan']['options']['strategy']=='multilabel'
             assert project['split_plan']['options']['source_isolation'] is False
             assert all(a['split'] for a in project['assets'])
+            click('#openSplitFlowManager');wait("document.querySelector('#smartSplitDialog').open && !document.querySelector('#previewSmartSplit').disabled")
+            js("document.querySelector('#splitStrategy').value='random_loose';document.querySelector('#splitStrategy').dispatchEvent(new Event('change'))")
+            assert js("document.querySelector('#splitSourceIsolation').disabled && !document.querySelector('#splitSourceIsolation').checked")
+            click('#previewSmartSplit');wait("!document.querySelector('#applySmartSplit').disabled")
+            assert js("document.querySelector('.split-manager-message').textContent.includes('寬鬆分割')")
+            click('#applySmartSplit');wait("!document.querySelector('#smartSplitDialog').open")
+            assert service.store.get_project(pid)['split_plan']['strategy']=='random_loose'
             assert not page.errors,page.errors
             print('PASS: source isolation, multiclass preview metrics, read-only preview, responsive layout and apply',flush=True)
         finally:

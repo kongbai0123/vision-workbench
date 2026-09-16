@@ -158,7 +158,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             raise RuntimeError("影像分類需要非空的 Train 與 Validation；Test 不會替代 Validation")
         train_classes = {training.targets[index] for index in range(len(training.targets))}
         missing = [name for index, name in enumerate(manifest["classes"]) if index not in train_classes]
-        if missing:
+        from .split_quality import loose_split_applies
+        if missing and not loose_split_applies(manifest.get('split_plan'), manifest['assets']):
             raise RuntimeError(f"Train 缺少分類樣本：{'、'.join(missing)}")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))),
                             shuffle=True, num_workers=0)

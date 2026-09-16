@@ -16,7 +16,11 @@ export class SplitManager {
     this.message=node('p','','split-manager-message');this.message.setAttribute('role','status');this.dialog.append(this.message);
     this.layout=node('div',undefined,'smart-split-layout');this.dialog.append(this.layout);
     this.settings=node('section',undefined,'smart-split-settings');this.content=node('section',undefined,'smart-split-content');this.layout.append(this.settings,this.content);
-    this.select('平衡目標','splitStrategy',[['hybrid','多類別綜合平衡（建議）'],['presence','多類別出現張數'],['instances','多類別物件數量'],['cooccurrence','多類別共現配對']],this.options.balance_mode,v=>{this.options.balance_mode=v});
+    this.select('分割模式／平衡目標','splitStrategy',[['hybrid','多類別綜合平衡（建議）'],['presence','多類別出現張數'],['instances','多類別物件數量'],['cooccurrence','多類別共現配對'],['random_loose','隨機分割（寬鬆／實驗用）']],this.options.balance_mode,v=>{
+      const loose=v==='random_loose';this.options.strategy=loose?'random_loose':'multilabel';this.options.balance_mode=loose?'hybrid':v;
+      const input=this.dialog.querySelector('#splitSourceIsolation');input.disabled=loose;input.checked=!loose;this.options.source_isolation=!loose;this.options.locks={};
+    });
+    this.settings.append(node('p','寬鬆模式依圖片比例隨機分配，不要求來源隔離或各集合類別齊全。缺類別只警告，訓練可能無法學會該類別；不保證平衡或評估可靠。相同圖片、手動群組與鎖定仍保留。訓練仍需非空 Train 和 Validation。','muted'));
     const isolation=node('label',undefined,'check-label'),isolate=node('input');isolate.type='checkbox';isolate.id='splitSourceIsolation';isolate.checked=true;
     isolate.onchange=()=>{this.options.source_isolation=isolate.checked;this.options.locks={};this.invalidate()};isolation.append(isolate,document.createTextNode('來源隔離：同拍攝群組不跨集合'));this.settings.append(isolation,node('p','取消來源隔離可按圖片分配；請確認圖片彼此獨立。相同圖片仍不會跨集合。','muted'));
     for(const [s,label] of [['train','Train %'],['val','Validation %'],['test','Test %']])this.number(label,`smartRatio-${s}`,this.options.ratios[s],0,100,v=>this.options.ratios[s]=v);
