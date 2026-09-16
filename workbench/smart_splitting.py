@@ -1,5 +1,6 @@
 """Previewable, reproducible split allocation with hard source-group constraints."""
 from collections import Counter
+from itertools import combinations
 import hashlib
 import json
 import math
@@ -96,8 +97,14 @@ def source_groups(assets, overrides=None, strategy="smart"):
     for members in groups.values():
         ids = sorted(a["id"] for a in members)
         labels = Counter(s["label"] for a in members for s in a.get("shapes", []) if s.get("label"))
+        presence, pairs = Counter(), Counter()
+        for asset in members:
+            present = sorted({s['label'] for s in asset.get('shapes', []) if s.get('label')})
+            presence.update(present)
+            pairs.update(json.dumps(pair, ensure_ascii=False) for pair in combinations(present, 2))
         result.append({"id": hashlib.sha256("|".join(ids).encode()).hexdigest()[:16], "asset_ids": ids,
                        "images": len(ids), "classes": dict(labels),
+                       "class_images": dict(presence), "class_pairs": dict(pairs),
                        "names": sorted({overrides.get(a["id"], "").strip() or a.get("batch_id") or a["id"][:8] for a in members}),
                        "sources": sorted({a.get("batch_id") or "未指定來源" for a in members}),
                        "current": dict(Counter(a.get("split") or "未分配" for a in members))})
@@ -109,8 +116,15 @@ def smart_split(assets, options=None):
     if not isinstance(options, dict):
         raise ValueError("分割設定必須是物件")
     strategy = options.get("strategy", "smart")
-    if strategy not in {"smart", "class_balanced"}:
+    if strategy not in {"smart", "class_balanced", "multilabel"}:
         raise ValueError("不支援的分割策略")
+    isolate = options.get('source_isolation', strategy != 'class_balanced')
+    if type(isolate) is not bool:
+        raise ValueError('來源隔離必須為布林值')
+    mode = options.get('balance_mode', 'hybrid')
+    if mode not in {'hybrid', 'presence', 'instances', 'cooccurrence'}:
+        raise ValueError('不支援的多類別平衡目標')
+    multilabel = strategy == 'multilabel'
     seed = options.get("seed", 42)
     if type(seed) is not int or not 0 <= seed <= 2147483647:
         raise ValueError("分割種子必須為 0–2147483647 的整數")
@@ -124,7 +138,7 @@ def smart_split(assets, options=None):
     if ratios["val"] <= 0:
         raise ValueError("Validation 比例必須大於 0；Test 不可替代 Validation")
     assets = list(assets)
-    groups = source_groups(assets, options.get("group_overrides"), strategy)
+    groups = source_groups(assets, options.get("group_overrides"), 'smart' if isolate else 'class_balanced')
     if len(groups) < len(active):
         raise ValueError(f"只有 {len(groups)} 個獨立來源群組，無法建立 {len(active)} 個非空集合；請補充獨立來源、整理手動群組或減少集合，系統不會拆開群組")
     locks = options.get("locks") or {}
@@ -139,15 +153,32 @@ def smart_split(assets, options=None):
                 locks[g["id"]] = "test"
     totals = Counter()
     for g in groups: totals.update(g["classes"])
+    presence_totals, pair_totals = Counter(), Counter()
+    for group in groups:
+        presence_totals.update(group['class_images']); pair_totals.update(group['class_pairs'])
+    # Only recurring pairs are useful balance targets; keep optimization bounded.
+    selected_pairs = dict(sorted(((k,v) for k,v in pair_totals.items() if v >= len(active)),
+                                 key=lambda item: (-item[1], item[0]))[:256])
+    carrier_counts = Counter(label for group in groups for label in group['classes'])
     n = len(assets)
-    def cost(counts, classes):
+    def cost(counts, classes, presence, pairs):
         value = 0.
         for split in active:
             value += .7 * ((counts[split] - n * ratios[split]) / max(1, n * ratios[split])) ** 2
             if not counts[split]: value += 1000
             for label, total in totals.items():
-                value += ((classes[split][label] - total * ratios[split]) / max(1, total * ratios[split])) ** 2
-                if not classes[split][label]: value += 100 if split == "train" else 4
+                weight = 1 if not multilabel or mode == 'instances' else .35 if mode == 'hybrid' else 0
+                value += weight * ((classes[split][label] - total * ratios[split]) / max(1, total * ratios[split])) ** 2
+                if not classes[split][label]:
+                    value += (10000 if split in {'train', 'val'} else 100) if multilabel else (100 if split == 'train' else 4)
+                if multilabel and mode != 'instances':
+                    target = presence_totals[label] * ratios[split]
+                    value += ((presence[split][label] - target) / max(1, target)) ** 2
+            if multilabel and mode in {'hybrid', 'cooccurrence'} and selected_pairs:
+                weight = (.25 if mode == 'hybrid' else .75) * max(1, len(totals)) / len(selected_pairs)
+                for pair,total in selected_pairs.items():
+                    target = total * ratios[split]
+                    value += weight * ((pairs[split][pair] - target) / max(1, target)) ** 2
         return value
     rng = random.Random(seed); best = None; fallback = None
     free = [g for g in groups if g["id"] not in locks]
@@ -156,11 +187,17 @@ def smart_split(assets, options=None):
     for attempt in range(min(24, max(4, 1200 // len(groups)))):
         ordered = sorted(free, key=lambda g: (-sum(v / totals[k] for k,v in g["classes"].items()), -g["images"], g["id"]))
         if attempt: rng.shuffle(ordered)
+        if multilabel:
+            ordered.sort(key=lambda g: min((carrier_counts[k] for k in g['classes']), default=len(groups)+1))
         covered = _covered_seed(groups, locks, active, ordered)
         assignments = covered or dict(locks); counts = Counter(); classes = {s: Counter() for s in active}
+        presence = {s: Counter() for s in active}; pairs = {s: Counter() for s in active}
         def place(group, split, direction):
             counts[split] += direction * group["images"]
             for label, value in group["classes"].items(): classes[split][label] += direction * value
+            for label, value in group['class_images'].items(): presence[split][label] += direction * value
+            for pair, value in group['class_pairs'].items():
+                if pair in selected_pairs: pairs[split][pair] += direction * value
         for group in groups:
             if group["id"] in assignments: place(group,assignments[group["id"]],1)
         def choose(group, preferred=None):
@@ -169,7 +206,7 @@ def smart_split(assets, options=None):
                 place(group,split,1)
                 valid = covered is None or (all(counts[s] for s in active) and
                                             all(classes["train"][label] for label in totals))
-                value=cost(counts,classes);place(group,split,-1)
+                value=cost(counts,classes,presence,pairs);place(group,split,-1)
                 if valid: choices.append((value,split != preferred,SPLIT_ORDER.index(split),split))
             return min(choices)[-1]
         if covered is None:
@@ -182,7 +219,22 @@ def smart_split(assets, options=None):
                 split=choose(group,old);place(group,split,1);assignments[group["id"]]=split
                 changed |= old != split
             if not changed: break
-        value=cost(counts,classes)
+        if multilabel:
+            # Pair swaps escape local optima that single-group moves cannot fix.
+            candidates = ordered if len(ordered) <= 48 else rng.sample(ordered, 48)
+            current_cost = cost(counts, classes, presence, pairs)
+            for left, right in combinations(candidates, 2):
+                a, b = assignments[left['id']], assignments[right['id']]
+                if a == b: continue
+                place(left,a,-1); place(right,b,-1); place(left,b,1); place(right,a,1)
+                valid = all(counts[s] for s in active) and all(classes['train'][k] for k in totals)
+                candidate_cost = cost(counts, classes, presence, pairs)
+                if valid and candidate_cost < current_cost - 1e-9:
+                    assignments[left['id']], assignments[right['id']] = b, a
+                    current_cost = candidate_cost
+                else:
+                    place(left,b,-1); place(right,a,-1); place(left,a,1); place(right,b,1)
+        value=cost(counts,classes,presence,pairs)
         nonempty = all(counts[split] for split in active)
         if nonempty and (fallback is None or value < fallback[0]):
             fallback = value, assignments, counts, classes
@@ -215,12 +267,35 @@ def smart_split(assets, options=None):
                 blocker["action"] = "此類別的所有來源群組均鎖定在 Train 或 Test；請解除鎖定或補充可用於 Validation 的獨立來源"
             elif len(carriers) == 1:
                 blocker["action"] = "此類別只有一個來源群組；無法在保持群組完整時同時提供 Train 與 Validation，請補充另一個獨立來源"
-    if strategy != "smart": warnings.append("類別平衡模式可能拆開拍攝來源，請確認圖片彼此獨立")
+    if not isolate: warnings.append("未啟用來源隔離：同次拍攝可能跨集合，評估結果不代表新來源表現")
     untracked = sum(not a.get("batch_id") and not a.get("source") for a in assets)
     if untracked: warnings.append(f"{untracked} 張圖片缺少來源資訊，請補定義手動群組")
     for g in groups:
         g["proposed"] = assignments[g["id"]]; g["locked"] = g["id"] in locks
-    return {"algorithm_version": 3, "strategy": strategy, "seed": seed, "options": options,
+    class_images = {s: Counter() for s in SPLIT_ORDER}
+    pair_counts = {s: Counter() for s in SPLIT_ORDER}
+    for group in groups:
+        split = assignments[group['id']]
+        class_images[split].update(group['class_images']); pair_counts[split].update(group['class_pairs'])
+    source_counts = Counter(label for group in source_groups(assets) for label in group['classes'])
+    scarcity = []
+    for label in sorted(totals):
+        details = []
+        if presence_totals[label] < len(active): details.append('含此類別的圖片不足以覆蓋所有集合')
+        if source_counts[label] < len(active): details.append('來源群組不足以在各集合提供獨立來源')
+        if class_images['train'][label] < 5: details.append('Train 少於 5 張，學習樣本有限')
+        for split in active:
+            if split != 'train' and class_images[split][label] < 5: details.append(f'{split} 少於 5 張，評估可能不穩定')
+        if details: scarcity.append({'label': label, 'messages': details})
+    return {"algorithm_version": 4, "strategy": strategy, "seed": seed, "options": options,
+            'source_isolation': isolate, 'balance_mode': mode if multilabel else 'instances',
+            'class_image_totals': dict(presence_totals),
+            'class_image_counts': {s: dict(class_images[s]) for s in SPLIT_ORDER},
+            'class_source_counts': dict(source_counts), 'class_group_counts': dict(carrier_counts),
+            'scarcity': scarcity,
+            'pair_distribution': [{'labels': json.loads(pair), 'total': total,
+                                   'counts': {s: pair_counts[s][pair] for s in SPLIT_ORDER}} for pair,total in selected_pairs.items()],
+            'ratio_deviation': {s: (counts[s]/n-ratios[s])*100 for s in SPLIT_ORDER},
             "assignments": output, "groups": groups, "warnings": warnings,
             "ready": quality["ready"], "blockers": quality["blockers"], "coverage": quality,
             "image_counts": {s: counts[s] for s in SPLIT_ORDER},

@@ -1,5 +1,6 @@
 .smart-split-dialog{width:min(1120px,94vw);max-width:94vw;max-height:90vh;overflow:auto;background:#17242e;color:#dce9f0;border:1px solid #38515e;border-radius:8px;padding:24px}
 .smart-split-dialog::backdrop{background:#050b12bb}
+.smart-split-content>.training-table-wrap{margin-top:16px}.split-group-table{max-height:380px;overflow:auto}.smart-split-content details{margin:12px 0}.smart-split-content summary{cursor:pointer;font-weight:600}.smart-split-content th{white-space:normal}
 .smart-split-layout{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2.5fr);gap:24px}
 .smart-split-settings{display:flex;flex-direction:column;gap:10px}.smart-split-settings .check-label{margin:8px 0}
 .smart-split-content{min-width:0}.smart-split-summary{display:flex;gap:12px;flex-wrap:wrap;color:#67d8c6}

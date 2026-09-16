@@ -8,21 +8,23 @@ export class SplitManager {
   }
   async open(projectId){
     if(this.busy)return;
-    this.pid=projectId;this.options={strategy:'smart',ratios:{train:70,val:20,test:10},seed:42,locks:{},group_overrides:{},preserve_test:false};this.plan=null;
+    this.pid=projectId;this.options={strategy:'multilabel',balance_mode:'hybrid',source_isolation:true,ratios:{train:70,val:20,test:10},seed:42,locks:{},group_overrides:{},preserve_test:false};this.plan=null;
     this.dialog.replaceChildren();
     const heading=node('div',undefined,'section-heading'),title=node('h2','資料分割管理');title.id='smartSplitTitle';
     this.close=node('button','關閉','secondary');this.close.onclick=()=>this.dialog.close();heading.append(title,this.close);
-    this.dialog.append(heading,node('p','調整目前專案的已核准資料。來源群組優先保持完整，再平衡類別與比例；既有固定版本不會被改寫。','muted'));
+    this.dialog.append(heading,node('p','以整張圖片分配所有類別，優先照顧稀少類別，再平衡圖片數、物件數與常見類別配對。預覽不會變更專案。','muted'));
     this.message=node('p','','split-manager-message');this.message.setAttribute('role','status');this.dialog.append(this.message);
     this.layout=node('div',undefined,'smart-split-layout');this.dialog.append(this.layout);
     this.settings=node('section',undefined,'smart-split-settings');this.content=node('section',undefined,'smart-split-content');this.layout.append(this.settings,this.content);
-    this.select('分割策略','splitStrategy',[['smart','智慧分割 · 來源隔離＋類別平衡'],['class_balanced','獨立圖片 · 類別平衡']],this.options.strategy,v=>{this.options.strategy=v;this.options.locks={}});
+    this.select('平衡目標','splitStrategy',[['hybrid','多類別綜合平衡（建議）'],['presence','多類別出現張數'],['instances','多類別物件數量'],['cooccurrence','多類別共現配對']],this.options.balance_mode,v=>{this.options.balance_mode=v});
+    const isolation=node('label',undefined,'check-label'),isolate=node('input');isolate.type='checkbox';isolate.id='splitSourceIsolation';isolate.checked=true;
+    isolate.onchange=()=>{this.options.source_isolation=isolate.checked;this.options.locks={};this.invalidate()};isolation.append(isolate,document.createTextNode('來源隔離：同拍攝群組不跨集合'));this.settings.append(isolation,node('p','取消來源隔離可按圖片分配；請確認圖片彼此獨立。相同圖片仍不會跨集合。','muted'));
     for(const [s,label] of [['train','Train %'],['val','Validation %'],['test','Test %']])this.number(label,`smartRatio-${s}`,this.options.ratios[s],0,100,v=>this.options.ratios[s]=v);
     this.number('隨機種子','smartSplitSeed',42,0,2147483647,v=>this.options.seed=v);
     const keep=node('label',undefined,'check-label'),check=node('input');check.type='checkbox';check.id='smartKeepTest';check.onchange=()=>{this.options.preserve_test=check.checked;this.invalidate()};keep.append(check,document.createTextNode('保留目前 Test（整組鎖定）'));this.settings.append(keep);
     this.preview=node('button','預覽智慧分割','primary full');this.preview.id='previewSmartSplit';this.preview.onclick=()=>this.runPreview();this.settings.append(this.preview);
-    this.summary=node('div',undefined,'smart-split-summary');this.groups=node('div',undefined,'training-table-wrap');this.content.append(this.summary,this.groups);
-    this.manual=node('details',undefined,'training-monitor-details');this.manual.append(node('summary','手動定義獨立圖片群組'));this.assets=node('div',undefined,'smart-split-assets');this.manual.append(node('p','同名會合併；留空沿用拍攝批次。僅在確認圖片屬於獨立情境時拆分批次，同影片與重複圖片仍保持同組。','muted'),this.assets);this.dialog.append(this.manual);
+    this.summary=node('div',undefined,'smart-split-summary');this.metrics=node('div',undefined,'training-table-wrap');this.groups=node('div',undefined,'training-table-wrap split-group-table');this.content.append(this.summary,this.metrics,this.groups);
+    this.manual=node('details',undefined,'training-monitor-details');this.manual.append(node('summary','手動定義獨立圖片群組'));this.assets=node('div',undefined,'smart-split-assets');this.manual.append(node('p','同名會合併。啟用來源隔離時，留空沿用拍攝批次，同影片保持同組；取消隔離時按圖片分配。僅在確認來源獨立時手動拆分，相同圖片永遠保持同組。','muted'),this.assets);this.dialog.append(this.manual);
     this.footer=node('div',undefined,'smart-split-footer');this.apply=node('button','套用到目前專案','primary');this.apply.id='applySmartSplit';this.apply.disabled=true;
     this.apply.onclick=()=>this.runApply(false);this.create=node('button','套用並建立新資料版本','primary');this.create.id='applySmartSplitVersion';this.create.disabled=true;this.create.onclick=()=>this.runApply(true);
     this.footer.append(this.apply,this.create);this.dialog.append(this.footer);if(!this.dialog.open)this.dialog.showModal();
@@ -44,7 +46,7 @@ export class SplitManager {
   }
   async runPreview(){this.plan=null;await this.work(async()=>{
     const plan=await this.api(`/api/projects/${this.pid}/split-preview`,'POST',{options:this.options});this.plan=plan;
-    this.summary.replaceChildren();for(const s of ['train','val','test'])this.summary.append(node('div',`${s.toUpperCase()} · ${plan.image_counts[s]} 張 · ${plan.actual_ratios[s].toFixed(1)}%`));
+    this.summary.replaceChildren();for(const s of ['train','val','test'])this.summary.append(node('div',`${s.toUpperCase()} · ${plan.image_counts[s]} 張 · ${plan.actual_ratios[s].toFixed(1)}%（目標 ${plan.ratios[s]}%，差 ${(plan.ratio_deviation?.[s]||0).toFixed(1)} 個百分點）`));
     this.renderGroups(plan.groups);this.renderClasses(plan);
     this.message.textContent=`${plan.blockers?.length?'無法套用：'+plan.blockers.map(x=>x.message).join('；'):`預覽：將調整 ${plan.changed} 張。`} ${plan.warnings.join('；')||'來源群組完整，請確認實際比例。'}`;
   })}
@@ -55,7 +57,23 @@ export class SplitManager {
       const cell=node('td'),select=node('select');select.setAttribute('aria-label',(group.names||group.sources).join(' / ')+'指定集合');select.append(new Option('自動分配',''));for(const s of ['train','val','test'])select.append(new Option(s,s));select.value=this.options.locks[group.id]||'';
       select.onchange=()=>{if(select.value)this.options.locks[group.id]=select.value;else delete this.options.locks[group.id];this.invalidate()};cell.append(select);row.append(cell);body.append(row)}table.append(body);this.groups.append(table)
   }
-  renderClasses(plan){const table=node('table'),head=node('tr');for(const s of ['類別實例數','Train','Val','Test'])head.append(node('th',s));table.append(head);for(const name of Object.keys(plan.class_totals)){const row=node('tr');row.append(node('td',name));for(const s of ['train','val','test'])row.append(node('td',String(plan.class_counts[s][name]||0)));table.append(row)}this.groups.append(node('h3','類別分布'),table)}
+  renderClasses(plan){
+    this.metrics.replaceChildren();
+    const table=node('table'),head=node('tr');
+    for(const text of ['類別','總圖片／物件','來源群組／分配群組','Train 圖片／物件','Val 圖片／物件','Test 圖片／物件'])head.append(node('th',text));table.append(head);
+    for(const name of Object.keys(plan.class_totals).sort()){
+      const row=node('tr');row.append(node('td',name),node('td',`${plan.class_image_totals?.[name]||0} / ${plan.class_totals[name]}`),node('td',`${plan.class_source_counts?.[name]||0} / ${plan.class_group_counts?.[name]||0}`));
+      for(const s of ['train','val','test'])row.append(node('td',`${plan.class_image_counts?.[s]?.[name]||0} / ${plan.class_counts[s][name]||0}`));table.append(row);
+    }
+    this.metrics.append(node('h3','多類別分布'),node('p','同一張圖片可計入多個類別。來源群組由拍攝批次／影片記錄判定；分配群組反映目前隔離與手動設定。','muted'),table);
+    const details=node('details');details.append(node('summary',`樣本不足提示（${plan.scarcity?.length||0} 個類別）`));
+    for(const item of plan.scarcity||[])details.append(node('p',`${item.label}：${item.messages.join('；')}`));
+    if(plan.scarcity?.length)details.open=true;this.metrics.append(details);
+    const pairs=node('details');pairs.append(node('summary','常見類別配對分布'));
+    const pairTable=node('table'),pairHead=node('tr');for(const text of ['同圖配對','總張數','Train','Val','Test'])pairHead.append(node('th',text));pairTable.append(pairHead);
+    for(const pair of plan.pair_distribution||[]){const row=node('tr');row.append(node('td',pair.labels.join(' ＋ ')),node('td',String(pair.total)));for(const s of ['train','val','test'])row.append(node('td',String(pair.counts[s])));pairTable.append(row)}
+    pairs.append(node('p','顯示至少出現於集合數量那麼多張圖片的配對，最多 256 組。配對平衡為偏好，並非每個組合都必須覆蓋所有集合。','muted'),pairTable);this.metrics.append(pairs);
+  }
   async runApply(createVersion){if(!this.plan||this.plan.ready===false||this.plan.blockers?.length)return;const plan=this.plan;await this.work(async()=>{
     const result=await this.api(`/api/projects/${this.pid}/split-apply`,'POST',{options:plan.options,revision:plan.project_revision,fingerprint:plan.fingerprint});this.plan=null;
     await this.onApplied(result,this.pid,createVersion);this.dialog.close();
