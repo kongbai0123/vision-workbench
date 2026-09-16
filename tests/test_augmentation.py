@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import patch
 
-from workbench.augmentation import augment_dense_target, normalize_augmentation, yolo_augmentation_args
+from workbench.augmentation import (
+    augment_dense_target, augmentation_event, augmentation_event_layout,
+    normalize_augmentation, yolo_augmentation_args,
+)
 
 
 class AugmentationProfileTests(unittest.TestCase):
@@ -9,8 +12,27 @@ class AugmentationProfileTests(unittest.TestCase):
         profile = normalize_augmentation({"preset": "standard"})
         self.assertEqual(profile["apply_to"], "train")
         self.assertEqual(profile["mode"], "online")
+        self.assertEqual(profile["schema_version"], 2)
         self.assertEqual(profile["mosaic"], 1.0)
         self.assertEqual(yolo_augmentation_args(profile)["close_mosaic"], 10)
+
+    def test_expansion_count_creates_independent_event_slots(self):
+        profile = normalize_augmentation({"preset": "light", "expansion_count": 2})
+        self.assertEqual(augmentation_event_layout(3, profile), {
+            "originals": 3, "expanded": 6, "events": 9, "events_per_image": 3,
+        })
+        self.assertEqual([augmentation_event(i, 3, profile) for i in range(9)], [
+            (0, False), (0, True), (0, True),
+            (1, False), (1, True), (1, True),
+            (2, False), (2, True), (2, True),
+        ])
+
+    def test_expansion_count_is_strict_and_requires_an_enabled_recipe(self):
+        for invalid in (-1, 51, 1.5, True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "擴充份數"):
+                normalize_augmentation({"preset": "light", "expansion_count": invalid})
+        with self.assertRaisesRegex(ValueError, "啟用擴充"):
+            normalize_augmentation({"preset": "off", "expansion_count": 1})
 
     def test_custom_profile_is_range_checked(self):
         profile = normalize_augmentation({"preset": "custom", "brightness": .3, "fliplr": .25})

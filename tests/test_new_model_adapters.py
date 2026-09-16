@@ -43,6 +43,29 @@ class NewModelAdapterTests(unittest.TestCase):
             self.assertEqual((root / "converted/labels/train/A001.txt").read_text().strip(),
                              "0 0.20000000 0.20000000 0.20000000 0.20000000")
 
+    def test_yolo_expansion_adds_train_events_without_expanding_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "images").mkdir()
+            import hashlib
+            assets = []
+            for index, split in enumerate(("train", "val", "test"), 1):
+                image = root / "images" / f"A{index:03d}.png"; Image.new("RGB", (20, 20), (index, 0, 0)).save(image)
+                assets.append({"asset_id": f"A{index:03d}", "name": image.name, "width": 20, "height": 20,
+                    "sha256": hashlib.sha256(image.read_bytes()).hexdigest(), "image_file": f"images/{image.name}",
+                    "split": split, "shapes": [{"id": "s", "type": "rectangle", "label": "part",
+                    "x": 2, "y": 3, "width": 4, "height": 5}],
+                    "objects": [{"shape_id": "s", "class_id": 0, "label": "part", "type": "rectangle",
+                    "bbox_xywh": [2, 3, 4, 5]}]})
+            manifest = root / "manifest.json"; atomic_json(manifest, {"classes": ["part"], "assets": assets})
+            converted = root / "converted"
+            prepare_yolo_dataset(manifest, converted, "object_detection",
+                                 {"augmentation": {"preset": "light", "expansion_count": 2}})
+            self.assertEqual(sorted(p.name for p in (converted / "images/train").iterdir()),
+                             ["A001.png", "A001__aug001.png", "A001__aug002.png"])
+            self.assertEqual(len(list((converted / "labels/train").iterdir())), 3)
+            self.assertEqual(len(list((converted / "images/val").iterdir())), 1)
+            self.assertEqual(len(list((converted / "images/test").iterdir())), 1)
+
     def test_yolo_seg_rejects_mask_holes_instead_of_losing_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root / "images").mkdir()

@@ -18,7 +18,7 @@ from .training_engine import atomic_json, load_rgb, read_json, _status, _stoppin
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
 from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol, training_only_protocol
-from .augmentation import augment_image_tensor
+from .augmentation import augment_image_tensor, augmentation_event, augmentation_event_layout, normalize_augmentation
 
 
 CLASSIFICATION_ENGINES = {
@@ -68,23 +68,26 @@ class ClassificationDataset:
         # Fail before the first epoch so an ambiguous image never receives an
         # arbitrary class.
         self.targets = [_asset_label(asset, self.classes) for asset in self.assets]
-        self.augmentation = augmentation
+        self.augmentation = normalize_augmentation(augmentation) if augmentation else None
+        self.event_layout = augmentation_event_layout(len(self.assets), self.augmentation) if self.augmentation else None
 
     def __len__(self):
-        return len(self.assets)
+        return self.event_layout["events"] if self.event_layout else len(self.assets)
 
     def __getitem__(self, index):
-        torch, asset = self.torch, self.assets[index]
+        torch = self.torch
+        source_index, augmented = augmentation_event(index, len(self.assets), self.augmentation) if self.augmentation else (index, False)
+        asset = self.assets[source_index]
         rgb = load_rgb(self.dataset_dir, asset)
         image = torch.from_numpy(rgb.transpose(2, 0, 1).copy()).float() / 255.0
         image = torch.nn.functional.interpolate(
             image[None], (self.image_size, self.image_size), mode="bilinear", align_corners=False
         )[0]
-        if self.augmentation:
+        if self.augmentation and augmented:
             image, _horizontal, _vertical = augment_image_tensor(image, self.augmentation, torch)
         mean = torch.tensor((0.485, 0.456, 0.406), dtype=image.dtype)[:, None, None]
         std = torch.tensor((0.229, 0.224, 0.225), dtype=image.dtype)[:, None, None]
-        return (image - mean) / std, self.targets[index], asset
+        return (image - mean) / std, self.targets[source_index], asset
 
 
 def _evaluate(model, dataset, device, torch):

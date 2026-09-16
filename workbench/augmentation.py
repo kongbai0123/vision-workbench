@@ -9,17 +9,17 @@ _PRESETS = {
     "off": {
         "brightness": 0.0, "contrast": 0.0, "fliplr": 0.0, "flipud": 0.0,
         "degrees": 0.0, "translate": 0.0, "scale": 0.0, "mosaic": 0.0,
-        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 0,
+        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 0, "expansion_count": 0,
     },
     "light": {
         "brightness": 0.10, "contrast": 0.10, "fliplr": 0.50, "flipud": 0.0,
         "degrees": 2.0, "translate": 0.03, "scale": 0.10, "mosaic": 0.0,
-        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 0,
+        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 0, "expansion_count": 0,
     },
     "standard": {
         "brightness": 0.20, "contrast": 0.20, "fliplr": 0.50, "flipud": 0.0,
         "degrees": 0.0, "translate": 0.10, "scale": 0.50, "mosaic": 1.0,
-        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 10,
+        "mixup": 0.0, "copy_paste": 0.0, "close_mosaic": 10, "expansion_count": 0,
     },
 }
 
@@ -44,7 +44,7 @@ def normalize_augmentation(value=None):
     preset = str(value.get("preset") or "off")
     if preset not in {*_PRESETS, "custom"}:
         raise ValueError("資料增強預設值無效")
-    allowed = {"preset", "schema_version", "apply_to", "mode", *_RANGES, "close_mosaic"}
+    allowed = {"preset", "schema_version", "apply_to", "mode", *_RANGES, "close_mosaic", "expansion_count"}
     unknown = set(value) - allowed
     if unknown:
         raise ValueError("不支援的資料增強欄位：" + "、".join(sorted(unknown)))
@@ -63,7 +63,35 @@ def normalize_augmentation(value=None):
     if isinstance(close_mosaic, bool) or not isinstance(close_mosaic, int) or not 0 <= close_mosaic <= 200:
         raise ValueError("close_mosaic 必須是 0 到 200 的整數")
     base["close_mosaic"] = close_mosaic
-    return {"schema_version": 1, "preset": preset, "apply_to": "train", "mode": "online", **base}
+    expansion_count = value.get("expansion_count", base["expansion_count"])
+    if isinstance(expansion_count, bool) or not isinstance(expansion_count, int) or not 0 <= expansion_count <= 50:
+        raise ValueError("每張圖片擴充份數必須是 0 到 50 的整數")
+    if preset == "off" and expansion_count:
+        raise ValueError("啟用擴充份數前，請先選擇資料增強配方")
+    base["expansion_count"] = expansion_count
+    return {"schema_version": 2, "preset": preset, "apply_to": "train", "mode": "online", **base}
+
+
+def augmentation_event_layout(asset_count, profile):
+    """Describe deterministic event expansion; transform draws stay independent."""
+    profile = normalize_augmentation(profile)
+    originals = max(0, int(asset_count))
+    added = originals * profile["expansion_count"]
+    return {"originals": originals, "expanded": added, "events": originals + added,
+            "events_per_image": 1 + profile["expansion_count"]}
+
+
+def augmentation_event(index, asset_count, profile):
+    """Map an event index to its source and whether it is an augmented copy."""
+    layout = augmentation_event_layout(asset_count, profile)
+    if not 0 <= index < layout["events"]:
+        raise IndexError(index)
+    source_index, event = divmod(index, layout["events_per_image"])
+    # With no explicit expansion preserve the original online-augmentation
+    # behavior. With expansion, slot zero keeps the source and every added slot
+    # draws an independent transform when it is loaded.
+    augmented = profile["expansion_count"] == 0 or event > 0
+    return source_index, augmented
 
 
 def yolo_augmentation_args(profile):

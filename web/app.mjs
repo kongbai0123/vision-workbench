@@ -9,7 +9,7 @@ const $ = id => document.getElementById(id);
 const state = {projects:[],project:null,asset:null,stage:'library',acquireSource:'camera',busy:false,transitioning:false,
   system:null,editorMode:'builtin',cvatPoll:null,cvatElapsedTimer:null,cvatPollStartedAt:null,cvatPollBaseText:'',cvatPollBusy:false,cvatWasOpened:false,nativeBridge:null,reviewSelection:new Set(),acquireSelection:new Set(),reviewPage:0,reviewGeneration:0,previewRunning:false,previewTimer:null,camera:false,recording:false,cameraDetails:null,cameraPoll:0,autoCapture:null,cameraTarget:null,cameraTargetDraft:[],cameraTargetGesture:null,
   splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
-  training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,yoloCompatibility:null,yoloCompatibilitySignature:'',reviewYoloCompatibility:null,reviewYoloCompatibilityLoading:false,augmentationPreset:'light',trainingConfigTab:'basic',
+  training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,yoloCompatibility:null,yoloCompatibilitySignature:'',reviewYoloCompatibility:null,reviewYoloCompatibilityLoading:false,augmentationPreset:'light',augmentationExpansion:0,trainingConfigTab:'basic',
   settingsPage:'general',settingsFocus:null,settingsJob:null,desktopUpdate:null};
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已排除訓練'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
@@ -1477,9 +1477,13 @@ async function renderSplitPage(){
   if(state.project?.id!==projectId||state.stage!=='split')return;
   const readiness=state.training.readiness||{},stats=readiness.stats||{},splits=stats.splits||{};
   const root=$('splitFlowStats');root.replaceChildren();
+  const splitPurpose=state.project.split_plan?.purpose,imageLevel=splitPurpose==='reviewed_independent'||(!splitPurpose&&info.independence_review?.current);
+  const allocationCard=imageLevel
+    ?['可分配圖片',number(stats.approved||0),`來源紀錄 ${number(info.groups?.length||0)} 組；建議模式按圖片平衡`]
+    :['不可拆來源群組',number(info.groups?.length||0),'正式模式不拆開同來源群組'];
   for(const [label,value,note] of [
     ['已核准圖片',number(stats.approved||0),`排除 ${number(stats.excluded||0)} 張未核准圖片`],
-    ['獨立來源群組',number(info.groups?.length||0),'智慧分割不拆開同來源群組'],
+    allocationCard,
     ['分割方案',state.project.split_plan?.current?'已套用':'待確認',state.project.split_plan?.current?`種子 ${number(state.project.split_plan.seed)}`:'請預覽並套用智慧分割']]){
     const card=element('div');card.append(element('span',label),element('b',value),element('small',note));root.append(card);
   }
@@ -1522,10 +1526,13 @@ function augmentationProfile(){
   const preset=$('augmentationPreset')?.value||state.augmentationPreset||'light',base={...(augmentationPresets[preset]||augmentationPresets.light)};
   if(preset==='custom')Object.assign(base,{brightness:Number($('augmentationBrightness').value),contrast:Number($('augmentationContrast').value),fliplr:Number($('augmentationFlipLR').value),flipud:Number($('augmentationFlipUD').value)});
   for(const [key,value] of Object.entries(base))if(!Number.isFinite(value))throw Error(`資料增強 ${key} 不是有效數值。`);
-  return {schema_version:1,preset,apply_to:'train',mode:'online',...base};
+  const expansion=Number($('augmentationExpansion')?.value??state.augmentationExpansion??0);
+  if(!Number.isInteger(expansion)||expansion<0||expansion>50)throw Error('每張原圖擴充份數必須是 0 到 50 的整數。');
+  return {schema_version:2,preset,apply_to:'train',mode:'online',expansion_count:preset==='off'?0:expansion,...base};
 }
 function renderAugmentationPreparation(){
   const preset=$('augmentationPreset');if(!preset)return;preset.value=state.augmentationPreset||preset.value;
+  const expansionInput=$('augmentationExpansion');expansionInput.disabled=preset.value==='off';expansionInput.value=preset.value==='off'?0:state.augmentationExpansion;
   const profile=augmentationProfile();$('augmentationCustomFields').hidden=profile.preset!=='custom';
   const sample=(state.project?.assets||[]).find(asset=>asset.review_state==='approved'&&asset.split==='train')||(state.project?.assets||[]).find(asset=>asset.review_state==='approved');
   for(const id of ['augmentationOriginalPreview','augmentationResultPreview']){
@@ -1543,7 +1550,8 @@ function renderAugmentationPreparation(){
     }
   }).catch(()=>{});
   const names={off:'關閉',light:'輕量',standard:'標準',custom:'自訂'};
-  $('augmentationSummary').textContent=`${names[profile.preset]}配方 · 水平翻轉 ${(profile.fliplr*100).toFixed(0)}% · 垂直翻轉 ${(profile.flipud*100).toFixed(0)}% · 亮度 ±${(profile.brightness*100).toFixed(0)}% · 對比 ±${(profile.contrast*100).toFixed(0)}%${profile.mosaic?` · Mosaic ${(profile.mosaic*100).toFixed(0)}%（YOLO）`:''}。亮度、對比與翻轉適用所有深度學習引擎；旋轉、平移、縮放與 Mosaic 由 YOLO 套用。`;
+  const trainCount=Number(state.training?.readiness?.stats?.splits?.train||0),expanded=trainCount*profile.expansion_count,total=trainCount+expanded;
+  $('augmentationSummary').textContent=`${names[profile.preset]}配方 · 原始 Train ${number(trainCount)} 張 · 每張增加 ${number(profile.expansion_count)} 份 · 每輪共 ${number(total)} 個訓練事件（新增 ${number(expanded)}）· 每份獨立抽樣。水平翻轉 ${(profile.fliplr*100).toFixed(0)}% · 垂直翻轉 ${(profile.flipud*100).toFixed(0)}% · 亮度 ±${(profile.brightness*100).toFixed(0)}% · 對比 ±${(profile.contrast*100).toFixed(0)}%${profile.mosaic?` · Mosaic ${(profile.mosaic*100).toFixed(0)}%（YOLO）`:''}。Validation／Test 保持原始資料。`;
 }
 
 async function previewReviewAsset(asset) {
@@ -1714,8 +1722,8 @@ function renderTraining(){
   const summary=$('trainingSummary');summary.replaceChildren();
   const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
   let config={};try{config=trainingParameters.collect()}catch{}
-  const trainCount=Number(dataset?.splits?.train||0),batchSize=Number(config.batch_size||1),accumulation=Number(config.gradient_accumulation||1),batches=trainCount?Math.ceil(trainCount/batchSize):0;
-  for(const [label,value]of [['資料版本',dataset?.id||'—'],['資料增強',dataset?.augmentation?.preset||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['每輪 Batch',batches?`${number(batches)}（${number(trainCount)} ÷ ${number(batchSize)}）`:'—'],['有效批次',config.batch_size?`${number(batchSize*accumulation)} 張`:'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
+  const trainCount=Number(dataset?.splits?.train||0),trainingEvents=Number(dataset?.training_events?.events||trainCount),batchSize=Number(config.batch_size||1),accumulation=Number(config.gradient_accumulation||1),batches=trainingEvents?Math.ceil(trainingEvents/batchSize):0;
+  for(const [label,value]of [['資料版本',dataset?.id||'—'],['資料增強',dataset?.augmentation?.preset||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['每輪訓練事件',dataset?`${number(trainingEvents)}（Train 原圖 ${number(trainCount)}）`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['每輪 Batch',batches?`${number(batches)}（${number(trainingEvents)} ÷ ${number(batchSize)}）`:'—'],['有效批次',config.batch_size?`${number(batchSize*accumulation)} 張`:'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
   applyTrainingConfigTab();
   $('startTraining').disabled=!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
   if(engine?.key?.endsWith('_seg')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
@@ -1849,6 +1857,7 @@ bind('backToReview',()=>switchStage('review'));
 bind('continueToTraining',()=>switchStage('train'));
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
 $('augmentationPreset').onchange=()=>{state.augmentationPreset=$('augmentationPreset').value;renderAugmentationPreparation()};
+$('augmentationExpansion').oninput=()=>{const value=Number($('augmentationExpansion').value);if(Number.isInteger(value)&&value>=0&&value<=50){state.augmentationExpansion=value;renderAugmentationPreparation()}};
 for(const id of ['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'])$(id).oninput=renderAugmentationPreparation;
 document.querySelectorAll('[data-training-tab]').forEach(button=>button.onclick=()=>{state.trainingConfigTab=button.dataset.trainingTab;applyTrainingConfigTab()});
 $('trainingDataset').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingEngine').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingDevice').onchange=renderTraining;

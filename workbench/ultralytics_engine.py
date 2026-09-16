@@ -20,7 +20,7 @@ import numpy as np
 from composer_core.geometry import encode_rle, shape_polygons
 from .training_engine import atomic_json, read_json, _status, _stopping
 from .yolo_compatibility import analyze_manifest, blocker_message, compatible_shape
-from .augmentation import yolo_augmentation_args
+from .augmentation import normalize_augmentation, yolo_augmentation_args
 
 
 ULTRALYTICS_ENGINES = {
@@ -35,10 +35,6 @@ ULTRALYTICS_ENGINES = {
     "yolo26s_detect": {"name": "YOLO26s Detect", "task": "object_detection",
                        "architecture": "yolo26s.yaml", "kind": "detect"},
 }
-
-
-def _label_path(root, split, asset):
-    return root / "labels" / split / f"{asset['asset_id']}.txt"
 
 
 def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, config=None) -> Path:
@@ -57,6 +53,7 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, co
     if output_dir.exists():
         shutil.rmtree(output_dir)
     class_ids = {name: index for index, name in enumerate(manifest["classes"])}
+    augmentation = normalize_augmentation((config or {}).get("augmentation"))
     for split in ("train", "val", "test"):
         (output_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -65,8 +62,6 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, co
         source = (dataset_manifest.parent / asset["image_file"]).resolve()
         if sha256(source.read_bytes()).hexdigest() != asset["sha256"]:
             raise ValueError(f"固定資料版本圖片雜湊不符：{asset['name']}")
-        destination = output_dir / "images" / split / f"{asset['asset_id']}{source.suffix.lower()}"
-        shutil.copy2(source, destination)
         lines = []
         for shape_index, (shape, obj) in enumerate(zip(asset.get("shapes", []), asset.get("objects", []))):
             class_id = class_ids.get(shape.get("label"))
@@ -91,7 +86,16 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, co
                 values = [coordinate for x, y in points for coordinate in
                           (max(0., min(1., float(x) / width)), max(0., min(1., float(y) / height)))]
                 lines.append(str(class_id) + " " + " ".join(f"{value:.8f}" for value in values))
-        _label_path(output_dir, split, asset).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        event_count = 1 + augmentation["expansion_count"] if split == "train" else 1
+        label_text = "\n".join(lines) + ("\n" if lines else "")
+        for event in range(event_count):
+            event_id = asset["asset_id"] if event == 0 else f"{asset['asset_id']}__aug{event:03d}"
+            destination = output_dir / "images" / split / f"{event_id}{source.suffix.lower()}"
+            try:
+                os.link(source, destination)
+            except OSError:
+                shutil.copy2(source, destination)
+            (output_dir / "labels" / split / f"{event_id}.txt").write_text(label_text, encoding="utf-8")
     data = {"path": str(output_dir.resolve()), "train": "images/train",
             "val": "images/val",
             "test": "images/test", "names": {index: name for index, name in enumerate(manifest["classes"])}}

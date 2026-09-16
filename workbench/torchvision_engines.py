@@ -16,7 +16,7 @@ from .training_engine import annotation_mask, atomic_json, load_rgb, read_json, 
 from .evaluation_metrics import PixelMetrics, detection_summary, evaluation_protocol, training_only_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
-from .augmentation import augment_dense_target
+from .augmentation import augment_dense_target, augmentation_event, augmentation_event_layout, normalize_augmentation
 
 
 DETECTION_ENGINES = {
@@ -89,12 +89,15 @@ class SemanticDataset:
         self.assets = [asset for asset in manifest["assets"] if asset["split"] == split]
         self.class_ids = {label: index + 1 for index, label in enumerate(manifest["classes"])}
         self.image_size = int(image_size)
-        self.augmentation = augmentation
+        self.augmentation = normalize_augmentation(augmentation) if augmentation else None
+        self.event_layout = augmentation_event_layout(len(self.assets), self.augmentation) if self.augmentation else None
 
-    def __len__(self): return len(self.assets)
+    def __len__(self): return self.event_layout["events"] if self.event_layout else len(self.assets)
 
     def __getitem__(self, index):
-        torch = self.torch; asset = self.assets[index]
+        torch = self.torch
+        source_index, augmented = augmentation_event(index, len(self.assets), self.augmentation) if self.augmentation else (index, False)
+        asset = self.assets[source_index]
         rgb = load_rgb(self.dataset_dir, asset)
         image = torch.from_numpy(rgb.transpose(2, 0, 1).copy()).float() / 255.0
         target = np.zeros((int(asset["height"]), int(asset["width"])), dtype=np.int64)
@@ -106,7 +109,7 @@ class SemanticDataset:
         image = functional.interpolate(image[None], (self.image_size, self.image_size), mode="bilinear", align_corners=False)[0]
         target_tensor = torch.from_numpy(target)[None, None].float()
         target_tensor = functional.interpolate(target_tensor, (self.image_size, self.image_size), mode="nearest")[0, 0].long()
-        if self.augmentation:
+        if self.augmentation and augmented:
             image, target_tensor = augment_dense_target(image, target_tensor, self.augmentation, torch)
         return image, target_tensor, asset
 

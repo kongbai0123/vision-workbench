@@ -16,7 +16,7 @@ from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, 
 from .evaluation_metrics import PixelMetrics, evaluation_protocol, training_only_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
-from .augmentation import augment_dense_target
+from .augmentation import augment_dense_target, augmentation_event, augmentation_event_layout, normalize_augmentation
 
 
 ENGINE_KEY = "maskrcnn_resnet50_fpn"
@@ -62,13 +62,15 @@ class NativeMaskDataset:
         self.manifest, self.dataset_dir, self.torch = manifest, Path(dataset_dir), torch
         self.assets = [asset for asset in manifest["assets"] if asset["split"] == split]
         self.class_ids = {label: index + 1 for index, label in enumerate(manifest["classes"])}
-        self.augmentation = augmentation
+        self.augmentation = normalize_augmentation(augmentation) if augmentation else None
+        self.event_layout = augmentation_event_layout(len(self.assets), self.augmentation) if self.augmentation else None
 
     def __len__(self):
-        return len(self.assets)
+        return self.event_layout["events"] if self.event_layout else len(self.assets)
 
     def __getitem__(self, index):
-        asset = self.assets[index]
+        source_index, augmented = augmentation_event(index, len(self.assets), self.augmentation) if self.augmentation else (index, False)
+        asset = self.assets[source_index]
         rgb = load_rgb(self.dataset_dir, asset)
         image = self.torch.from_numpy(rgb.transpose(2, 0, 1).copy()).float() / 255.0
         masks, boxes, labels = [], [], []
@@ -88,7 +90,7 @@ class NativeMaskDataset:
             "masks": self.torch.stack(masks) if masks else self.torch.zeros((0, int(asset["height"]), int(asset["width"])), dtype=self.torch.uint8),
             "image_id": self.torch.tensor([index], dtype=self.torch.int64),
         }
-        if self.augmentation:
+        if self.augmentation and augmented:
             image, target = augment_dense_target(image, target, self.augmentation, self.torch)
         return image, target, asset
 

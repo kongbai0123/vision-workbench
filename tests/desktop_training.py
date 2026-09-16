@@ -56,6 +56,8 @@ def seed_reports(service, folder):
                        "batch_id": f"{split}-{index}", "review_state": "approved",
                        "source": {"kind": "test"}, "shapes": [shape]})
     service.store.add_assets(pid, assets)
+    current = service.store.get_project(pid)
+    service.store.confirm_independence(pid, True, current["revision"])
     snapshot = service.training.create_dataset_version(pid)
     assert snapshot["splits"] == {"train": 2, "val": 2, "test": 2}, snapshot
     saved = {}
@@ -212,7 +214,7 @@ def main():
             click(".project-card-open")
             wait("!document.querySelector('[data-stage=train]').disabled")
             click("[data-stage=split]")
-            wait("document.querySelector('#splitFlowStats').innerText.includes('獨立來源群組')")
+            wait("document.querySelector('#splitFlowStats').innerText.includes('可分配圖片')")
             capture("29-data-split-stage", target="#split")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
@@ -253,6 +255,9 @@ def main():
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             wait("document.querySelectorAll('.augmentation-annotation-overlay > *').length>0")
             assert js("document.querySelector('.augmentation-panel').nextElementSibling.id==='splitFlowStats'")
+            fill("#augmentationExpansion", 2)
+            wait("document.querySelector('#augmentationSummary').textContent.includes('每輪共 6 個訓練事件')")
+            assert js("document.querySelector('#augmentationSummary').textContent.includes('Validation／Test 保持原始資料')")
             alignment = json.loads(js("JSON.stringify(['augmentationOriginalPreview','augmentationResultPreview'].map(id=>{const image=document.querySelector('#'+id).getBoundingClientRect(),overlay=document.querySelector('#'+id).parentElement.querySelector('svg').getBoundingClientRect();return {top:Math.abs(image.top-overlay.top),left:Math.abs(image.left-overlay.left),width:Math.abs(image.width-overlay.width),height:Math.abs(image.height-overlay.height)}}))"))
             assert all(max(item.values()) < 1 for item in alignment), alignment
             capture("34-augmentation-overlay-alignment", target=".augmentation-panel")

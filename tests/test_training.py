@@ -99,6 +99,19 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.store.save_asset(self.pid, current["id"], [], current["revision"])
         self.assertEqual(manifest_path.read_bytes(), before)
 
+    def test_dataset_version_reports_expanded_train_events_without_changing_assets(self):
+        dataset = self.workspace.create_dataset_version(
+            self.pid, {"preset": "light", "expansion_count": 3})
+        self.assertEqual(dataset["asset_count"], 6)
+        self.assertEqual(dataset["splits"], {"train": 2, "val": 2, "test": 2})
+        self.assertEqual(dataset["augmentation"]["expansion_count"], 3)
+        self.assertEqual(dataset["training_events"], {
+            "originals": 2, "expanded": 6, "events": 8, "events_per_image": 4,
+        })
+        manifest = json.loads((self.workspace.datasets_dir(self.pid) / dataset["id"] / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["assets"]), 6)
+        self.assertEqual(manifest["augmentation"]["expansion_count"], 3)
+
     def test_review_compatibility_scans_latest_pending_and_approved_annotations(self):
         initial = self.workspace.review_yolo_compatibility(self.pid)
         self.assertTrue(initial["compatible"], initial)

@@ -29,7 +29,7 @@ from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
 from .split_quality import split_class_coverage, loose_split_applies, split_purpose
 from .project_storage import ProjectStorage
-from .augmentation import normalize_augmentation
+from .augmentation import augmentation_event_layout, normalize_augmentation
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -332,12 +332,13 @@ class TrainingWorkspace:
                                     "annotation_sha256": _canonical_hash(shapes), "split": asset["split"],
                                     "batch_id": asset["batch_id"], "source": asset["source"],
                                     "shapes": shapes, "objects": objects})
+                augmentation = normalize_augmentation(augmentation)
                 manifest = {"schema_version": 1, "dataset_version_id": dataset_id, "project_id": project_id,
                             "project_name": project["name"], "project_revision": project["revision"],
                             "created_at": timestamp(), "classes": list(project["classes"]),
                             "class_mapping": [{"class_id": index, "name": name} for index, name in enumerate(project["classes"])],
                             "readiness": report, "assets": records,
-                            "augmentation": normalize_augmentation(augmentation),
+                            "augmentation": augmentation,
                             "split_plan": project.get("split_plan")}
                 purpose = split_purpose(project.get('split_plan'), records)
                 labels = {
@@ -375,12 +376,15 @@ class TrainingWorkspace:
         if not path.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
         manifest = read_json(path)
+        augmentation = normalize_augmentation(manifest.get("augmentation"))
+        train_count = sum(a["split"] == "train" for a in manifest["assets"])
         return {"id": dataset_id, "project_id": project_id, "project_revision": manifest["project_revision"],
                 "created_at": manifest["created_at"], "classes": manifest["classes"],
                 "asset_count": len(manifest["assets"]), "splits": {name: sum(a["split"] == name for a in manifest["assets"])
                 for name in ("train", "val", "test")}, "manifest_sha256": manifest["manifest_sha256"],
                 "data_quality": manifest.get("data_quality"),
-                "augmentation": normalize_augmentation(manifest.get("augmentation")),
+                "augmentation": augmentation,
+                "training_events": augmentation_event_layout(train_count, augmentation),
                 "readiness": dataset_readiness(manifest)}
 
     def create_diagnostic_dataset_version(self, project_id, source_dataset_id):
@@ -497,6 +501,9 @@ class TrainingWorkspace:
             if immutable.get("data_quality"):
                 run["data_quality"] = immutable["data_quality"]
                 run['data_purpose'] = immutable['data_quality'].get('purpose')
+            run['training_events'] = augmentation_event_layout(
+                sum(asset.get('split') == 'train' for asset in immutable.get('assets', [])),
+                effective_config.get('augmentation'))
             if coverage["warnings"]:
                 run["split_warnings"] = coverage["warnings"]
             if compatibility is not None:
