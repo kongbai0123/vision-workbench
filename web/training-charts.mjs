@@ -364,13 +364,13 @@ export function createTrainingCharts(container, options = {}) {
       const value = model.yMin + (model.yMax - model.yMin) * index / 4;
       const label = Math.abs(value) > 999 || (Math.abs(value) > 0 && Math.abs(value) < .01) ? value.toExponential(1) : value.toFixed(model.unit ? 2 : 1);
       svg.append(svgNode(document, 'line', {x1: left, y1: y(value), x2: width - right, y2: y(value), stroke: '#304550'}),
-        svgNode(document, 'text', {x: left - 7, y: y(value) + 4, 'text-anchor': 'end', fill: '#9aafba', 'font-size': 11}, label));
+        svgNode(document, 'text', {x: left - 7, y: y(value) + 4, 'text-anchor': 'end', fill: '#9aafba', 'font-size': 12}, label));
     }
     const tickCount = Math.min(width < 360 ? 3 : 5, model.xMax);
     const ticks = new Set(Array.from({length: tickCount}, (_, index) => Math.round(1 + (model.xMax - 1) * index / Math.max(1, tickCount - 1))));
     for (const tick of ticks) svg.append(svgNode(document, 'text', {x: x(tick), y: height - 23,
-      'text-anchor': tick === 1 ? 'start' : tick === model.xMax ? 'end' : 'middle', fill: '#9aafba', 'font-size': 11}, tick));
-    svg.append(svgNode(document, 'text', {x: left + plotWidth / 2, y: height - 4, 'text-anchor': 'middle', fill: '#9aafba', 'font-size': 11}, 'Epoch'));
+      'text-anchor': tick === 1 ? 'start' : tick === model.xMax ? 'end' : 'middle', fill: '#9aafba', 'font-size': 12}, tick));
+    svg.append(svgNode(document, 'text', {x: left + plotWidth / 2, y: height - 4, 'text-anchor': 'middle', fill: '#9aafba', 'font-size': 12}, 'Epoch'));
     for (const series of model.series) {
       for (const segment of series.segments) {
         if (segment.length > 1) svg.append(svgNode(document, 'polyline', {

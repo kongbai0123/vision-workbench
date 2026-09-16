@@ -216,7 +216,7 @@ def main():
             capture("29-data-split-stage", target="#split")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
-            wait("document.querySelectorAll('#trainingPlots svg').length===2")
+            wait("document.querySelectorAll('#trainingPlots svg').length===1")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
             # The split manager stays accessible even when readiness is already true.
             old_manifest = service.training.datasets_dir(pid) / "D001" / "manifest.json"
@@ -314,9 +314,23 @@ def main():
             wait("!document.querySelector('#backgroundTraining').hidden")
             assert js("document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]').value") == "0.003"
 
-            # Completed models are chosen in the monitor; every recorded metric appears.
+            # The monitor starts with outcome metrics and keeps every recorded metric
+            # available through explicit chart groups.
             assert not js("!!document.querySelector('#trainingMetricOptions')")
-            assert set(plotted_metrics()) == {"train/loss", "val/mean_iou"}
+            assert set(plotted_metrics()) == {"val/mean_iou"}
+            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 4
+            assert js("document.querySelector('[data-chart-group=performance]').getAttribute('aria-selected')==='true'")
+            click("[data-chart-group=loss]")
+            wait("document.querySelectorAll('#trainingPlots svg').length===1")
+            assert set(plotted_metrics()) == {"train/loss"}
+            click("[data-chart-group=all]")
+            wait("document.querySelectorAll('#trainingPlots svg').length===2")
+            click("#toggleTrainingFullscreen")
+            wait("document.querySelector('#trainingMonitorWorkspace').classList.contains('expanded')")
+            assert js("document.body.classList.contains('training-monitor-expanded')")
+            js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait("!document.querySelector('#trainingMonitorWorkspace').classList.contains('expanded')")
+            assert not js("[...document.querySelectorAll('body *')].some(e=>e.getClientRects().length&&parseFloat(getComputedStyle(e).fontSize)<12)")
             click("#trainingViewCompare")
             wait("document.querySelectorAll('#trainingModelPicker input[type=checkbox]').length===3")
             assert not js("!!document.querySelector('#trainingModelPicker [data-model-run=R004]')")

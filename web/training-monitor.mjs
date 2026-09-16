@@ -7,6 +7,13 @@ const active=new Set(['queued','preparing','running','stopping']);
 const statusName=value=>({queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value);
 const evaluationNames={mean_iou:'Macro IoU',micro_iou:'Micro IoU',box_mean_iou:'Box IoU',mean_dice:'Dice',accuracy:'Accuracy',macro_f1:'Macro F1',macro_recall:'Macro Recall',mask_map50_95:'Mask mAP50–95',mask_map50:'Mask mAP50',box_map50_95:'Box mAP50–95',box_map50:'Box mAP50',precision_50:'Precision@0.5',recall_50:'Recall@0.5'};
 const executionLabels={batch_size:'每次前向批次大小',gradient_accumulation:'梯度累積步數',effective_batch_size:'有效批次大小',optimizer_step_measurement:'更新次數量測方式',optimizer_attempts:'最佳化器累計更新嘗試',optimizer_steps:'最佳化器累計成功更新',optimizer_skipped_updates:'AMP 累計跳過更新'};
+const chartGroups=[['performance','效果指標'],['loss','損失曲線'],['learning','學習率'],['all','全部圖表']];
+
+export function chartGroupForMetric(key){
+  if(key==='train/learning_rate'||key.startsWith('lr/'))return 'learning';
+  if(key.endsWith('/loss')||key.endsWith('_loss'))return 'loss';
+  return 'performance';
+}
 
 export function runAuditSections(run,report){
   const recorded=report?.run?.run_id===run.run_id?report.run:run,sections=[];
@@ -36,20 +43,29 @@ export class TrainingMonitor {
   constructor({loadReport,onSelect,onModel}) {
     this.loadReport=loadReport;this.onSelect=onSelect;this.onModel=onModel;
     this.root=document.getElementById('trainingRunDetail');this.dialog=document.getElementById('trainingHistoryDialog');
+    this.workspace=document.getElementById('trainingMonitorWorkspace');this.fullscreenButton=document.getElementById('toggleTrainingFullscreen');
     this.openButton=document.getElementById('openTrainingHistory');
     this.openButton.onclick=()=>{this.renderHistory();this.dialog.showModal()};
     document.getElementById('closeTrainingHistory').onclick=()=>this.dialog.close();
     this.dialog.addEventListener('click',e=>{if(e.target===this.dialog){const r=this.dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)this.dialog.close()}});
     document.getElementById('trainingViewSingle').onclick=()=>{this.mode='single';this.refresh()};
     document.getElementById('trainingViewCompare').onclick=()=>this.beginComparison();
+    this.fullscreenButton.onclick=()=>this.toggleFullscreen();
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&this.workspace.classList.contains('expanded'))this.toggleFullscreen(false)});
     this.reset();
   }
   reset(){
     this.chart?.destroy();this.chart=null;this.generation=(this.generation||0)+1;
-    this.projectId=null;this.overview=null;this.runs=[];this.selected=null;this.mode='single';this.compared=[];
+    this.projectId=null;this.overview=null;this.runs=[];this.selected=null;this.mode='single';this.compared=[];this.chartGroup='performance';
     this.comparisonDataset=null;this.comparisonInitialized=false;
     this.reports=new Map();this.errors=new Map();this.domains=new Map();this.detailOpen=new Map();this.scrollPositions=new Map();this.appearances=new Map();this.interaction={};
     if(this.dialog.open)this.dialog.close();
+  }
+  toggleFullscreen(force){
+    const expanded=force??!this.workspace.classList.contains('expanded');
+    this.workspace.classList.toggle('expanded',expanded);document.body.classList.toggle('training-monitor-expanded',expanded);
+    this.fullscreenButton.setAttribute('aria-pressed',String(expanded));this.fullscreenButton.textContent=expanded?'結束全螢幕':'全螢幕檢視';
+    requestAnimationFrame(()=>window.dispatchEvent(new Event('resize')));
   }
   update(overview,projectId,selected){
     if(this.projectId!==projectId){this.reset();this.projectId=projectId}
@@ -131,12 +147,15 @@ export class TrainingMonitor {
     if(!runs.length){const empty=el('div',undefined,'report-empty');empty.append(el('h3',this.mode==='compare'?'選擇要比較的模型':'尚無訓練紀錄'),el('p',this.mode==='compare'?'勾選上方模型後，圖表、數值與評估內容會一起顯示。':'開始訓練後在此查看進度、指標與固定設定。'));this.root.append(empty);this.restoreView(focusId,focusRun,focusScroll);return}
     if(this.mode==='single')this.renderSingleSummary(runs[0]);else this.renderComparisonSummary(runs);
     for(const run of runs){if(this.errors.has(run.run_id))this.root.append(el('p',`${run.run_id}：${this.errors.get(run.run_id)}；${this.reports.has(run.run_id)?'顯示上次成功取得的指標。':'可按重新整理重試。'}`,'readiness-item warning'))}
-    const descriptors=metricDescriptors(runs,this.reports),chosen=descriptors.map(metric=>metric.key);
+    const descriptors=metricDescriptors(runs,this.reports);
+    this.renderChartToolbar(descriptors);
+    const chosen=descriptors.filter(metric=>this.chartGroup==='all'||chartGroupForMetric(metric.key)===this.chartGroup).map(metric=>metric.key);
     const warnings=this.mode==='compare'?chosen.flatMap(key=>comparisonWarnings(runs.filter(run=>descriptors.find(d=>d.key===key)?.availableRunIds.includes(run.run_id)),[key])):[];
-    for(const warning of new Set(warnings))this.root.append(el('p',warning,'readiness-item warning'));
+    const uniqueWarnings=[...new Set(warnings)];
+    if(uniqueWarnings.length){const notice=el('details',undefined,'training-alert-summary');notice.append(el('summary',`比較提示 · ${uniqueWarnings.length}`));uniqueWarnings.forEach(warning=>notice.append(el('p',warning,'readiness-item warning')));this.root.append(notice)}
     const plot=el('div');plot.id='trainingPlots';this.root.append(plot);
     this.chart=createTrainingCharts(plot,{runs,domainRuns:this.mode==='compare'?this.comparisonCandidates():runs,reports:this.reports,comparison:this.mode==='compare',metricKeys:chosen,domains:this.domains,interaction:this.interaction});
-    if(chosen.length)this.root.append(el('p','顯示所選模型的全部實測指標。X 軸涵蓋完整 Run；取消勾選模型不改變座標。移到圖表、點選或使用方向鍵查看同一 Epoch 數值。','metric-chart-note'));
+    if(chosen.length)this.root.append(el('p','X 軸涵蓋完整 Run；切換圖表群組不會隱藏原始數值。移到圖表、點選或使用方向鍵可同步查看同一 Epoch。','metric-chart-note'));
     this.renderEpochTable(runs,descriptors);
     const columns=el('div',undefined,'training-detail-columns');this.root.append(columns);
     this.renderEvaluation(runs,columns);this.renderConfig(runs,columns);
@@ -154,6 +173,12 @@ export class TrainingMonitor {
     if(wrap.restoredScroll?.top===wrap.scrollTop&&wrap.restoredScroll?.left===wrap.scrollLeft)return;
     wrap.restoredScroll=null;
     this.scrollPositions.set(wrap.dataset.scrollKey,{top:wrap.scrollTop,left:wrap.scrollLeft});
+  }
+  renderChartToolbar(descriptors){
+    const bar=el('div',undefined,'training-chart-toolbar'),copy=el('div');copy.append(el('span','METRIC VIEWS','eyebrow'),el('h3','訓練曲線'));
+    const tabs=el('div',undefined,'training-chart-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','圖表群組');
+    for(const [key,label] of chartGroups){const count=key==='all'?descriptors.length:descriptors.filter(metric=>chartGroupForMetric(metric.key)===key).length,button=action(`${label} · ${count}`,()=>{this.chartGroup=key;this.render()},'secondary');button.dataset.chartGroup=key;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(this.chartGroup===key));button.disabled=!count;tabs.append(button)}
+    bar.append(copy,tabs);this.root.append(bar);
   }
   renderModelPicker(){
     const candidates=this.comparisonCandidates(),field=el('fieldset',undefined,'training-model-picker');field.id='trainingModelPicker';
@@ -196,8 +221,9 @@ export class TrainingMonitor {
     if(run.message)this.root.append(el('p',run.message,'muted'));
     if(run.error)this.root.append(el('p',run.error,'readiness-item error'));
     const {score,split}=this.evaluation(run),best=this.scoreEntries(run,score)[0],invalid=run.evaluation?.valid===false;
-    const cards=el('div',undefined,'run-metrics');
-    for(const [label,value] of [[best?`${split} · ${best.label}`:'評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],[`${score?split:'評估'} 圖片`,score&&finite(score.images)?`${score.images} 張`:'—'],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
+    const currentEpoch=run.epoch??this.reports.get(run.run_id)?.metrics?.at(-1)?.epoch??'—';
+    const cards=el('div',undefined,'run-metrics training-summary-cards');
+    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
     this.root.append(this.configRow(run));
   }
   configRow(run){

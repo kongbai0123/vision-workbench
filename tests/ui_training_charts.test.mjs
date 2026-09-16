@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {finiteMetric, normalizedMetricRows, metricDescriptors, defaultMetricKeys,
   runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
 import {buildLearningRateChartModel, buildChartModels} from '../web/training-charts.mjs';
-import {runAuditSections} from '../web/training-monitor.mjs';
+import {chartGroupForMetric, runAuditSections} from '../web/training-monitor.mjs';
 
 const run = (id, options = {}) => ({run_id: id, engine: 'maskrcnn_resnet50_fpn',
   dataset_version_id: 'D001', config: {epochs: 10, image_size: 640}, ...options});
@@ -203,6 +203,13 @@ test('actual LR plots use a useful small scale and keep it when hiding runs',()=
   const full=buildChartModel(options,'train/learning_rate');assert.ok(full.yMax>=.002&&full.yMax<.01);
   const hidden=buildChartModel({...options,visibleRunIds:new Set(['R1'])},'train/learning_rate');
   assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
+});
+
+test('monitor groups outcome, loss, and learning-rate charts without dropping metrics', () => {
+  assert.equal(chartGroupForMetric('val/box_map50_95'), 'performance');
+  assert.equal(chartGroupForMetric('train/box_loss'), 'loss');
+  assert.equal(chartGroupForMetric('lr/pg0'), 'learning');
+  assert.equal(chartGroupForMetric('train/learning_rate'), 'learning');
 });
 
 test('small valid mAP values use a disclosed zoomed axis instead of looking like zero',()=>{
