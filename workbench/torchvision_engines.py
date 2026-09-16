@@ -13,7 +13,7 @@ import numpy as np
 from composer_core.geometry import encode_rle
 from .maskrcnn_engine import NativeMaskDataset, _collate, _device
 from .training_engine import annotation_mask, atomic_json, load_rgb, read_json, _status, _stopping
-from .evaluation_metrics import PixelMetrics, detection_summary, evaluation_protocol
+from .evaluation_metrics import PixelMetrics, detection_summary, evaluation_protocol, training_only_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
 from .augmentation import augment_dense_target
@@ -165,7 +165,8 @@ def train_detection(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                                      run["config"].get("augmentation"))
         validation = NativeMaskDataset(manifest, dataset_manifest.parent, "val", torch)
         testing = NativeMaskDataset(manifest, dataset_manifest.parent, "test", torch)
-        if not training.assets or not validation.assets: raise RuntimeError("Faster R-CNN 需要非空的 Train 與 Validation；Test 不會替代 Validation")
+        train_only = run.get('data_purpose') == 'all_train'
+        if not training.assets or (not validation.assets and not train_only): raise RuntimeError("Faster R-CNN 需要非空的 Train 與 Validation；Test 不會替代 Validation")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
         optimizer = create_optimizer(torch, [p for p in model.parameters() if p.requires_grad], run["config"])
@@ -188,27 +189,26 @@ def train_detection(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                         progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
                         execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                    "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
-            score = _evaluate_detection(model, validation, device, torch)
-            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
-                   "val/box_map50": score["box_map50"], "val/recall_50": score["recall_50"]}
+            score = _evaluate_detection(model, validation, device, torch) if validation.assets else None
+            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6)}
+            if score: row.update({"val/box_map50": score["box_map50"], "val/recall_50": score["recall_50"]})
             row.update(rates)
-            scheduler.finish_epoch(score.get("box_map50"))
+            scheduler.finish_epoch(score.get("box_map50") if score else None)
             atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle: handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{ENGINE_NAMES[run['engine']]} {epoch} / {epochs}", epoch=epoch,
-                    phase="validation", batch=len(loader), batches_per_epoch=len(loader),
+                    phase="training" if train_only else "validation", batch=len(loader), batches_per_epoch=len(loader),
                     progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device),
                     execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
-        validation_result = _evaluate_detection(model, validation, device, torch)
+        validation_result = _evaluate_detection(model, validation, device, torch) if validation.assets else None
         test_result = _evaluate_detection(model, testing, device, torch) if testing.assets else None
-        protocol = evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets),
-                                       manifest=manifest)
+        protocol = training_only_protocol() if train_only else evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets), manifest=manifest)
         record = _base_record(run, manifest, run["engine"], image_size, validation_result, test_result, protocol)
         atomic_json(model_dir / "model.json", record); atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol, "validation": validation_result, "test": test_result})
         _artifacts(run_dir, model_dir, run["run_id"], checkpoint)
-        return _status(run_dir, run, status="completed", message=f"{ENGINE_NAMES[run['engine']]} 訓練與評估完成", progress=100,
+        return _status(run_dir, run, status="completed", message=f"{ENGINE_NAMES[run['engine']]} {'最終訓練完成（無獨立評估）' if train_only else '訓練與評估完成'}", progress=100,
                        completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol, "validation": validation_result, "test": test_result})
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time()); raise
@@ -227,7 +227,8 @@ def train_semantic(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                                    run["config"].get("augmentation"))
         validation = SemanticDataset(manifest, dataset_manifest.parent, "val", torch, image_size)
         testing = SemanticDataset(manifest, dataset_manifest.parent, "test", torch, image_size)
-        if not training.assets or not validation.assets: raise RuntimeError("DeepLabV3 需要非空的 Train 與 Validation；Test 不會替代 Validation")
+        train_only = run.get('data_purpose') == 'all_train'
+        if not training.assets or (not validation.assets and not train_only): raise RuntimeError("DeepLabV3 需要非空的 Train 與 Validation；Test 不會替代 Validation")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True, num_workers=0)
         optimizer = create_optimizer(torch, model.parameters(), run["config"])
         scheduler = LearningRateSchedule(optimizer, run["config"])
@@ -249,27 +250,26 @@ def train_semantic(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                         progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
                         execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                    "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
-            score = _evaluate_semantic(model, validation, device, torch)
-            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
-                   "val/mean_iou": score["mean_iou"], "val/mean_dice": score["mean_dice"]}
+            score = _evaluate_semantic(model, validation, device, torch) if validation.assets else None
+            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6)}
+            if score: row.update({"val/mean_iou": score["mean_iou"], "val/mean_dice": score["mean_dice"]})
             row.update(rates)
-            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")))
+            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")) if score else None)
             atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle: handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{ENGINE_NAMES[run['engine']]} {epoch} / {epochs}", epoch=epoch,
-                    phase="validation", batch=len(loader), batches_per_epoch=len(loader),
+                    phase="training" if train_only else "validation", batch=len(loader), batches_per_epoch=len(loader),
                     progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device),
                     execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"; torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
-        validation_result = _evaluate_semantic(model, validation, device, torch)
+        validation_result = _evaluate_semantic(model, validation, device, torch) if validation.assets else None
         test_result = _evaluate_semantic(model, testing, device, torch) if testing.assets else None
-        protocol = evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets),
-                                       manifest=manifest)
+        protocol = training_only_protocol() if train_only else evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets), manifest=manifest)
         record = _base_record(run, manifest, run["engine"], image_size, validation_result, test_result, protocol)
         atomic_json(model_dir / "model.json", record); atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol, "validation": validation_result, "test": test_result})
         _artifacts(run_dir, model_dir, run["run_id"], checkpoint)
-        return _status(run_dir, run, status="completed", message=f"{ENGINE_NAMES[run['engine']]} 訓練與評估完成", progress=100,
+        return _status(run_dir, run, status="completed", message=f"{ENGINE_NAMES[run['engine']]} {'最終訓練完成（無獨立評估）' if train_only else '訓練與評估完成'}", progress=100,
                        completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol, "validation": validation_result, "test": test_result})
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time()); raise

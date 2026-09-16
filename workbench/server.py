@@ -479,6 +479,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.import_paths(pid,payload.get("paths")))
             if action == "review":
                 return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions"),payload.get('reason', ''),payload.get('note', '')))
+            if action == 'independence-review':
+                return self.json(self.app.store.confirm_independence(
+                    pid, payload.get('confirmed'), payload.get('revision')))
             if action == "assign":
                 return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
             if action == "auto-split":

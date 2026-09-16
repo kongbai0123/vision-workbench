@@ -112,18 +112,34 @@ def source_groups(assets, overrides=None, strategy="smart"):
 
 
 def smart_split(assets, options=None):
-    options = options or {}
+    options = dict(options or {})
     if not isinstance(options, dict):
         raise ValueError("分割設定必須是物件")
+    purpose_explicit = 'purpose' in options
+    purpose = options.get('purpose')
+    if purpose is None:
+        purpose = 'experimental' if options.get('strategy') == 'random_loose' else 'formal'
+    if purpose not in {'formal', 'reviewed_independent', 'experimental', 'all_train'}:
+        raise ValueError('不支援的資料用途')
+    if purpose == 'reviewed_independent' and not options.get('independence_confirmed'):
+        raise ValueError('目前已核准資料尚未完成「樣本彼此獨立」確認，或確認已因資料變動失效')
     strategy = options.get("strategy", "smart")
+    if purpose in {'reviewed_independent', 'formal'} and strategy == 'random_loose':
+        strategy = 'multilabel'
+    elif purpose == 'experimental':
+        strategy = 'random_loose'
     if strategy not in {"smart", "class_balanced", "multilabel", "random_loose"}:
         raise ValueError("不支援的分割策略")
     isolate = options.get('source_isolation', strategy != 'class_balanced')
     if type(isolate) is not bool:
         raise ValueError('來源隔離必須為布林值')
-    loose = strategy == 'random_loose'
+    loose = purpose == 'experimental'
     if loose:
         isolate = False
+    elif purpose == 'reviewed_independent':
+        isolate = False
+    elif purpose == 'formal' and purpose_explicit:
+        isolate = True
     mode = options.get('balance_mode', 'hybrid')
     if mode not in {'hybrid', 'presence', 'instances', 'cooccurrence'}:
         raise ValueError('不支援的多類別平衡目標')
@@ -132,18 +148,47 @@ def smart_split(assets, options=None):
     if type(seed) is not int or not 0 <= seed <= 2147483647:
         raise ValueError("分割種子必須為 0–2147483647 的整數")
     try:
-        ratios = _ratios(options.get("ratios", [70, 20, 10]))
+        ratios = _ratios([100, 0, 0] if purpose == 'all_train' else options.get("ratios", [70, 20, 10]))
     except (TypeError, ValueError, OverflowError):
         raise ValueError("請填入有效的 Train / Validation / Test 比例") from None
     if any(not math.isfinite(x) for x in ratios.values()) or ratios["train"] <= 0:
         raise ValueError("比例必須有限，且 Train 必須大於 0")
     active = [s for s in SPLIT_ORDER if ratios[s] > 0]
-    if ratios["val"] <= 0 and not loose:
+    if ratios["val"] <= 0 and not loose and purpose != 'all_train':
         raise ValueError("Validation 比例必須大於 0；Test 不可替代 Validation")
     assets = list(assets)
     if not assets or any(not a.get('id') for a in assets) or len({a['id'] for a in assets}) != len(assets):
         raise ValueError('需要已核准圖片，且每張圖片必須有唯一 id')
     groups = source_groups(assets, options.get("group_overrides"), 'smart' if isolate else 'class_balanced')
+    if purpose == 'all_train':
+        output = {asset['id']: 'train' for asset in assets}
+        totals = Counter(shape['label'] for asset in assets for shape in asset.get('shapes', []) if shape.get('label'))
+        images = Counter()
+        pairs = Counter()
+        for asset in assets:
+            present = sorted({shape['label'] for shape in asset.get('shapes', []) if shape.get('label')})
+            images.update(present)
+            pairs.update(json.dumps(pair, ensure_ascii=False) for pair in combinations(present, 2))
+        for group in groups:
+            group['proposed'] = 'train'; group['locked'] = True
+        quality = split_class_coverage(assets, output, active_splits=['train'], policy='all_train')
+        warnings = ['全部圖片只用於最終訓練；沒有獨立 Validation／Test，不能產生可比較的泛化評估']
+        return {'algorithm_version': 6, 'purpose': purpose, 'strategy': 'all_train', 'seed': seed,
+                'options': options, 'source_isolation': False, 'balance_mode': mode,
+                'class_image_totals': dict(images),
+                'class_image_counts': {'train': dict(images), 'val': {}, 'test': {}},
+                'class_source_counts': dict(Counter(label for group in source_groups(assets) for label in group['classes'])),
+                'class_group_counts': dict(Counter(label for group in groups for label in group['classes'])),
+                'scarcity': [], 'pair_distribution': [],
+                'ratio_deviation': {'train': 0, 'val': 0, 'test': 0},
+                'assignments': output, 'groups': groups, 'warnings': warnings,
+                'ready': quality['ready'], 'blockers': quality['blockers'], 'coverage': quality,
+                'image_counts': {'train': len(assets), 'val': 0, 'test': 0},
+                'ratios': {'train': 100, 'val': 0, 'test': 0},
+                'actual_ratios': {'train': 100, 'val': 0, 'test': 0},
+                'class_counts': {'train': dict(totals), 'val': {}, 'test': {}},
+                'class_totals': dict(totals),
+                'changed': sum(asset.get('split') != 'train' for asset in assets)}
     if len(groups) < len(active):
         raise ValueError(f"只有 {len(groups)} 個獨立來源群組，無法建立 {len(active)} 個非空集合；請補充獨立來源、整理手動群組或減少集合，系統不會拆開群組")
     locks = options.get("locks") or {}
@@ -275,7 +320,7 @@ def smart_split(assets, options=None):
         raise ValueError("群組鎖定或資料量使集合無法非空；請解除部分鎖定或補充資料")
     _, assignments, counts, classes = best
     output = {aid: assignments[g["id"]] for g in groups for aid in g["asset_ids"]}
-    quality = split_class_coverage(assets, output, active_splits=active, loose=loose)
+    quality = split_class_coverage(assets, output, active_splits=active, policy=purpose)
     warnings = [item["message"] for item in quality["warnings"]]
     for blocker in quality["blockers"]:
         label = blocker["label"]
@@ -293,7 +338,10 @@ def smart_split(assets, options=None):
                 blocker["action"] = "此類別的所有來源群組均鎖定在 Train 或 Test；請解除鎖定或補充可用於 Validation 的獨立來源"
             elif len(carriers) == 1:
                 blocker["action"] = "此類別只有一個來源群組；無法在保持群組完整時同時提供 Train 與 Validation，請補充另一個獨立來源"
-    if not isolate: warnings.append("未啟用來源隔離：同次拍攝可能跨集合，評估結果不代表新來源表現")
+    if purpose == 'reviewed_independent':
+        warnings.append('人工確認樣本彼此獨立：按圖片平衡分配；完全相同的圖片仍保持同一集合')
+    elif not isolate:
+        warnings.append("未啟用來源隔離：同次拍攝可能跨集合，評估結果不代表新來源表現")
     untracked = sum(not a.get("batch_id") and not a.get("source") for a in assets)
     if untracked: warnings.append(f"{untracked} 張圖片缺少來源資訊，請補定義手動群組")
     for g in groups:
@@ -313,7 +361,7 @@ def smart_split(assets, options=None):
         for split in active:
             if split != 'train' and class_images[split][label] < 5: details.append(f'{split} 少於 5 張，評估可能不穩定')
         if details: scarcity.append({'label': label, 'messages': details})
-    return {"algorithm_version": 5, "strategy": strategy, "seed": seed, "options": options,
+    return {"algorithm_version": 6, "purpose": purpose, "strategy": strategy, "seed": seed, "options": options,
             'source_isolation': isolate, 'balance_mode': mode if multilabel else 'instances',
             'class_image_totals': dict(presence_totals),
             'class_image_counts': {s: dict(class_images[s]) for s in SPLIT_ORDER},

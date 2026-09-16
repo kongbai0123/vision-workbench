@@ -224,7 +224,8 @@ export class TrainingMonitor {
     const currentEpoch=run.epoch??this.reports.get(run.run_id)?.metrics?.at(-1)?.epoch??'—';
     const cards=el('div',undefined,'run-metrics training-summary-cards');
     const batch=run.batch&&run.batches_per_epoch?`${run.batch} / ${run.batches_per_epoch}`:'等待 Batch',updates=run.execution?.optimizer_steps;
-    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
+    const noEvaluation=run.data_quality?.purpose==='all_train';
+    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):noEvaluation?'依用途不執行':'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
     this.root.append(this.configRow(run));
   }
   configRow(run){
@@ -244,7 +245,8 @@ export class TrainingMonitor {
   }
   renderDataQuality(run,parent){
     const report=this.reports.get(run.run_id),quality=report?.run?.run_id===run.run_id?report.run.data_quality||run.data_quality:run.data_quality;
-    if(quality?.purpose==='diagnostic')parent.append(el('p','流程驗證 · 同拍攝批次跨集合，非獨立泛化評估','readiness-item warning'));
+    const qualityLabels={formal:['正式獨立來源評估','readiness-item'],reviewed_independent:['人工確認獨立 · 圖片層級平衡','readiness-item'],experimental:['寬鬆實驗 · 不代表獨立泛化能力','readiness-item warning'],diagnostic:['流程驗證 · 同拍攝批次跨集合，非獨立泛化評估','readiness-item warning'],all_train:['全資料最終訓練 · 無獨立 Validation／Test 評估','readiness-item warning']};
+    if(qualityLabels[quality?.purpose])parent.append(el('p',quality.label||qualityLabels[quality.purpose][0],qualityLabels[quality.purpose][1]));
   }
   details(title,key,parent=this.root){const d=el('details',undefined,'training-monitor-details');d.dataset.detailKey=key;d.open=this.detailOpen.get(key)||false;d.append(el('summary',title));d.addEventListener('toggle',()=>{if(d.isConnected){this.detailOpen.set(key,d.open);if(d.open)this.restoreView()}});parent.append(d);return d}
   table(parent,headers,rows,scrollKey){const wrap=el('div',undefined,'training-table-wrap'),table=el('table'),head=el('thead'),tr=el('tr');headers.forEach(h=>{const th=el('th',h);th.scope='col';tr.append(th)});head.append(tr);table.append(head);const body=el('tbody');rows.forEach(values=>{const row=el('tr');values.forEach(v=>row.append(el('td',String(v??'—'))));body.append(row)});table.append(body);wrap.append(table);if(scrollKey){wrap.dataset.scrollKey=scrollKey;wrap.addEventListener('scroll',()=>this.rememberScroll(wrap))}parent.append(wrap);return wrap}
@@ -257,7 +259,7 @@ export class TrainingMonitor {
   }
   renderEvaluation(runs,parent){
     const d=this.details('各類別與詳細評估','evaluation',parent);
-    for(const run of runs){const {score,split}=this.evaluation(run);d.append(el('h3',`${run.run_id} · ${split}`));if(!score){d.append(el('p',run.evaluation?.valid===false?(run.evaluation.reason||'歷史評估資料不符合目前規範。'):'尚無評估結果。',run.evaluation?.valid===false?'readiness-item error':'muted'));continue}
+    for(const run of runs){const {score,split}=this.evaluation(run);d.append(el('h3',`${run.run_id} · ${split}`));if(!score){const noEvaluation=run.data_quality?.purpose==='all_train';d.append(el('p',run.evaluation?.valid===false?(run.evaluation.reason||'歷史評估資料不符合目前規範。'):noEvaluation?'此 Run 使用全部資料最終訓練，依用途不執行獨立評估。':'尚無評估結果。',run.evaluation?.valid===false?'readiness-item error':'muted'));continue}
       this.table(d,['指標','數值'],this.scoreEntries(run,score).map(m=>[m.label,fmt(m.value)]));
       const iou=score.per_class_iou||{},dice=score.per_class_dice||{};
       const labels=[...new Set([...Object.keys(iou),...Object.keys(dice)])];

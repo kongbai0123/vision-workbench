@@ -8,41 +8,48 @@ export class SplitManager {
   }
   async open(projectId){
     if(this.busy)return;
-    this.pid=projectId;this.options={strategy:'multilabel',balance_mode:'hybrid',source_isolation:true,ratios:{train:70,val:20,test:10},seed:42,locks:{},group_overrides:{},preserve_test:false};this.plan=null;
+    this.pid=projectId;this.options={purpose:'reviewed_independent',strategy:'multilabel',balance_mode:'hybrid',source_isolation:false,ratios:{train:70,val:20,test:10},seed:42,locks:{},group_overrides:{},preserve_test:false};this.plan=null;
     this.dialog.replaceChildren();
     const heading=node('div',undefined,'section-heading'),title=node('h2','資料分割管理');title.id='smartSplitTitle';
     this.close=node('button','關閉','secondary');this.close.onclick=()=>this.dialog.close();heading.append(title,this.close);
-    this.dialog.append(heading,node('p','以整張圖片分配所有類別，優先照顧稀少類別，再平衡圖片數、物件數與常見類別配對。預覽不會變更專案。','muted'));
+    this.dialog.append(heading,node('p','先選擇資料用途，再以整張圖片分配所有類別。完全相同的圖片永遠不跨集合；預覽不會變更專案。','muted'));
     this.message=node('p','','split-manager-message');this.message.setAttribute('role','status');this.dialog.append(this.message);
     this.layout=node('div',undefined,'smart-split-layout');this.dialog.append(this.layout);
     this.settings=node('section',undefined,'smart-split-settings');this.content=node('section',undefined,'smart-split-content');this.layout.append(this.settings,this.content);
-    this.select('分割模式／平衡目標','splitStrategy',[['hybrid','多類別綜合平衡（建議）'],['presence','多類別出現張數'],['instances','多類別物件數量'],['cooccurrence','多類別共現配對'],['random_loose','隨機分割（寬鬆／實驗用）']],this.options.balance_mode,v=>{
-      const loose=v==='random_loose';this.options.strategy=loose?'random_loose':'multilabel';this.options.balance_mode=loose?'hybrid':v;
-      const input=this.dialog.querySelector('#splitSourceIsolation');input.disabled=loose;input.checked=!loose;this.options.source_isolation=!loose;this.options.locks={};
-    });
-    this.settings.append(node('p','寬鬆模式依圖片比例隨機分配，不要求來源隔離或各集合類別齊全。缺類別只警告，訓練可能無法學會該類別；不保證平衡或評估可靠。相同圖片、手動群組與鎖定仍保留。訓練仍需非空 Train 和 Validation。','muted'));
+    this.purpose=this.select('資料用途','splitPurpose',[['reviewed_independent','已審核獨立樣本（建議）'],['formal','正式泛化評估'],['experimental','寬鬆實驗'],['all_train','全資料最終訓練']],this.options.purpose,v=>{this.options.purpose=v;this.applyPurpose()});
+    this.balance=this.select('多類別平衡目標','splitStrategy',[['hybrid','綜合平衡（建議）'],['presence','類別出現張數'],['instances','物件數量'],['cooccurrence','類別共現配對']],this.options.balance_mode,v=>{this.options.balance_mode=v;this.options.locks={}});
+    this.purposeHelp=node('p','','muted');this.settings.append(this.purposeHelp);
     const isolation=node('label',undefined,'check-label'),isolate=node('input');isolate.type='checkbox';isolate.id='splitSourceIsolation';isolate.checked=true;
-    isolate.onchange=()=>{this.options.source_isolation=isolate.checked;this.options.locks={};this.invalidate()};isolation.append(isolate,document.createTextNode('來源隔離：同拍攝群組不跨集合'));this.settings.append(isolation,node('p','取消來源隔離可按圖片分配；請確認圖片彼此獨立。相同圖片仍不會跨集合。','muted'));
-    for(const [s,label] of [['train','Train %'],['val','Validation %'],['test','Test %']])this.number(label,`smartRatio-${s}`,this.options.ratios[s],0,100,v=>this.options.ratios[s]=v);
+    isolate.disabled=true;isolation.append(isolate,document.createTextNode('正式模式隔離來源群組；其他模式依用途自動設定'));this.settings.append(isolation);
+    this.ratioInputs={};for(const [s,label] of [['train','Train %'],['val','Validation %'],['test','Test %']])this.ratioInputs[s]=this.number(label,`smartRatio-${s}`,this.options.ratios[s],0,100,v=>this.options.ratios[s]=v);
     this.number('隨機種子','smartSplitSeed',42,0,2147483647,v=>this.options.seed=v);
-    const keep=node('label',undefined,'check-label'),check=node('input');check.type='checkbox';check.id='smartKeepTest';check.onchange=()=>{this.options.preserve_test=check.checked;this.invalidate()};keep.append(check,document.createTextNode('保留目前 Test（整組鎖定）'));this.settings.append(keep);
+    const keep=node('label',undefined,'check-label'),check=node('input');check.type='checkbox';check.id='smartKeepTest';this.keepTest=check;check.onchange=()=>{this.options.preserve_test=check.checked;this.invalidate()};keep.append(check,document.createTextNode('保留目前 Test（整組鎖定）'));this.settings.append(keep);this.applyPurpose();
     this.preview=node('button','預覽智慧分割','primary full');this.preview.id='previewSmartSplit';this.preview.onclick=()=>this.runPreview();this.settings.append(this.preview);
     this.summary=node('div',undefined,'smart-split-summary');this.metrics=node('div',undefined,'training-table-wrap');this.groups=node('div',undefined,'training-table-wrap split-group-table');this.content.append(this.summary,this.metrics,this.groups);
-    this.manual=node('details',undefined,'training-monitor-details');this.manual.append(node('summary','手動定義獨立圖片群組'));this.assets=node('div',undefined,'smart-split-assets');this.manual.append(node('p','同名會合併。啟用來源隔離時，留空沿用拍攝批次，同影片保持同組；取消隔離時按圖片分配。僅在確認來源獨立時手動拆分，相同圖片永遠保持同組。','muted'),this.assets);this.dialog.append(this.manual);
+    this.manual=node('details',undefined,'training-monitor-details');this.manual.append(node('summary','手動定義不可拆分群組'));this.assets=node('div',undefined,'smart-split-assets');this.manual.append(node('p','同名會合併。正式模式留空時沿用拍攝批次與影片來源；其他模式按圖片分配，但相同圖片與手動同名群組永遠保持同組。','muted'),this.assets);this.dialog.append(this.manual);
     this.footer=node('div',undefined,'smart-split-footer');this.apply=node('button','套用到目前專案','primary');this.apply.id='applySmartSplit';this.apply.disabled=true;
     this.apply.onclick=()=>this.runApply(false);this.create=node('button','套用並建立新資料版本','primary');this.create.id='applySmartSplitVersion';this.create.disabled=true;this.create.onclick=()=>this.runApply(true);
     this.footer.append(this.apply,this.create);this.dialog.append(this.footer);if(!this.dialog.open)this.dialog.showModal();
     await this.work(async()=>{
       const info=await this.api(`/api/projects/${this.pid}/split-info`,'POST',{});this.info=info;
-      this.message.textContent=`已核准 ${info.assets.length} 張 · ${info.groups.length} 個來源群組。請先預覽方案。`;
+      this.message.textContent=`已核准 ${info.assets.length} 張 · ${info.groups.length} 個來源群組 · 樣本獨立確認${info.independence_review?.current?'有效':'未完成或已失效'}。請先預覽方案。`;
       this.renderGroups(info.groups);const ids=new Set(info.assets.map(a=>a.id));const prior=Object.fromEntries(Object.entries(info.previous?.options?.group_overrides||{}).filter(([id])=>ids.has(id)));this.options.group_overrides={...prior};
       for(const asset of info.assets){const row=node('label',undefined,'smart-split-asset'),img=node('img');img.src=asset.url+'?thumbnail=1';img.alt='';img.loading='lazy';
         const text=node('span',`${asset.name} · ${asset.batch_id||'未指定來源'}`),input=node('input');input.type='text';input.maxLength=128;input.placeholder='沿用來源批次';input.value=prior[asset.id]||'';input.setAttribute('aria-label',`${asset.name} 的手動分割群組`);
         input.oninput=()=>{this.options.group_overrides[asset.id]=input.value;this.options.locks={};this.invalidate()};row.append(img,text,input);this.assets.append(row)}
     });
   }
-  select(label,id,options,value,change){const l=node('label',label);l.htmlFor=id;const input=node('select');input.id=id;for(const [v,t]of options)input.append(new Option(t,v));input.value=value;input.onchange=()=>{change(input.value);this.invalidate()};this.settings.append(l,input)}
-  number(label,id,value,min,max,change){const l=node('label',label);l.htmlFor=id;const input=node('input');Object.assign(input,{id,type:'number',min,max,step:1,value});input.oninput=()=>{change(input.value.trim()===''?null:Number(input.value));this.invalidate()};this.settings.append(l,input)}
+  select(label,id,options,value,change){const l=node('label',label);l.htmlFor=id;const input=node('select');input.id=id;for(const [v,t]of options)input.append(new Option(t,v));input.value=value;input.onchange=()=>{change(input.value);this.invalidate()};this.settings.append(l,input);return input}
+  number(label,id,value,min,max,change){const l=node('label',label);l.htmlFor=id;const input=node('input');Object.assign(input,{id,type:'number',min,max,step:1,value});input.oninput=()=>{change(input.value.trim()===''?null:Number(input.value));this.invalidate()};this.settings.append(l,input);return input}
+  applyPurpose(){
+    const purpose=this.options.purpose,formal=purpose==='formal',balanced=['formal','reviewed_independent'].includes(purpose),all=purpose==='all_train';
+    this.options.strategy=purpose==='experimental'?'random_loose':'multilabel';this.options.source_isolation=formal;this.options.locks={};
+    if(all){this.options.ratios={train:100,val:0,test:0};for(const [s,input]of Object.entries(this.ratioInputs||{})){input.value=this.options.ratios[s];input.disabled=true}}
+    else {if(this.options.ratios.val===0){this.options.ratios={train:70,val:20,test:10};for(const [s,input]of Object.entries(this.ratioInputs||{}))input.value=this.options.ratios[s]}for(const input of Object.values(this.ratioInputs||{}))input.disabled=false}
+    if(this.balance)this.balance.disabled=!balanced;if(this.keepTest){this.keepTest.disabled=all;this.keepTest.checked=all?false:this.keepTest.checked;this.options.preserve_test=all?false:this.keepTest.checked}
+    const isolation=this.dialog.querySelector('#splitSourceIsolation');if(isolation)isolation.checked=formal;
+    if(this.purposeHelp)this.purposeHelp.textContent=({formal:'以來源群組隔離 Train／Validation／Test，適合正式泛化評估；類別缺口採嚴格阻擋。',reviewed_independent:'需先在資料審核確認樣本獨立；可按圖片使用四種多類別平衡，Validation 缺類別改為警告。',experimental:'依圖片隨機分配；來源與類別缺口只警告，結果僅供流程或快速實驗。',all_train:'全部核准圖片用於最終訓練，不建立獨立 Validation／Test，也不產生可比較的泛化分數。'})[purpose];
+  }
   invalidate(){this.plan=null;this.apply.disabled=true;this.create.disabled=true;this.message.textContent='設定已變更，請重新預覽。'}
   async work(fn){if(this.busy)return;this.busy=true;const controls=[...this.dialog.querySelectorAll('input,select,button')];const disabled=controls.map(x=>x.disabled);controls.forEach(x=>x.disabled=true);
     try{await fn()}catch(e){this.message.textContent=e.message;this.message.setAttribute('role','alert')}

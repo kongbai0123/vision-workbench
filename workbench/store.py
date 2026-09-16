@@ -106,6 +106,15 @@ def ensure_catalog_schema(db):
     db.execute(f"PRAGMA user_version={CATALOG_SCHEMA_VERSION}")
 
 
+def ensure_review_policy_schema(db):
+    """Add review attestations without rebuilding immutable artifact indexes."""
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='independence_reviews'").fetchone():
+        return False
+    db.execute("""CREATE TABLE IF NOT EXISTS independence_reviews(
+        id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)""")
+    return True
+
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -258,6 +267,8 @@ class ProjectStore:
         if db.execute("PRAGMA user_version").fetchone()[0] < CATALOG_SCHEMA_VERSION:
             ensure_catalog_schema(db)
             db.commit()
+        if ensure_review_policy_schema(db):
+            db.commit()
         try:
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield db
@@ -290,6 +301,7 @@ class ProjectStore:
                 CREATE TABLE exports(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,data TEXT NOT NULL);
             """)
             ensure_catalog_schema(db)
+            ensure_review_policy_schema(db)
             now = timestamp()
             db.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", (pid, name, 1, now, now, "[]"))
             db.commit()
@@ -402,6 +414,30 @@ class ProjectStore:
     def _touch(db):
         db.execute("UPDATE project SET revision=revision+1,updated_at=?", (timestamp(),))
 
+    @staticmethod
+    def _independence_fingerprint(db):
+        """Fingerprint review-relevant approved content, excluding split assignment."""
+        rows = []
+        for row in db.execute("""SELECT id,sha256,batch_id,review_state,source,shapes
+                                  FROM assets WHERE review_state='approved' ORDER BY id"""):
+            source = json.loads(row['source'])
+            rows.append({'id': row['id'], 'sha256': row['sha256'], 'batch_id': row['batch_id'],
+                         'review_state': row['review_state'], 'source': source,
+                         'annotation_sha256': hashlib.sha256(row['shapes'].encode('utf-8')).hexdigest()})
+        return hashlib.sha256(dump(rows).encode('utf-8')).hexdigest(), len(rows)
+
+    def _independence_review(self, db):
+        row = db.execute("SELECT data FROM independence_reviews WHERE id=1").fetchone()
+        fingerprint, count = self._independence_fingerprint(db)
+        if not row:
+            return {'current': False, 'scope': 'approved_assets', 'asset_count': count,
+                    'reason': '尚未確認目前已核准圖片彼此獨立'}
+        record = json.loads(row['data'])
+        record['current'] = record.get('asset_fingerprint') == fingerprint and record.get('asset_count') == count
+        if not record['current']:
+            record['reason'] = '圖片、標註、來源資訊或審核狀態已變動，請重新確認'
+        return record
+
     def _asset(self, row, pid, *, detail=False, internal=False):
         asset = dict(row)
         shapes = json.loads(asset.pop("shapes"))
@@ -422,6 +458,7 @@ class ProjectStore:
         with self.connection(project_id) as db:
             project = dict(db.execute("SELECT * FROM project").fetchone())
             project["classes"] = json.loads(project["classes"])
+            project['independence_review'] = self._independence_review(db)
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='split_plans'").fetchone():
                 plan = db.execute("SELECT data FROM split_plans WHERE id=1").fetchone()
                 if plan:
@@ -445,6 +482,26 @@ class ProjectStore:
 
     def snapshot(self, project_id):
         return self.get_project(project_id, internal=True)
+
+    def confirm_independence(self, project_id, confirmed, revision):
+        if type(confirmed) is not bool or type(revision) is not int:
+            raise ValueError('獨立樣本確認資料無效')
+        with self.connection(project_id, write=True) as db:
+            project = db.execute('SELECT revision FROM project').fetchone()
+            if project['revision'] != revision:
+                raise ConflictError('資料已變動，請重新檢查後再確認')
+            if confirmed:
+                fingerprint, count = self._independence_fingerprint(db)
+                if not count:
+                    raise ValueError('沒有已核准圖片可供確認')
+                record = {'schema_version': 1, 'scope': 'approved_assets', 'confirmed_at': timestamp(),
+                          'project_revision': revision + 1, 'asset_count': count,
+                          'asset_fingerprint': fingerprint}
+                db.execute('INSERT OR REPLACE INTO independence_reviews VALUES(1,?)', (dump(record),))
+            else:
+                db.execute('DELETE FROM independence_reviews WHERE id=1')
+            self._touch(db)
+        return self.get_project(project_id)
 
     def update_project(self, project_id, *, name=None, classes=None):
         with self.connection(project_id, write=True) as db:
@@ -832,6 +889,7 @@ class ProjectStore:
         ids = {a["id"] for a in assets}
         overrides = {k:v for k,v in project.get("split_plan",{}).get("options",{}).get("group_overrides",{}).items() if k in ids}
         return {"project_revision":project["revision"], "groups":source_groups(assets,overrides),
+                'independence_review': project['independence_review'],
                 "assets":[{k:a[k] for k in ("id","name","batch_id","url")} for a in assets],
                 "previous":project.get("split_plan")}
 
@@ -839,7 +897,10 @@ class ProjectStore:
         from .smart_splitting import smart_split
         project = self.snapshot(project_id)
         assets = [a for a in project["assets"] if a["review_state"] == "approved"]
+        options = dict(options or {})
+        options['independence_confirmed'] = bool(project['independence_review'].get('current'))
         plan = smart_split(assets, options)
+        plan['independence_review'] = project['independence_review']
         plan["project_revision"] = project["revision"]
         plan["fingerprint"] = hashlib.sha256(dump(plan).encode()).hexdigest()
         plan["assets"] = [{k: a[k] for k in ("id", "name", "batch_id", "url")} for a in assets]

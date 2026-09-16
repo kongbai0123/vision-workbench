@@ -60,6 +60,17 @@ class LooseSplitTests(unittest.TestCase):
         self.assertFalse(report['ready'])
         self.assertIn('no_validation_split', [item['code'] for item in report['blockers']])
 
+    def test_all_train_policy_is_explicit_and_does_not_claim_evaluation(self):
+        assets = self.assets(4)
+        for asset in assets:
+            asset['shapes'] = [{'label': 'same'}]
+        plan = smart_split(assets, {'purpose': 'all_train'})
+        rows = [{**asset, 'split': 'train'} for asset in assets]
+        report = dataset_readiness({'assets': rows, 'split_plan': plan})
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['purpose'], 'all_train')
+        self.assertEqual(plan['image_counts'], {'train': 4, 'val': 0, 'test': 0})
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -121,7 +121,8 @@ export class AnnotationEditor {
       'ai-positive':'點選物件內部，加入前景提示點 · 提示點不會直接成為標註',
       'ai-negative':'點選需要排除的背景，加入背景提示點',
     };
-    this.$('toolHint').textContent = hints[tool] || '';
+    const hint = document.getElementById('toolHint');
+    if (hint) hint.textContent = hints[tool] || '';
     this.$('overlay').style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
     if(tool.startsWith('ai-'))document.querySelector('.ai-section').open=true;
     this.updateToolPanels();

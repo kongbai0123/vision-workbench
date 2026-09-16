@@ -1236,6 +1236,13 @@ function updateReviewSelection() {
 function renderReview() {
   const counts=stats(state.project);const summary=$('reviewStats');summary.replaceChildren();
   for(const [key,name]of Object.entries({total:'全部影像',pending:'待審核',approved:'已核准',rejected:'已排除訓練'})){const chip=element('div',undefined,'stat-chip');chip.append(element('span',name),element('b',number(counts[key])));summary.append(chip);}
+  const independence=state.project?.independence_review||{},independencePanel=$('independenceReview');
+  independencePanel.classList.toggle('current',!!independence.current);
+  $('confirmIndependentAssets').checked=!!independence.current;
+  $('independenceReviewTitle').textContent=independence.current?`已確認 ${number(independence.asset_count)} 張核准樣本彼此獨立`:'樣本獨立性尚未確認';
+  $('independenceReviewText').textContent=independence.current
+    ?`確認時間 ${date(independence.confirmed_at)}；圖片、標註、來源資訊或審核狀態改變時會自動失效。`
+    :(independence.reason||'確認目前已核准圖片不是連拍近似影格或同一原圖的重複版本，才可使用圖片層級平衡分割。');
   const pages=Math.max(1,Math.ceil(filteredReview().length/48));state.reviewPage=Math.max(0,Math.min(state.reviewPage,pages-1));
   $('reviewPageLabel').textContent=`第 ${state.reviewPage+1} / ${pages} 頁 · ${number(filteredReview().length)} 張`;
   $('reviewPrevious').disabled=state.reviewPage<=0;$('reviewNext').disabled=state.reviewPage>=pages-1;
@@ -1493,6 +1500,18 @@ async function renderSplitPage(){
   $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
   renderAugmentationPreparation();
 }
+async function setIndependentAssets(confirmed) {
+  if(confirmed){
+    const body=element('div');body.append(
+      element('p','此確認只套用目前已核准圖片。請確認它們不是連拍近似影格、同一原圖的裁切／增強版本，且可視為彼此獨立樣本。'),
+      element('p','確認後可依圖片進行多類別平衡；完全相同的圖片仍強制留在同一集合。任何圖片、標註、來源資訊或審核狀態變動都會使確認失效。','muted'));
+    const accepted=await formDialog({title:'確認樣本獨立性',body,confirm:'確認目前樣本獨立',onSubmit:()=>true});
+    if(!accepted){$('confirmIndependentAssets').checked=false;return;}
+  }
+  state.project=await api(projectPath('/independence-review'),'POST',{confirmed,revision:state.project.revision});
+  renderReview();resetValidation('樣本獨立性確認已更新，請重新驗證資料分割。');
+  toast(confirmed?'已保存目前核准樣本的獨立性確認。':'已取消樣本獨立性確認。');
+}
 
 const augmentationPresets={
   off:{brightness:0,contrast:0,fliplr:0,flipud:0,degrees:0,translate:0,scale:0,mosaic:0,mixup:0,copy_paste:0,close_mosaic:0},
@@ -1669,11 +1688,12 @@ function renderTraining(){
   const {readiness,datasets=[],runs=[],capabilities}=state.training,active=activeTrainingRun();
   const datasetSelect=$('trainingDataset'),remember=datasetSelect.value;datasetSelect.replaceChildren();
   if(!datasets.length)datasetSelect.append(new Option('尚無資料版本',''));
-  for(const item of datasets)datasetSelect.append(new Option(`${item.id}${item.data_quality?.purpose==='diagnostic'?' · 流程驗證':''} · ${number(item.asset_count)} 張 · ${date(item.created_at)}`,item.id));
+  for(const item of datasets)datasetSelect.append(new Option(`${item.id}${item.data_quality?.label?' · '+item.data_quality.label:item.data_quality?.purpose==='diagnostic'?' · 流程驗證':''} · ${number(item.asset_count)} 張 · ${date(item.created_at)}`,item.id));
   datasetSelect.value=datasets.some(item=>item.id===remember)?remember:datasets[0]?.id||'';
   const dataset=selectedDataset();$('trainingDatasetCurrent').textContent=dataset?.id||'尚未建立';
   renderReadiness(dataset?.readiness||readiness);
-  if(dataset?.data_quality?.purpose==='diagnostic')$('trainingReadiness').append(element('div','流程驗證：同拍攝批次跨集合，分數不代表新場景泛化能力。','readiness-item warning'));
+  const purposeMessages={formal:'正式獨立來源評估：Train／Validation／Test 依來源隔離。',reviewed_independent:'人工確認獨立：依圖片進行多類別平衡；請依類別覆蓋解讀指標。',experimental:'寬鬆實驗：來源可能跨集合，分數不代表新場景泛化能力。',diagnostic:'流程驗證：同拍攝批次跨集合，分數不代表新場景泛化能力。',all_train:'全資料最終訓練：沒有獨立 Validation／Test，不提供可比較的泛化評估。'};
+  if(purposeMessages[dataset?.data_quality?.purpose])$('trainingReadiness').append(element('div',purposeMessages[dataset.data_quality.purpose],['experimental','diagnostic','all_train'].includes(dataset.data_quality.purpose)?'readiness-item warning':'readiness-item'));
   if(dataset&&!readiness.ready)$('trainingReadiness').append(element('div','目前專案的分割尚需處理；建立新版本前請前往資料分割。此處檢查結果屬於所選固定版本。','readiness-item warning'));
   $('trainingDatasetHint').textContent=dataset?`${number(dataset.asset_count)} 張 · Train ${number(dataset.splits.train)} / Val ${number(dataset.splits.val)} / Test ${number(dataset.splits.test)}`:'只會固定已核准且完成分割的資料。';
   if(dataset&&dataset.project_revision!==readiness.project_revision)$('trainingDatasetHint').textContent+=' · 目前專案已變動，建立新版本才會套用。';
@@ -1818,6 +1838,7 @@ bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewRe
 const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;state.reviewScroll=0;renderReview()};
 $('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
 $('reviewSelectAll').onchange=()=>{for(const asset of filteredReview())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
+$('confirmIndependentAssets').onchange=()=>safe(()=>setIndependentAssets($('confirmIndependentAssets').checked));
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
 bind('prepareTraining',()=>switchStage('split'));
 bind('refreshTraining',()=>loadTraining());

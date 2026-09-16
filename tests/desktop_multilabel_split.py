@@ -34,12 +34,17 @@ def main():
         try:
             wait("document.querySelector('.project-card-open')")
             click('.project-card-open');wait("!document.querySelector('#home').disabled")
+            click('[data-stage="review"]');wait("document.querySelector('#confirmIndependentAssets')")
+            click('#confirmIndependentAssets');wait("document.querySelector('#formDialog').open")
+            click('#confirmDialog');wait("!document.querySelector('#formDialog').open && document.querySelector('#confirmIndependentAssets').checked")
             click('[data-stage="split"]');wait("!document.querySelector('#home').disabled")
             click('#openSplitFlowManager');wait("document.querySelector('#smartSplitDialog').open && !document.querySelector('#previewSmartSplit').disabled")
-            assert js("document.querySelector('#splitStrategy').value==='hybrid' && document.querySelector('#splitSourceIsolation').checked")
+            assert js("document.querySelector('#splitPurpose').value==='reviewed_independent' && document.querySelector('#splitStrategy').value==='hybrid' && !document.querySelector('#splitSourceIsolation').checked")
+            js("document.querySelector('#splitPurpose').value='formal';document.querySelector('#splitPurpose').dispatchEvent(new Event('change'))")
             click('#previewSmartSplit');wait("document.querySelector('.split-manager-message').textContent.includes('只有 1')")
             assert js("document.querySelector('#applySmartSplit').disabled")
-            click('#splitSourceIsolation');click('#previewSmartSplit');wait("!document.querySelector('#applySmartSplit').disabled")
+            js("document.querySelector('#splitPurpose').value='reviewed_independent';document.querySelector('#splitPurpose').dispatchEvent(new Event('change'))")
+            click('#previewSmartSplit');wait("!document.querySelector('#applySmartSplit').disabled")
             assert js("document.querySelector('#smartSplitDialog').innerText.includes('總圖片／物件')")
             assert js("document.querySelector('#smartSplitDialog').innerText.includes('來源群組不足')")
             assert all(not a['split'] for a in service.store.get_project(pid)['assets'])
@@ -51,11 +56,11 @@ def main():
                 assert not js('document.documentElement.scrollWidth>innerWidth+2')
             click('#applySmartSplit');wait("!document.querySelector('#smartSplitDialog').open")
             project=service.store.get_project(pid)
-            assert project['split_plan']['options']['strategy']=='multilabel'
-            assert project['split_plan']['options']['source_isolation'] is False
+            assert project['split_plan']['purpose']=='reviewed_independent'
+            assert project['split_plan']['source_isolation'] is False
             assert all(a['split'] for a in project['assets'])
             click('#openSplitFlowManager');wait("document.querySelector('#smartSplitDialog').open && !document.querySelector('#previewSmartSplit').disabled")
-            js("document.querySelector('#splitStrategy').value='random_loose';document.querySelector('#splitStrategy').dispatchEvent(new Event('change'))")
+            js("document.querySelector('#splitPurpose').value='experimental';document.querySelector('#splitPurpose').dispatchEvent(new Event('change'))")
             assert js("document.querySelector('#splitSourceIsolation').disabled && !document.querySelector('#splitSourceIsolation').checked")
             click('#previewSmartSplit');wait("!document.querySelector('#applySmartSplit').disabled")
             assert js("document.querySelector('.split-manager-message').textContent.includes('寬鬆分割')")

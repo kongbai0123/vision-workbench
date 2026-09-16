@@ -124,6 +124,23 @@ class TrainingSplitGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Validation'):
             self.workspace.start_run('pid', 'D001', {'engine': 'pixel_prototype_v1', 'epochs': 2})
 
+    def test_all_train_launch_is_explicit_and_rejects_validation_dependent_baseline(self):
+        rows = [{'asset_id': str(i), 'split': 'train', 'shapes': [{'label': 'a'}]} for i in range(3)]
+        target = self.write_manifest('D009', rows)
+        path = target / 'manifest.json'; manifest = json.loads(path.read_text(encoding='utf-8'))
+        assignments = {row['asset_id']: 'train' for row in rows}
+        manifest['split_plan'] = {'purpose': 'all_train', 'strategy': 'all_train', 'assignments': assignments}
+        manifest['data_quality'] = {'purpose': 'all_train', 'evaluation_available': False}
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        self.assertTrue(self.workspace.dataset('pid', 'D009')['readiness']['ready'])
+        with self.assertRaisesRegex(ValueError, '像素原型'):
+            self.workspace.start_run('pid', 'D009', {'engine': 'pixel_prototype_v1', 'epochs': 2})
+        with patch('workbench.training.subprocess.Popen') as popen, patch('workbench.training.threading.Thread') as reaper:
+            popen.return_value.pid = 12345
+            run = self.workspace.start_run('pid', 'D009', {'engine': 'fasterrcnn_resnet50_fpn', 'epochs': 2})
+        self.assertEqual(run['data_purpose'], 'all_train')
+        self.assertEqual(run['data_quality']['evaluation_available'], False)
+
     def test_test_cannot_replace_validation_at_launch(self):
         rows = [{'asset_id': 'train', 'split': 'train', 'shapes': [{'label': 'part'}]},
                 {'asset_id': 'test', 'split': 'test', 'shapes': [{'label': 'part'}]}]

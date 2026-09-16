@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .learning_rates import measured_rates
-from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol
+from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol, training_only_protocol
 
 from collections.abc import Mapping
 import csv
@@ -376,7 +376,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         compatibility = (read_json(run_dir / "dataset" / "yolo-compatibility.json")
                          if definition["task"] == "instance_segmentation" else None)
         validation_split = "val"
-        if not any(asset["split"] == "val" for asset in manifest["assets"]):
+        train_only = run.get('data_purpose') == 'all_train'
+        if not any(asset["split"] == "val" for asset in manifest["assets"]) and not train_only:
             raise ValueError("Validation 沒有圖片；Test 不可用於選擇 YOLO checkpoint")
         metrics_path = run_dir / "metrics.jsonl"; metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"建立 {definition['name']} 資料轉接", progress=3,
@@ -410,27 +411,30 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                              **({"momentum": float(run["config"].get("momentum", .9))}
                                 if run["config"].get("optimizer") == "SGD" else {}),
                              project=str(run_dir / "ultralytics"), name="fit", exist_ok=True, pretrained=mode == "pretrained",
-                             plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)),
+                             plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)), val=not train_only,
                              **augmentation_args)
         if _stopping(run_dir):
             return _status(run_dir, run, status="stopped", message="已安全停止", progress=None, completed_at=time.time())
         trainer = getattr(model, "trainer", None)
-        best = Path(str(getattr(trainer, "best", "")))
+        best = Path(str(getattr(trainer, "last" if train_only else "best", "")))
         if not best.is_file():
             candidate = run_dir / "ultralytics" / "fit" / "weights" / "best.pt"
             best = candidate if candidate.is_file() else Path(str(getattr(trainer, "last", "")))
         if not best.is_file():
             raise RuntimeError("訓練完成但找不到 checkpoint")
         checkpoint = model_dir / "checkpoint.pt"; shutil.copy2(best, checkpoint)
-        evaluator = model_class(str(checkpoint))
-        validation_raw = evaluator.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
-        val_count = sum(asset["split"] == validation_split for asset in manifest["assets"])
-        validation = _result_metrics(validation_raw, definition["kind"], validation_split, val_count)
         test_count = sum(asset["split"] == "test" for asset in manifest["assets"])
-        test = (_result_metrics(evaluator.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
-                                definition["kind"], "test", test_count) if test_count else None)
-        protocol = evaluation_protocol(checkpoint="best_validation", has_test=bool(test_count),
-                                       manifest=manifest)
+        if train_only:
+            validation = test = None
+            protocol = training_only_protocol()
+        else:
+            evaluator = model_class(str(checkpoint))
+            validation_raw = evaluator.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
+            val_count = sum(asset["split"] == validation_split for asset in manifest["assets"])
+            validation = _result_metrics(validation_raw, definition["kind"], validation_split, val_count)
+            test = (_result_metrics(evaluator.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
+                                    definition["kind"], "test", test_count) if test_count else None)
+            protocol = evaluation_protocol(checkpoint="best_validation", has_test=bool(test_count), manifest=manifest)
         record = {"schema_version": 1, "engine": run["engine"], "engine_name": definition["name"],
                   "task": definition["task"], "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                   "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
@@ -450,7 +454,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             evaluation["data_quality"] = run["data_quality"]
         atomic_json(run_dir / "evaluation.json", evaluation)
         _artifact_manifest(run_dir, model_dir, run["run_id"], checkpoint)
-        return _status(run_dir, run, status="completed", message=f"{definition['name']} 訓練與評估完成", progress=100,
+        return _status(run_dir, run, status="completed", message=f"{definition['name']} {'最終訓練完成（無獨立評估）' if train_only else '訓練與評估完成'}", progress=100,
                        completed_at=time.time(), evaluation=evaluation)
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())

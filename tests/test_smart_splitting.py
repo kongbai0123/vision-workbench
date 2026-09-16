@@ -16,6 +16,27 @@ def samples():
 
 
 class SmartSplitTests(unittest.TestCase):
+    def test_reviewed_independent_same_batch_supports_every_balance_mode(self):
+        assets = [{'id': str(i), 'sha256': str(i), 'batch_id': 'one-reviewed-batch',
+                   'source': {}, 'shapes': [{'label': 'common'}, {'label': 'rare'}] if i % 5 == 0 else [{'label': 'common'}]}
+                  for i in range(57)]
+        for mode in ('hybrid', 'presence', 'instances', 'cooccurrence'):
+            with self.subTest(mode=mode):
+                plan = smart_split(assets, {'purpose': 'reviewed_independent',
+                                            'independence_confirmed': True,
+                                            'strategy': 'multilabel', 'balance_mode': mode})
+                self.assertTrue(plan['ready'])
+                self.assertEqual(plan['image_counts'], {'train': 40, 'val': 11, 'test': 6})
+                self.assertFalse(plan['source_isolation'])
+                self.assertEqual(plan['purpose'], 'reviewed_independent')
+
+    def test_reviewed_independent_requires_attestation_and_keeps_duplicates_together(self):
+        assets = [{'id': str(i), 'sha256': 'duplicate' if i < 2 else str(i),
+                   'batch_id': 'same', 'source': {}, 'shapes': [{'label': 'part'}]} for i in range(12)]
+        with self.assertRaisesRegex(ValueError, '樣本彼此獨立'):
+            smart_split(assets, {'purpose': 'reviewed_independent'})
+        plan = smart_split(assets, {'purpose': 'reviewed_independent', 'independence_confirmed': True})
+        self.assertEqual(plan['assignments']['0'], plan['assignments']['1'])
     def test_groups_never_split_and_training_keeps_rare_class(self):
         assets=samples();plan=smart_split(assets)
         self.assertFalse(plan['ready'])
@@ -153,3 +174,14 @@ class SmartSplitStoreTests(unittest.TestCase):
         self.store.assign(self.pid,[asset['id']],split='test')
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
 
+    def test_independence_confirmation_persists_and_content_change_invalidates_it(self):
+        project = self.store.get_project(self.pid)
+        confirmed = self.store.confirm_independence(self.pid, True, project['revision'])
+        self.assertTrue(confirmed['independence_review']['current'])
+        plan = self.store.preview_split(self.pid, {'purpose': 'reviewed_independent', 'balance_mode': 'presence'})
+        self.assertTrue(plan['ready'])
+        asset = confirmed['assets'][0]
+        changed = self.store.review(self.pid, [asset['id']], 'pending', {asset['id']: asset['revision']})
+        self.assertFalse(changed['independence_review']['current'])
+        with self.assertRaisesRegex(ValueError, '確認'):
+            self.store.preview_split(self.pid, {'purpose': 'reviewed_independent'})

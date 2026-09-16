@@ -27,7 +27,7 @@ from .classification_engine import CLASSIFICATION_ENGINES
 from .ultralytics_engine import ULTRALYTICS_ENGINES
 from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
-from .split_quality import split_class_coverage, loose_split_applies
+from .split_quality import split_class_coverage, loose_split_applies, split_purpose
 from .project_storage import ProjectStorage
 from .augmentation import normalize_augmentation
 
@@ -65,18 +65,28 @@ def _link_or_copy(source: Path, destination: Path) -> None:
 def dataset_readiness(manifest):
     assets = manifest.get("assets", [])
     active = {a.get("split") for a in assets}
-    report = split_class_coverage(assets, active_splits=active,
-                                  loose=loose_split_applies(manifest.get('split_plan'), assets))
+    purpose = split_purpose(manifest.get('split_plan'), assets)
+    report = split_class_coverage(assets, active_splits=active, policy=purpose)
     if not assets:
         report["blockers"].append({"code": "empty_dataset", "message": "固定資料版本沒有圖片", "action": "建立有效資料版本"})
     if not report["image_counts"]["train"]:
         report["blockers"].append({"code": "no_train_split", "message": "Train 沒有圖片", "action": "設定資料分割"})
-    if not report["image_counts"]["val"]:
+    if not report["image_counts"]["val"] and purpose != 'all_train':
         report["blockers"].append({"code": "no_validation_split", "message": "Validation 沒有圖片，不能安全選模或調整門檻",
                                    "action": "設定獨立的 Validation；Test 僅供最後評估，不會替代 Validation"})
     if any(a.get("split") not in {"train", "val", "test"} for a in assets):
         report["blockers"].append({"code": "missing_split", "message": "固定資料版本含有未分割圖片", "action": "重新建立資料版本"})
+    duplicate_splits = {}
+    for asset in assets:
+        if asset.get('sha256'):
+            duplicate_splits.setdefault(asset['sha256'], set()).add(asset.get('split'))
+    leaked_duplicates = [sha for sha, splits in duplicate_splits.items() if len(splits) > 1]
+    if leaked_duplicates:
+        report['blockers'].append({'code': 'duplicate_split_leak',
+                                   'message': f'{len(leaked_duplicates)} 組完全相同圖片跨越不同集合',
+                                   'action': '將相同 SHA-256 圖片移到同一集合後重新建立資料版本'})
     report["ready"] = not report["blockers"]
+    report['purpose'] = purpose
     report["stats"] = {"approved": len(assets), "splits": report["image_counts"], "classes": report["class_totals"]}
     return report
 
@@ -236,11 +246,21 @@ class TrainingWorkspace:
             blockers.append({"code": "missing_split", "message": f"{len(missing_split)} 張已核准圖片尚未指定資料分割",
                              "action": "設定資料分割"})
         splits = {name: sum(asset.get("split") == name for asset in approved) for name in ("train", "val", "test")}
+        purpose = split_purpose(project.get('split_plan'), approved)
         if approved and not splits["train"]:
             blockers.append({"code": "no_train_split", "message": "Train 沒有已核准圖片", "action": "設定資料分割"})
-        if approved and not splits["val"]:
+        if approved and not splits["val"] and purpose != 'all_train':
             blockers.append({"code": "no_validation_split", "message": "Validation 沒有已核准圖片，不能安全選模或調整門檻",
                              "action": "設定獨立的 Validation；Test 僅供最後評估，不會替代 Validation"})
+        duplicate_splits = {}
+        for asset in approved:
+            if asset.get('sha256'):
+                duplicate_splits.setdefault(asset['sha256'], set()).add(asset.get('split'))
+        leaked_duplicates = [sha for sha, groups in duplicate_splits.items() if len(groups) > 1]
+        if leaked_duplicates:
+            blockers.append({'code': 'duplicate_split_leak',
+                             'message': f'{len(leaked_duplicates)} 組完全相同圖片跨越不同集合',
+                             'action': '使用資料分割管理重新分配；相同圖片必須留在同一集合'})
         class_counts = {label: 0 for label in project.get("classes", [])}
         unsupported = []
         for asset in approved:
@@ -264,14 +284,15 @@ class TrainingWorkspace:
         for asset in approved:
             batches.setdefault(asset.get("batch_id") or "", set()).add(asset.get("split"))
         leaked = [batch for batch, groups in batches.items() if batch and len(groups) > 1]
-        if leaked:
+        if leaked and purpose == 'formal':
             warnings.append({"code": "source_group_leak", "message": f"{len(leaked)} 個拍攝批次跨越不同資料分割",
                              "action": "若批次內影像高度相似，建議調整分割後再建立資料版本"})
         coverage = split_class_coverage(approved, active_splits=[s for s, count in splits.items() if count],
-                                        loose=loose_split_applies(project.get('split_plan'), approved))
+                                        policy=purpose)
         blockers.extend(coverage["blockers"])
         warnings.extend(coverage["warnings"])
         return {"ready": not blockers, "project_id": project_id, "project_revision": project["revision"],
+                'purpose': purpose,
                 "stats": {"approved": len(approved), "excluded": project["stats"]["total"] - len(approved),
                           "splits": splits, "classes": class_counts, "class_counts": coverage["class_counts"]},
                 "blockers": blockers, "warnings": warnings}
@@ -318,9 +339,27 @@ class TrainingWorkspace:
                             "readiness": report, "assets": records,
                             "augmentation": normalize_augmentation(augmentation),
                             "split_plan": project.get("split_plan")}
-                if loose_split_applies(project.get('split_plan'), records):
-                    manifest['data_quality'] = {'purpose': 'experimental', 'independent_sources': False,
-                                                'warnings': [item['message'] for item in report['warnings']]}
+                purpose = split_purpose(project.get('split_plan'), records)
+                labels = {
+                    'formal': '正式獨立來源評估',
+                    'reviewed_independent': '人工確認獨立／圖片層級平衡',
+                    'experimental': '同來源寬鬆實驗',
+                    'all_train': '全資料最終訓練（無獨立評估）',
+                }
+                if purpose == 'formal' and not (project.get('split_plan') or {}).get('source_isolation'):
+                    labels['formal'] = '嚴格類別覆蓋／來源獨立性未宣告'
+                manifest['data_quality'] = {
+                    'purpose': purpose, 'label': labels[purpose],
+                    'independent_sources': (True if purpose == 'formal' and (project.get('split_plan') or {}).get('source_isolation')
+                                            else False if purpose != 'formal' else None),
+                    'reviewed_independent': purpose == 'reviewed_independent',
+                    'evaluation_available': purpose != 'all_train',
+                    'independence_review': project.get('independence_review') if purpose == 'reviewed_independent' else None,
+                    'split_policy': {'algorithm_version': (project.get('split_plan') or {}).get('algorithm_version'),
+                                     'seed': (project.get('split_plan') or {}).get('seed'),
+                                     'balance_mode': (project.get('split_plan') or {}).get('balance_mode'),
+                                     'source_isolation': (project.get('split_plan') or {}).get('source_isolation')},
+                    'warnings': [item['message'] for item in report['warnings']]}
                 manifest["manifest_sha256"] = _canonical_hash(manifest)
                 atomic_json(temporary / "manifest.json", manifest)
                 temporary.replace(target)
@@ -419,6 +458,8 @@ class TrainingWorkspace:
             raise ValueError("固定資料版本的分割不適合訓練：" + "；".join(item["message"] for item in coverage["blockers"]))
         if effective_config.get("scheduler") == "plateau" and not any(a["split"] == "val" for a in immutable.get("assets", [])):
             raise ValueError("Validation 停滯下降需要獨立 Validation 集合，不能使用 Test 調整學習率")
+        if coverage.get('purpose') == 'all_train' and engine == ENGINE_KEY:
+            raise ValueError('全資料最終訓練不支援像素原型基準；請先用有 Validation 的資料選模，再以深度學習模型執行最終訓練')
         if engine in CLASSIFICATION_ENGINES:
             if len(immutable["classes"]) < 2:
                 raise ValueError("影像分類至少需要兩個類別")
@@ -455,6 +496,7 @@ class TrainingWorkspace:
                    "created_at": time.time(), "updated_at": time.time()}
             if immutable.get("data_quality"):
                 run["data_quality"] = immutable["data_quality"]
+                run['data_purpose'] = immutable['data_quality'].get('purpose')
             if coverage["warnings"]:
                 run["split_warnings"] = coverage["warnings"]
             if compatibility is not None:

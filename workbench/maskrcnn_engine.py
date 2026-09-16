@@ -13,7 +13,7 @@ import numpy as np
 
 from composer_core.geometry import encode_rle
 from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, _status, _stopping
-from .evaluation_metrics import PixelMetrics, evaluation_protocol
+from .evaluation_metrics import PixelMetrics, evaluation_protocol, training_only_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
 from .augmentation import augment_dense_target
@@ -133,7 +133,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                                      run["config"].get("augmentation"))
         validation = NativeMaskDataset(manifest, dataset_manifest.parent, "val", torch)
         testing = NativeMaskDataset(manifest, dataset_manifest.parent, "test", torch)
-        if not training.assets or not validation.assets:
+        train_only = run.get('data_purpose') == 'all_train'
+        if not training.assets or (not validation.assets and not train_only):
             raise RuntimeError("Mask R-CNN 需要非空的 Train 與 Validation；Test 不會替代 Validation")
         loader = DataLoader(training, batch_size=max(1, int(run["config"].get("batch_size", 1))), shuffle=True,
                             num_workers=0, collate_fn=_collate)
@@ -159,25 +160,25 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                         progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
                         execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                    "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
-            score = _evaluate(model, validation, device, torch)
-            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
-                   "val/mean_iou": score["mean_iou"]}
+            score = _evaluate(model, validation, device, torch) if validation.assets else None
+            row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6)}
+            if score: row["val/mean_iou"] = score["mean_iou"]
             row.update(rates)
-            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")))
+            scheduler.finish_epoch(score.get("box_mean_iou", score.get("mean_iou")) if score else None)
             atomic_json(run_dir / "lr-state.json", scheduler.state_dict())
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"Mask R-CNN {epoch} / {epochs}", epoch=epoch,
-                    phase="validation", batch=len(loader), batches_per_epoch=len(loader),
+                    phase="training" if train_only else "validation", batch=len(loader), batches_per_epoch=len(loader),
                     progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device),
                     execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"
         torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
-        validation_result = _evaluate(model, validation, device, torch)
+        validation_result = _evaluate(model, validation, device, torch) if validation.assets else None
         test_result = _evaluate(model, testing, device, torch) if testing.assets else None
-        protocol = evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets),
-                                       manifest=manifest)
+        protocol = (training_only_protocol() if train_only else
+                    evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets), manifest=manifest))
         model_record = {"schema_version": 1, "engine": ENGINE_KEY, "engine_name": ENGINE_NAME,
                         "model_version_id": run["model_version_id"], "run_id": run["run_id"],
                         "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
@@ -191,7 +192,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         for path in (metrics_path, run_dir / "evaluation.json", model_dir / "model.json", checkpoint):
             raw = path.read_bytes(); artifacts.append({"path": path.name, "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
         atomic_json(run_dir / "artifact-manifest.json", {"schema_version": 1, "run_id": run["run_id"], "artifacts": artifacts})
-        return _status(run_dir, run, status="completed", message="Mask R-CNN 訓練與評估完成", progress=100,
+        return _status(run_dir, run, status="completed", message="Mask R-CNN 最終訓練完成（無獨立評估）" if train_only else "Mask R-CNN 訓練與評估完成", progress=100,
                        completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
                                                               "validation": validation_result, "test": test_result})
     except Exception as exc:

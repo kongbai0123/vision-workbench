@@ -199,3 +199,13 @@ def evaluation_protocol(*, checkpoint, has_test, manifest=None, independent_test
     return {"schema_version": EVALUATION_SCHEMA_VERSION,
             "selection_split": "val", "selection_checkpoint": checkpoint,
             "test_present": bool(has_test), **source}
+
+
+def training_only_protocol():
+    """Protocol marker for a deliberate all-data fit with no holdout claims."""
+    return {"schema_version": EVALUATION_SCHEMA_VERSION,
+            "selection_split": None, "selection_checkpoint": "final_epoch",
+            "test_present": False, "test_independent_sources": None,
+            "test_source_overlap_groups": [], "test_source_tracking_complete": None,
+            "evaluation_available": False,
+            "reason": "全部資料用於最終訓練，未保留獨立 Validation／Test"}
