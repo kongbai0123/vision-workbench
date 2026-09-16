@@ -88,6 +88,8 @@ def main():
             click("[data-source='files']")
             click("#showManualImport")
             fill("#importPaths","\n".join(inputs));click("#importFiles")
+            wait("document.querySelector('#formDialog').open && document.querySelectorAll('#dialogBody input[type=checkbox]').length===4")
+            js("document.querySelector('#confirmDialog').click()")
             wait("document.querySelector('#importReport').innerText.includes('4')",seconds=60)
             wait("!document.querySelector('#importFiles').disabled")
             project=service.store.list_projects()[0];pid=project['id']

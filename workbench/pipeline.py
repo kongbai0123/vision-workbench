@@ -297,6 +297,61 @@ def _coco_import(path, root=None, flat_manifest=None):
     return records
 
 
+def _working_import(root, manifest=None, selected_path=None):
+    """Import a reviewable SAM2 dataset as pending Workbench assets.
+
+    A working manifest describes how source images, masks and QA overlays are
+    related; it is useful import metadata, not a reason to reject otherwise
+    valid images and COCO annotations.  Only canonical source images become
+    assets.  Selecting a related mask or overlay resolves to that source image.
+    """
+    root = Path(root).resolve()
+    manifest = manifest or _json(root / 'manifest.json')
+    if manifest.get('dataset_type') != WORKING_TYPE:
+        raise ValueError('不是支援的 SAM2 工作資料格式')
+    annotations = root / 'label' / 'instances.json'
+    if not annotations.is_file():
+        raise ValueError('SAM2 工作資料缺少 label/instances.json')
+    records = _coco_import(annotations, root)
+    samples = manifest.get('samples')
+    if not isinstance(samples, list):
+        raise ValueError('SAM2 manifest 缺少 samples 陣列')
+    by_image = {str(sample.get('image')): sample for sample in samples
+                if isinstance(sample, dict) and sample.get('image')}
+    if len(by_image) != len(samples):
+        raise ValueError('SAM2 manifest 的圖片宣告缺失或重複')
+    for record in records:
+        relative = Path(record['path']).relative_to(root).as_posix()
+        sample = by_image.get(relative)
+        if sample is None:
+            raise ValueError(f'SAM2 COCO 圖片未被 manifest 宣告：{relative}')
+        record['review_state'] = 'pending'
+        record['batch_id'] = str(manifest.get('session_id') or record['batch_id'])
+        record['source']['sample'] = deepcopy(sample)
+        record['source']['sam2_review_status'] = sample.get('review_status', manifest.get('review_status'))
+    if selected_path is None:
+        return records
+    selected = Path(selected_path).resolve()
+    if selected in {root / 'manifest.json', annotations}:
+        return records
+    try:
+        selected_relative = selected.relative_to(root).as_posix()
+    except ValueError:
+        return []
+    selected_images = {
+        str(sample.get('image'))
+        for sample in samples
+        if selected_relative in {
+            str(sample.get('image', '')),
+            str(sample.get('mask', '')),
+            str(sample.get('qa_overlay', '')),
+            str(sample.get('contours', '')),
+        }
+    }
+    return [record for record in records
+            if Path(record['path']).relative_to(root).as_posix() in selected_images]
+
+
 def _labelme_import(path):
     document = _json(path)
     image_name = document.get('imagePath') or path.with_suffix('.png').name
@@ -420,7 +475,7 @@ def _folder_import(root):
         document = _json(candidate)
         kind = document.get('dataset_type')
         if kind == WORKING_TYPE:
-            raise ValueError('拒絕 SAM2 pseudo/pending/rejected 工作資料；請使用 human_verified 封裝')
+            return _working_import(root, document)
         if kind == VERIFIED_TYPE:
             declared = document.get('training_ready', {}).get('path')
             if not isinstance(declared, str) or not declared:
@@ -444,14 +499,20 @@ def _folder_import(root):
         document = _json(dataset_file)
         if document.get('format') in {'vision-workbench-jsonl', 'vision-workbench-classification'}:
             return _asset_lines_import(root, _safe_child(root, document.get('annotations', 'dataset.jsonl')))
+    working_manifests = []
     for candidate in root.rglob('manifest.json'):
         if any(part in {'.venv', 'node_modules', '.git'} for part in candidate.relative_to(root).parts):
             continue
         try:
             if _json(candidate).get('dataset_type') == WORKING_TYPE:
-                raise ValueError('資料夾內含 SAM2 工作／稽核資料；請選擇 verified 封裝')
+                working_manifests.append(candidate)
         except json.JSONDecodeError:
             raise ValueError(f'無法解析 manifest：{candidate.name}')
+    if working_manifests:
+        records = []
+        for candidate in working_manifests:
+            records.extend(_working_import(candidate.parent, _json(candidate)))
+        return records
     files = _files(root)
     images = [p for p in files if p.suffix.lower() in IMAGE_EXTENSIONS]
     json_files = [p for p in files if p.suffix.lower() == '.json' and p.name not in {'manifest.json', 'conversion_report.json', 'export_manifest.json'}]
@@ -521,7 +582,7 @@ def import_sources(paths: list[str | Path]) -> dict:
     for raw in ordered:
         path = Path(raw).expanduser().resolve()
         try:
-            # Individual files must not bypass the working-dataset guard.
+            working_root = None
             for ancestor in (path.parent, *path.parent.parents):
                 for manifest_name in ('manifest.json', 'export_manifest.json'):
                     parent_manifest = ancestor / manifest_name
@@ -529,7 +590,7 @@ def import_sources(paths: list[str | Path]) -> dict:
                         try:
                             metadata = _json(parent_manifest)
                             if metadata.get('dataset_type') == WORKING_TYPE:
-                                raise ValueError('拒絕 SAM2 工作資料中的個別檔案；請使用 human_verified 封裝')
+                                working_root = ancestor
                             if metadata.get('dataset_type') == VERIFIED_TYPE:
                                 declared = metadata.get('training_ready', {}).get('path')
                                 ready = (ancestor / declared).resolve() if isinstance(declared, str) else None
@@ -537,7 +598,11 @@ def import_sources(paths: list[str | Path]) -> dict:
                                     raise ValueError('verified 封裝只允許匯入宣告的 training_ready；不可單獨掃描 masks/overlay 等衍生檔案')
                         except json.JSONDecodeError:
                             raise ValueError('來源上層 manifest 無法解析')
-            if path.is_dir():
+            if working_root is not None and path.is_file():
+                found = _working_import(working_root, selected_path=path)
+                if not found:
+                    raise ValueError('選取的檔案未被 SAM2 manifest 宣告為圖片或標註')
+            elif path.is_dir():
                 found = _folder_import(path)
             elif path.suffix.lower() == '.json' and path.is_file():
                 document = _json(path)

@@ -756,7 +756,9 @@ class ProjectStore:
             }
         return result
 
-    def review(self, project_id, asset_ids, state, revisions=None):
+    def review(self, project_id, asset_ids, state, revisions=None, reason='', note=''):
+        if not isinstance(reason, str) or not isinstance(note, str) or len(reason) > 100 or len(note) > 2000:
+            raise ValueError('審核原因或備註無效')
         if state not in {"pending", "approved", "rejected"} or not isinstance(asset_ids, list) or not asset_ids:
             raise ValueError("請選擇圖片及有效的審核狀態")
         with self.connection(project_id, write=True) as db:
@@ -773,9 +775,12 @@ class ProjectStore:
                         validate_shape(shape, row["width"], row["height"])
                 # Review is itself a revision; a concurrent stale edit cannot undo it.
                 next_revision = row["revision"]+1
-                db.execute("UPDATE assets SET review_state=?,revision=?,updated_at=? WHERE id=?",
-                           (state, next_revision, timestamp(), aid))
-                self._history(db, aid, next_revision, "review", {"review_state":state,"shapes":json.loads(row["shapes"])})
+                source = json.loads(row['source'])
+                source['review'] = {'reason': reason if state != 'approved' else '', 'note': note,
+                                    'needs_correction': state == 'pending' and reason == '待修正'}
+                db.execute("UPDATE assets SET review_state=?,revision=?,updated_at=?,source=? WHERE id=?",
+                           (state, next_revision, timestamp(), dump(source), aid))
+                self._history(db, aid, next_revision, "review", {"review_state":state,"shapes":json.loads(row["shapes"]), 'review': source['review']})
             self._touch(db)
         return self.get_project(project_id)
 
@@ -907,4 +912,3 @@ class ProjectStore:
                     source={"project_id":source_id,"asset_id":asset["id"],"revision":asset["revision"],
                             "original":asset["source"]}))
         return self.add_assets(project_id, records)
-

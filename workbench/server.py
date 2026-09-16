@@ -25,6 +25,8 @@ class WorkbenchService:
         self.data_root = Path(data_root or APP_ROOT / "data").resolve()
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.store = ProjectStore(self.data_root / "projects")
+        from .review_workflow import ReviewWorkflow
+        self.review_workflow = ReviewWorkflow(self.store)
         self.exports = self.data_root / "exports"
         self.exports.mkdir(exist_ok=True)
         self.incoming = self.data_root / "incoming"
@@ -466,10 +468,20 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 4:
                 raise FileNotFoundError("找不到 API")
             action = parts[3]
+            if action == 'import-preview':
+                return self.json(self.app.jobs.submit('import-preview', lambda progress: self.app.review_workflow.preview(pid, payload.get('paths'))))
+            if action == 'import-confirm':
+                return self.json(self.app.jobs.submit('import', lambda progress: self.app.review_workflow.commit_import(pid, payload.get('token'), payload.get('selected'))))
+            if action == 'review-trash-list':
+                return self.json(self.app.review_workflow.list_trash(pid))
+            if action in {'review-trash', 'review-restore'}:
+                return self.json(self.app.review_workflow.trash(pid, payload.get('asset_ids'), payload.get('revisions'), restore=action == 'review-restore'))
+            if action == 'review-quality':
+                return self.json(self.app.jobs.submit('review-quality', lambda progress: self.app.review_workflow.quality(pid)))
             if action == "import":
                 return self.json(self.app.import_paths(pid,payload.get("paths")))
             if action == "review":
-                return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions")))
+                return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions"),payload.get('reason', ''),payload.get('note', '')))
             if action == "assign":
                 return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
             if action == "auto-split":
@@ -533,4 +545,3 @@ class Handler(BaseHTTPRequestHandler):
             raise FileNotFoundError("找不到 API")
         except Exception as exc:
             self.handle_error(exc)
-

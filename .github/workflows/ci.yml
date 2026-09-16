@@ -35,3 +35,6 @@ jobs:
 
       - name: Verify training desktop workflow
         run: python tests/desktop_training.py
+
+      - name: Verify review desktop workflow
+        run: python tests/desktop_review.py

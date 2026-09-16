@@ -11,7 +11,7 @@ const state = {projects:[],project:null,asset:null,stage:'library',acquireSource
   splitTab:'train',splitPage:0,validationResult:null,validationTab:null,validationPage:0,releaseDrawerFocus:null,
   training:null,trainingTimer:null,trainingMetrics:null,selectedRun:null,selectedModel:null,modelCatalog:null,selectedCatalogModel:null,yoloCompatibility:null,yoloCompatibilitySignature:'',reviewYoloCompatibility:null,reviewYoloCompatibilityLoading:false,
   settingsPage:'general',settingsFocus:null,settingsJob:null,desktopUpdate:null};
-const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已退回'};
+const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已排除訓練'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
 const formatDescriptions = {
   native:'完整保留幾何形狀、遮罩、來源與修訂資訊，適合備份及再次匯入工作站。',
@@ -208,7 +208,7 @@ const saver = new SaveQueue((id,payload)=>api(projectPath(`/assets/${id}`),'PUT'
 });
 const editor = new AnnotationEditor({
   onChange:()=>{saver.changed();updateAssetHeader();},onNotice:toast,onSelection:selected=>updateObjectClassUI(selected),
-  onCreated:()=>{$('shapeLabel').value='';updateObjectClassUI();},
+  onCreated:()=>updateObjectClassUI(),
   onAssetNavigation:direction=>safe(()=>navigateAsset(direction)),
 });
 
@@ -229,7 +229,7 @@ function bind(id,work,{busy=false,task=null}={}) {
     $(id).disabled=true;
     if(busy){state.busy=true;editor.locked=true;updateNavigation();}
     try{if(task)await runTimedTask(typeof task==='function'?task():task,work);else await work()}catch(error){if(!error.silent){toast(error.message,true);status(error.message,true)}}
-    finally{if(busy){state.busy=false;editor.locked=false;updateNavigation();editor.render();editor.updateCandidate()}$(id).disabled=false;updateCameraControls();}
+    finally{if(busy){state.busy=false;editor.locked=false;updateNavigation();editor.render();editor.updateCandidate();if(state.stage==='review')updateReviewSelection()}$(id).disabled=false;updateCameraControls();}
   };
 }
 function updateNavigation() {
@@ -372,6 +372,7 @@ function updateVideoSource() {
 async function switchStage(stage) {
   if(state.busy||state.transitioning)return;
   if(stage!=='library'&&!state.project)return;
+  if(state.stage==='review')state.reviewScroll=$('review').scrollTop;
   if(stage!=='acquire')setCameraPreviewExpanded(false);
   state.transitioning=true;editor.locked=true;updateNavigation();
   try {
@@ -382,7 +383,7 @@ async function switchStage(stage) {
     if(stage==='library')await loadProjects();
     if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await cameraStatus();}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
-    if(stage==='review'){await refreshProject();state.reviewSelection.clear();state.reviewPage=0;renderReview();void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
+    if(stage==='review'){await refreshProject();const ids=new Set(state.project.assets.map(a=>a.id));state.reviewSelection=new Set([...state.reviewSelection].filter(id=>ids.has(id)));renderReview();$('review').scrollTop=state.reviewScroll||0;void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
     if(stage==='split'){await refreshProject();await loadTraining();await renderSplitPage();}
     if(stage==='train'||stage==='models')await loadTraining();
     if(stage==='export'){await refreshProject();renderExport();}
@@ -398,6 +399,7 @@ async function openProject(id) {
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;trainingMonitor.reset();trainingParameters.reset();
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
+    state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
     closeReleaseDrawer();resetValidation('請執行驗證，檢查目前專案及目標格式。');
     $('importReport').hidden=true;$('videoReport').hidden=true;$('mergeReport').hidden=true;
@@ -458,12 +460,12 @@ function updateClassList() {
 }
 function updateObjectClassUI(selected=editor.selected()) {
   const label=$('shapeLabel').value.trim();
-  $('classSelectionHint').textContent=label?`僅下一個新物件使用：${label}`:'尚未選擇下一個物件的類別';
-  $('classActionHint').textContent='建立完成後自動清除；既有物件只在下方該列修改。';
+  $('classSelectionHint').textContent=label?`目前標註類別：${label}`:'請選擇標註類別';
+  $('classActionHint').textContent='新增物件與切換圖片會沿用目前類別；既有物件可在下方該列修改。';
   document.querySelectorAll('.class-choice').forEach(choice=>{
     const active=choice.dataset.className===label;choice.classList.toggle('active',active);
     choice.setAttribute('aria-pressed',String(active));
-    choice.title=`將下一個新物件設為「${choice.dataset.className}」`;
+    choice.title=`後續新物件使用「${choice.dataset.className}」`;
   });
 }
 async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPACE',wide=false}) {
@@ -878,7 +880,26 @@ async function afterAcquisition(result,reportId='importReport') {
 }
 async function importPaths(paths) {
   if(!paths.length)throw Error('請選擇檔案或輸入至少一個完整路徑。');
-  await flushAllEdits();const job=await api(projectPath('/import'),'POST',{paths});const result=await pollJob(job);await afterAcquisition(result);
+  await flushAllEdits();
+  const preview=await pollJob(await api(projectPath('/import-preview'),'POST',{paths}));
+  const body=element('div'),selected=new Set(preview.items.map(item=>item.id));
+  const count=element('p'),grid=element('div',undefined,'review-grid');
+  const update=()=>{count.textContent=`已選 ${selected.size} / ${preview.items.length} 張。疑似模糊僅供參考，可自行保留。`};
+  const checks=[];
+  body.append(count,button('全選／取消全選','secondary',()=>{const all=selected.size!==preview.items.length;selected.clear();for(const {item,check} of checks){check.checked=all;if(all)selected.add(item.id)}update()}));
+  for(const issue of preview.issues||[])body.append(element('p',issue.message));
+  for(const item of preview.items){
+    const card=element('label',undefined,'review-card'),img=document.createElement('img'),check=document.createElement('input');
+    img.src=item.thumbnail;img.alt=item.name;img.style.maxWidth='100%';check.type='checkbox';check.checked=true;
+    check.onchange=()=>{if(check.checked)selected.add(item.id);else selected.delete(item.id);update()};checks.push({item,check});
+    card.append(check,img,element('b',item.name),element('p',`${item.shape_count} 個標註${item.suspected_blur?' · 疑似模糊':''}`));grid.append(card);
+  }
+  body.append(grid);update();
+  const result=await formDialog({title:'選擇要匯入的圖片',body,wide:true,confirm:'匯入勾選圖片',onSubmit:async()=>{
+    if(!selected.size)throw Error('請至少勾選一張圖片。');
+    return pollJob(await api(projectPath('/import-confirm'),'POST',{token:preview.token,selected:[...selected]}));
+  }});
+  if(result)await afterAcquisition({...result,issues:preview.issues});
 }
 function renderMergeList() {
   const list=$('mergeProjects');list.replaceChildren();
@@ -1202,18 +1223,19 @@ async function startAutoCapture() {
 
 function filteredReview() {
   const query=$('reviewSearch').value.toLowerCase(),filter=$('reviewFilter').value;
-  return (state.project?.assets||[]).filter(a=>a.name.toLowerCase().includes(query)&&(filter==='all'||a.review_state===filter));
+  const reason=$('reviewReasonFilter').value;
+  return (state.project?.assets||[]).filter(a=>a.name.toLowerCase().includes(query)&&(filter==='all'||(filter==='correction'?a.review_state==='pending'&&a.source?.review?.needs_correction:a.review_state===filter))&&(!reason||(reason==='疑似模糊'?a.source?.quality?.suspected_blur:a.source?.review?.reason===reason)));
 }
 function reviewPageItems() {return filteredReview().slice(state.reviewPage*48,(state.reviewPage+1)*48);}
 function updateReviewSelection() {
   $('reviewSelectedCount').textContent=`已選 ${state.reviewSelection.size} 張`;
-  const page=reviewPageItems();$('reviewSelectAll').checked=!!page.length&&page.every(a=>state.reviewSelection.has(a.id));
+  const page=filteredReview();$('reviewSelectAll').checked=!!page.length&&page.every(a=>state.reviewSelection.has(a.id));
   $('reviewSelectAll').indeterminate=page.some(a=>state.reviewSelection.has(a.id))&&!$('reviewSelectAll').checked;
-  for(const id of ['reviewApprove','reviewReject','reviewPending','assignSelected'])$(id).disabled=!state.reviewSelection.size||state.busy;
+  for(const id of ['reviewApprove','reviewReject','reviewPending','reviewCorrection','reviewTrash','assignSelected'])$(id).disabled=!state.reviewSelection.size||state.busy;
 }
 function renderReview() {
   const counts=stats(state.project);const summary=$('reviewStats');summary.replaceChildren();
-  for(const [key,name]of Object.entries({total:'全部影像',pending:'待審核',approved:'已核准',rejected:'已退回'})){const chip=element('div',undefined,'stat-chip');chip.append(element('span',name),element('b',number(counts[key])));summary.append(chip);}
+  for(const [key,name]of Object.entries({total:'全部影像',pending:'待審核',approved:'已核准',rejected:'已排除訓練'})){const chip=element('div',undefined,'stat-chip');chip.append(element('span',name),element('b',number(counts[key])));summary.append(chip);}
   const pages=Math.max(1,Math.ceil(filteredReview().length/48));state.reviewPage=Math.max(0,Math.min(state.reviewPage,pages-1));
   $('reviewPageLabel').textContent=`第 ${state.reviewPage+1} / ${pages} 頁 · ${number(filteredReview().length)} 張`;
   $('reviewPrevious').disabled=state.reviewPage<=0;$('reviewNext').disabled=state.reviewPage>=pages-1;
@@ -1223,12 +1245,17 @@ function renderReview() {
     const media=element('div',undefined,'review-card-media'),img=document.createElement('img');img.src=thumbnailURL(asset);img.alt=asset.name;img.loading='lazy';
     const check=document.createElement('input');check.type='checkbox';check.checked=state.reviewSelection.has(asset.id);check.setAttribute('aria-label',`選取 ${asset.name}`);
     const label=element('label');label.append(check);label.onclick=e=>e.stopPropagation();
-    check.onchange=()=>{if(check.checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);card.classList.toggle('selected',check.checked);updateReviewSelection()};
+    check.onchange=()=>{if(state.busy){check.checked=state.reviewSelection.has(asset.id);return}if(check.checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);card.classList.toggle('selected',check.checked);updateReviewSelection()};
     const overlay=document.createElementNS('http://www.w3.org/2000/svg','svg');overlay.setAttribute('viewBox',`0 0 ${asset.width} ${asset.height}`);overlay.setAttribute('preserveAspectRatio','xMidYMid meet');
     media.append(img,overlay,label,element('span',reviewNames[asset.review_state],'badge '+asset.review_state));
-    media.onclick=()=>safe(async()=>{await selectAsset(asset.id);await switchStage('annotate')});
+    card.tabIndex=0;card.setAttribute('aria-label',`選取 ${asset.name}`);
+    card.onclick=event=>{if(event.target.closest('button,input,label'))return;check.checked=!check.checked;check.onchange()};
+    card.onkeydown=event=>{if(event.target===card&&[' ','Enter'].includes(event.key)){event.preventDefault();check.checked=!check.checked;check.onchange()}};
     const body=element('div',undefined,'review-card-body');body.append(element('b',asset.name),element('small',`${asset.width} × ${asset.height} · ${asset.shape_count||0} 個物件`));
-    const footer=element('div',undefined,'review-card-footer');footer.append(element('small',asset.split?`${asset.split} · ${asset.batch_id||''}`:asset.batch_id||'尚未指定批次'),button('檢視標註 →','text-button',()=>media.click()));body.append(footer);card.append(media,body);grid.append(card);
+    const review=asset.source?.review;
+    if(review?.reason)body.append(element('small',`${review.reason}${review.note?' · '+review.note:''}`));
+    if(asset.source?.quality?.suspected_blur)body.append(element('small','疑似模糊 · 請人工確認'));
+    const footer=element('div',undefined,'review-card-footer');footer.append(element('small',asset.split?`${asset.split} · ${asset.batch_id||''}`:asset.batch_id||'尚未指定批次'),button('預覽','text-button',()=>safe(()=>previewReviewAsset(asset))),button('編輯標註 →','text-button',()=>safe(async()=>{await selectAsset(asset.id);await switchStage('annotate')})));body.append(footer);card.append(media,body);grid.append(card);
     queueReviewPreview({asset,overlay,generation});
   }
   if(!grid.children.length)grid.append(element('p','沒有符合篩選條件的圖片。','muted'));
@@ -1266,10 +1293,10 @@ function drawReviewOverlay(svg,asset) {
     svg.append(node);
   }
 }
-async function reviewSelection(reviewState) {
+async function reviewSelection(reviewState, reason='', note='') {
   await flushAllEdits();const ids=[...state.reviewSelection];if(!ids.length)throw Error('請先選取需要更新的圖片。');
   const revisions=Object.fromEntries(state.project.assets.filter(a=>state.reviewSelection.has(a.id)).map(a=>[a.id,a.revision]));
-  state.project=await api(projectPath('/review'),'POST',{asset_ids:ids,state:reviewState,revisions});
+  state.project=await api(projectPath('/review'),'POST',{asset_ids:ids,state:reviewState,revisions,reason,note});
   const selectedMeta=state.project.assets.find(a=>a.id===state.asset?.id);if(selectedMeta)Object.assign(state.asset,{review_state:selectedMeta.review_state,revision:selectedMeta.revision});
   state.reviewSelection.clear();state.reviewYoloCompatibility=null;renderReview();updateAssetHeader();toast(`${ids.length} 張圖片已設為${reviewNames[reviewState]}。`);await checkReviewYoloCompatibility();
 }
@@ -1462,6 +1489,38 @@ async function renderSplitPage(){
   $('openSplitFlowManager').disabled=!(stats.approved>0);
   $('continueToTraining').disabled=!readiness.ready;
   $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
+}
+
+async function previewReviewAsset(asset) {
+  const full=await api(projectPath(`/assets/${asset.id}`)),body=element('div');
+  const media=element('div',undefined,'review-card-media'),img=document.createElement('img');
+  img.src=imageURL(asset);img.alt=asset.name;img.style.cssText='width:100%;height:auto;max-height:70vh;object-fit:contain';
+  const overlay=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  overlay.setAttribute('viewBox',`0 0 ${asset.width} ${asset.height}`);overlay.setAttribute('preserveAspectRatio','xMidYMid meet');
+  media.append(img,overlay);body.append(media);drawReviewOverlay(overlay,full);
+  await formDialog({title:asset.name,body,wide:true});
+}
+async function excludeReview() {
+  const body=element('div'),reason=document.createElement('select'),note=document.createElement('textarea');
+  for(const text of ['模糊','曝光問題','重複','無關','遮擋過重','其他'])reason.append(new Option(text,text));
+  note.maxLength=2000;body.append(element('p',`排除選取的 ${state.reviewSelection.size} 張圖片；之後可恢復為待審核。`),element('label','排除原因'),reason,element('label','備註'),note);
+  await formDialog({title:'排除訓練',body,confirm:'排除選取',onSubmit:async()=>{await reviewSelection('rejected',reason.value,note.value);return true}});
+}
+async function trashReview() {
+  await flushAllEdits();const ids=[...state.reviewSelection];
+  const body=element('p',`將 ${ids.length} 張圖片移到可還原垃圾桶。外部原始檔案與既有訓練版本會保留。`);
+  const result=await formDialog({title:'從專案移除',body,confirm:'移到垃圾桶',onSubmit:()=>api(projectPath('/review-trash'),'POST',{asset_ids:ids,revisions:Object.fromEntries(state.project.assets.filter(a=>ids.includes(a.id)).map(a=>[a.id,a.revision]))})});
+  if(!result)return;
+  state.project=result;for(const id of ids)state.reviewSelection.delete(id);
+  if(ids.includes(state.asset?.id)){saver.load(null);state.asset=null;editor.clear()}
+  renderReview();renderAssetList();
+}
+async function restoreReview() {
+  const items=await api(projectPath('/review-trash-list'),'POST',{}),body=element('div'),selected=new Set();
+  body.append(element('p',items.length?'勾選要還原的圖片，還原後會回到待審核。':'垃圾桶目前沒有圖片。'));
+  for(const item of items){const row=element('label'),check=document.createElement('input');check.type='checkbox';check.onchange=()=>{if(check.checked)selected.add(item.id);else selected.delete(item.id)};row.append(check,document.createTextNode(` ${item.name} · ${date(item.removed_at)}`));body.append(row)}
+  const result=await formDialog({title:'可還原垃圾桶',body,confirm:'還原勾選圖片',onSubmit:items.length?()=>{if(!selected.size)throw Error('請勾選要還原的圖片');return api(projectPath('/review-restore'),'POST',{asset_ids:[...selected],revisions:Object.fromEntries(items.filter(a=>selected.has(a.id)).map(a=>[a.id,a.revision]))})}:null});
+  if(result){state.project=result;renderReview();renderAssetList();toast('已還原為待審核圖片。')}
 }
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 function invalidateYoloCompatibility(){state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
@@ -1696,9 +1755,18 @@ async function applyProcessing(calibrate=false) {
 }
 bind('applyProcessing',()=>applyProcessing(false),{busy:true,task:()=>`切換影像輸出 · ${$('processingMode').selectedOptions[0]?.textContent||'預覽'}`});bind('calibrateBackground',()=>{if($('processingMode').value!=='classical')throw Error('請先選擇「古典背景分割」模式，再進行背景校正。');return applyProcessing(true)},{busy:true,task:'背景校正'});
 bind('runAI',runAI,{busy:true});
-bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewReject',()=>reviewSelection('rejected'),{busy:true});bind('reviewPending',()=>reviewSelection('pending'),{busy:true});bind('assignSelected',assignSelected);
-$('reviewSearch').oninput=()=>{state.reviewPage=0;renderReview()};$('reviewFilter').onchange=()=>{state.reviewSelection.clear();state.reviewPage=0;renderReview()};
-$('reviewSelectAll').onchange=()=>{for(const asset of reviewPageItems())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
+for(const [id,text] of [['reviewCorrection','待修正'],['reviewTrash','移到垃圾桶'],['reviewRestore','垃圾桶'],['reviewQuality','檢查模糊圖片']]){const control=button(text,'secondary',()=>{});control.id=id;$('assignSelected').parentElement.append(control)}
+const reviewStyles=document.createElement('link');reviewStyles.rel='stylesheet';reviewStyles.href='/review.css';document.head.append(reviewStyles);
+$('reviewReject').textContent='排除訓練';$('reviewFilter').querySelector('[value="rejected"]').textContent='已排除訓練';$('reviewFilter').append(new Option('待修正','correction'));
+$('reviewSelectAll').parentElement.lastChild.textContent='全選目前篩選結果';
+const reasonFilter=document.createElement('select');reasonFilter.id='reviewReasonFilter';reasonFilter.setAttribute('aria-label','依排除原因或品質篩選');
+for(const text of ['', '模糊','曝光問題','重複','無關','遮擋過重','其他','疑似模糊'])reasonFilter.append(new Option(text||'所有原因',text));$('reviewFilter').parentElement.append(reasonFilter);
+bind('reviewCorrection',()=>reviewSelection('pending','待修正'),{busy:true});bind('reviewTrash',trashReview,{busy:true});bind('reviewRestore',restoreReview,{busy:true});
+bind('reviewQuality',async()=>{state.project=await pollJob(await api(projectPath('/review-quality'),'POST',{}));renderReview();toast('模糊提示已更新，請人工確認是否保留。')},{busy:true});
+bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewReject',excludeReview,{busy:true});bind('reviewPending',()=>reviewSelection('pending'),{busy:true});bind('assignSelected',assignSelected);
+const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;state.reviewScroll=0;renderReview()};
+$('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
+$('reviewSelectAll').onchange=()=>{for(const asset of filteredReview())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
 bind('prepareTraining',()=>switchStage('split'));
 bind('refreshTraining',()=>loadTraining());
