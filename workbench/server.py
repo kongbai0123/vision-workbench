@@ -494,7 +494,7 @@ class Handler(BaseHTTPRequestHandler):
             if action in {"validate", "export"}:
                 return self.json(self.app.pipeline_job(pid,action,payload))
             if action == "dataset-versions":
-                return self.json(self.app.training.create_dataset_version(pid))
+                return self.json(self.app.training.create_dataset_version(pid, payload.get("augmentation")))
             if action == "training-runs":
                 return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
             if action == "training-compatibility":

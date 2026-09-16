@@ -16,6 +16,7 @@ from .training_engine import atomic_json, annotation_mask, load_rgb, read_json, 
 from .evaluation_metrics import PixelMetrics, evaluation_protocol
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
+from .augmentation import augment_dense_target
 
 
 ENGINE_KEY = "maskrcnn_resnet50_fpn"
@@ -57,10 +58,11 @@ def _model(class_count, image_size=None):
 
 
 class NativeMaskDataset:
-    def __init__(self, manifest, dataset_dir, split, torch):
+    def __init__(self, manifest, dataset_dir, split, torch, augmentation=None):
         self.manifest, self.dataset_dir, self.torch = manifest, Path(dataset_dir), torch
         self.assets = [asset for asset in manifest["assets"] if asset["split"] == split]
         self.class_ids = {label: index + 1 for index, label in enumerate(manifest["classes"])}
+        self.augmentation = augmentation
 
     def __len__(self):
         return len(self.assets)
@@ -86,6 +88,8 @@ class NativeMaskDataset:
             "masks": self.torch.stack(masks) if masks else self.torch.zeros((0, int(asset["height"]), int(asset["width"])), dtype=self.torch.uint8),
             "image_id": self.torch.tensor([index], dtype=self.torch.int64),
         }
+        if self.augmentation:
+            image, target = augment_dense_target(image, target, self.augmentation, self.torch)
         return image, target, asset
 
 
@@ -125,7 +129,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         image_size = int(run["config"].get("image_size", 640))
         model, _ = _model(len(manifest["classes"]), image_size)
         model.to(device)
-        training = NativeMaskDataset(manifest, dataset_manifest.parent, "train", torch)
+        training = NativeMaskDataset(manifest, dataset_manifest.parent, "train", torch,
+                                     run["config"].get("augmentation"))
         validation = NativeMaskDataset(manifest, dataset_manifest.parent, "val", torch)
         testing = NativeMaskDataset(manifest, dataset_manifest.parent, "test", torch)
         if not training.assets or not validation.assets:
@@ -137,16 +142,23 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"載入 Mask R-CNN · {device}", progress=3)
+        optimizer_steps = 0
         for epoch in range(1, epochs + 1):
             rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
-            for images, targets, _assets in loader:
+            for batch, (images, targets, _assets) in enumerate(loader, 1):
                 if _stopping(run_dir):
                     return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
                 images = [image.to(device) for image in images]
                 targets = [{key: value.to(device) for key, value in target.items()} for target in targets]
                 loss_values = model(images, targets); loss = sum(loss_values.values())
-                optimizer.zero_grad(set_to_none=True); loss.backward(); optimizer.step(); losses.append(float(loss.detach().cpu()))
+                optimizer.zero_grad(set_to_none=True); loss.backward(); optimizer.step(); optimizer_steps += 1; losses.append(float(loss.detach().cpu()))
+                _status(run_dir, run, status="running", phase="training",
+                        message=f"Mask R-CNN · Epoch {epoch}/{epochs} · Batch {batch}/{len(loader)}",
+                        epoch=epoch, batch=batch, batches_per_epoch=len(loader),
+                        progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
+                        execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
+                                   "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
             score = _evaluate(model, validation, device, torch)
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
                    "val/mean_iou": score["mean_iou"]}
@@ -156,7 +168,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"Mask R-CNN {epoch} / {epochs}", epoch=epoch,
-                    progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device))
+                    phase="validation", batch=len(loader), batches_per_epoch=len(loader),
+                    progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device),
+                    execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
+                               "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"
         torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate(model, validation, device, torch)

@@ -18,6 +18,7 @@ from .training_engine import atomic_json, load_rgb, read_json, _status, _stoppin
 from .training_parameters import create_optimizer
 from .learning_rates import LearningRateSchedule
 from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol
+from .augmentation import augment_image_tensor
 
 
 CLASSIFICATION_ENGINES = {
@@ -60,13 +61,14 @@ def _asset_label(asset, classes):
 
 
 class ClassificationDataset:
-    def __init__(self, manifest, dataset_dir, split, torch, image_size):
+    def __init__(self, manifest, dataset_dir, split, torch, image_size, augmentation=None):
         self.manifest, self.dataset_dir, self.torch = manifest, Path(dataset_dir), torch
         self.assets = [asset for asset in manifest["assets"] if asset["split"] == split]
         self.classes, self.image_size = manifest["classes"], int(image_size)
         # Fail before the first epoch so an ambiguous image never receives an
         # arbitrary class.
         self.targets = [_asset_label(asset, self.classes) for asset in self.assets]
+        self.augmentation = augmentation
 
     def __len__(self):
         return len(self.assets)
@@ -78,6 +80,8 @@ class ClassificationDataset:
         image = torch.nn.functional.interpolate(
             image[None], (self.image_size, self.image_size), mode="bilinear", align_corners=False
         )[0]
+        if self.augmentation:
+            image, _horizontal, _vertical = augment_image_tensor(image, self.augmentation, torch)
         mean = torch.tensor((0.485, 0.456, 0.406), dtype=image.dtype)[:, None, None]
         std = torch.tensor((0.229, 0.224, 0.225), dtype=image.dtype)[:, None, None]
         return (image - mean) / std, self.targets[index], asset
@@ -151,7 +155,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         device = torch.device("cuda" if requested == "cuda" or (requested == "auto" and torch.cuda.is_available()) else "cpu")
         image_size = int(run["config"].get("image_size", 224))
         model, _ = _model(run["engine"], len(manifest["classes"])); model.to(device)
-        training = ClassificationDataset(manifest, dataset_manifest.parent, "train", torch, image_size)
+        training = ClassificationDataset(manifest, dataset_manifest.parent, "train", torch, image_size,
+                                         augmentation=run["config"].get("augmentation"))
         validation = ClassificationDataset(manifest, dataset_manifest.parent, "val", torch, image_size)
         testing = ClassificationDataset(manifest, dataset_manifest.parent, "test", torch, image_size)
         if not training.assets or not validation.assets:
@@ -168,15 +173,23 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         epochs = int(run["config"].get("epochs", 10)); metrics_path = run_dir / "metrics.jsonl"
         metrics_path.write_text("", encoding="utf-8")
         _status(run_dir, run, status="preparing", message=f"載入 {CLASSIFICATION_ENGINES[run['engine']]} · {device}", progress=3)
+        optimizer_steps = 0
         for epoch in range(1, epochs + 1):
             rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
-            for images, targets, _assets in loader:
+            for batch, (images, targets, _assets) in enumerate(loader, 1):
                 if _stopping(run_dir):
                     return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
                 logits = model(images.to(device)); loss = torch.nn.functional.cross_entropy(logits, targets.to(device))
                 optimizer.zero_grad(set_to_none=True); loss.backward(); optimizer.step()
+                optimizer_steps += 1
                 losses.append(float(loss.detach().cpu()))
+                _status(run_dir, run, status="running", phase="training",
+                        message=f"{CLASSIFICATION_ENGINES[run['engine']]} · Epoch {epoch}/{epochs} · Batch {batch}/{len(loader)}",
+                        epoch=epoch, batch=batch, batches_per_epoch=len(loader),
+                        progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
+                        execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
+                                   "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
             score = _evaluate(model, validation, device, torch)
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6),
                    "val/accuracy": score["accuracy"], "val/macro_f1": score["macro_f1"],
@@ -187,7 +200,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"{CLASSIFICATION_ENGINES[run['engine']]} {epoch} / {epochs}",
-                    epoch=epoch, progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device))
+                    phase="validation", epoch=epoch, batch=len(loader), batches_per_epoch=len(loader),
+                    progress=5 + round(epoch / epochs * 85), metrics=row, device=str(device),
+                    execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
+                               "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"
         torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
         validation_result = _evaluate(model, validation, device, torch)

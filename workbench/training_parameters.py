@@ -23,7 +23,7 @@ def parameter_schema(definition):
     ultralytics = definition.get("component") == "ultralytics"
     parameters += [
         {"key": "seed", "label": "隨機種子", "type": "integer", "default": 42,
-         "min": 0, "max": 2147483647, "step": 1, "advanced": False,
+         "min": 0, "max": 2147483647, "step": 1, "advanced": True,
          "description": "固定初始化與抽樣種子；GPU 運算仍可能有差異。"},
         {"key": "device", "label": "執行裝置", "type": "select", "default": "auto",
          "options": [{"value": "auto", "label": "自動選擇 GPU / CPU"},
@@ -32,10 +32,10 @@ def parameter_schema(definition):
         {"key": "image_size", "label": "訓練影像尺寸", "type": "integer",
          "default": 224 if definition.get("task") == "image_classification" else 640,
          "min": 128, "max": 2048, "step": 32 if ultralytics else 1,
-         **({"multiple_of": 32} if ultralytics else {}), "advanced": True,
+         **({"multiple_of": 32} if ultralytics else {}), "advanced": False,
          "description": "模型輸入尺寸；Ultralytics 需要 32 的倍數。" if ultralytics else "模型內部縮放尺寸；不會修改專案原始圖片。"},
         {"key": "batch_size", "label": "批次大小", "type": "integer", "default": 1,
-         "min": 1, "max": 16, "step": 1, "advanced": True,
+         "min": 1, "max": 16, "step": 1, "advanced": False,
          "description": "每個小批次讀取的圖片數；梯度累積會影響實際更新頻率。較大數值會增加記憶體用量。"
                         + ("單張批次使用 BatchNorm 既有統計值。" if definition.get("task") == "semantic_segmentation" else "")},
         {"key": "learning_rate", "label": "學習率", "type": "number", "default": .0005,
@@ -46,7 +46,7 @@ def parameter_schema(definition):
          "description": "最佳化器的權重衰減係數；0 表示不使用。"},
         {"key": "optimizer", "label": "最佳化器", "type": "select", "default": "AdamW",
          "options": [{"value": "AdamW", "label": "AdamW"}, {"value": "SGD", "label": "SGD"}],
-         "advanced": True, "description": "SGD 使用固定動量 0.9（Nesterov）。" if ultralytics else "選擇參數更新演算法；SGD 不使用動量。"},
+         "advanced": True, "description": "選擇參數更新演算法；SGD 使用動量設定，AdamW 使用自適應更新與解耦權重衰減。"},
     ]
     if ultralytics:
         parameters.append({"key": "gradient_accumulation", "label": "梯度累積批次數", "type": "integer",
@@ -54,7 +54,7 @@ def parameter_schema(definition):
                            "description": "累積幾個小批次後更新權重；有效批次＝批次大小 × 累積批次數。小資料集建議從 1 開始。"})
     if definition["key"].startswith("yolo26"):
         parameters.append({"key": "initialization", "label": "模型初始權重", "type": "select",
-                           "default": "pretrained", "advanced": True,
+                           "default": "pretrained", "advanced": False,
                            "options": [{"value": "pretrained", "label": "預訓練權重微調（建議）"},
                                        {"value": "scratch", "label": "隨機權重 · 從零訓練"}],
                            "description": "首次開始預訓練微調時會下載官方權重，之後使用本機快取；選取選項本身不下載。"})
@@ -85,7 +85,7 @@ def parameter_schema(definition):
     strategies = [("fixed", "固定"), ("cosine", "暖身＋餘弦下降"), ("linear", "暖身＋線性下降")]
     if not ultralytics: strategies.append(("plateau", "Validation 停滯時下降"))
     parameters += [
-        {"key":"scheduler", "label":"學習率策略", "type":"select", "default":"cosine", "advanced":True,
+        {"key":"scheduler", "label":"學習率排程", "type":"select", "default":"cosine", "advanced":True,
          "section":"schedule", "options":[{"value":v,"label":n} for v,n in strategies],
          "description":"固定不進行暖身或衰減；其他策略依訓練進度或驗證結果調整。"},
         {"key":"min_learning_rate", "label":"最低學習率", "type":"number", "default":.000005,

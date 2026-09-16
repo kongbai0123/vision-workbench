@@ -223,7 +223,8 @@ export class TrainingMonitor {
     const {score,split}=this.evaluation(run),best=this.scoreEntries(run,score)[0],invalid=run.evaluation?.valid===false;
     const currentEpoch=run.epoch??this.reports.get(run.run_id)?.metrics?.at(-1)?.epoch??'—';
     const cards=el('div',undefined,'run-metrics training-summary-cards');
-    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
+    const batch=run.batch&&run.batches_per_epoch?`${run.batch} / ${run.batches_per_epoch}`:'等待 Batch',updates=run.execution?.optimizer_steps;
+    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
     this.root.append(this.configRow(run));
   }
   configRow(run){
@@ -272,7 +273,7 @@ export class TrainingMonitor {
   }
   renderConfig(runs,parent){
     const d=this.details('完整執行設定','config',parent);
-    const labels={epochs:'訓練輪數',device:'裝置設定',seed:'隨機種子',image_size:'輸入影像尺寸',batch_size:'批次大小',learning_rate:'初始學習率',scheduler:'學習率策略',min_learning_rate:'最低學習率',warmup_epochs:'暖身輪數',lr_patience:'降率耐心輪數',lr_factor:'降率倍率',engine:'訓練模型',weight_decay:'權重衰減',momentum:'動量',optimizer:'最佳化器',threshold_min:'門檻搜尋下限',threshold_max:'門檻搜尋上限',patience:'提前停止耐心輪數',workers:'資料載入程序數',pretrained:'使用預訓練權重'};
+    const labels={epochs:'訓練輪數',device:'裝置設定',seed:'隨機種子',image_size:'輸入影像尺寸',batch_size:'批次大小',learning_rate:'初始學習率',scheduler:'學習率排程',min_learning_rate:'最低學習率',warmup_epochs:'暖身輪數',lr_patience:'降率耐心輪數',lr_factor:'降率倍率',engine:'訓練模型',weight_decay:'權重衰減',momentum:'動量',optimizer:'最佳化器',threshold_min:'門檻搜尋下限',threshold_max:'門檻搜尋上限',patience:'提前停止耐心輪數',workers:'資料載入程序數',pretrained:'使用預訓練權重',augmentation:'資料增強',preset:'配方',apply_to:'套用集合',mode:'產生方式',fliplr:'水平翻轉機率',flipud:'垂直翻轉機率',brightness:'亮度強度',contrast:'對比強度'};
     Object.assign(labels,{initialization:'模型初始權重',gradient_accumulation:'梯度累積批次數'});
     const entries=(value,path=[])=>{if(value&&typeof value==='object')return Object.entries(value).flatMap(([key,item])=>entries(item,[...path,key]));const shown=path.at(-1)==='initialization'?({pretrained:'預訓練權重微調',scratch:'從零開始（隨機初始化）'}[value]||value):value;return [[path.map(key=>labels[key]||key).join(' / '),shown===null?'未設定':typeof shown==='boolean'?(shown?'開啟':'關閉'):String(shown??'—')]]};
     for(const run of runs){

@@ -53,6 +53,20 @@ class UltralyticsMetricsTests(unittest.TestCase):
             self.assertNotIn("val/mask_map50", rows[-1])
             self.assertNotIn("optimizer_steps", recorder.run["execution"])
 
+    def test_live_batch_progress_is_distinct_from_optimizer_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = {"config": {"epochs": 2, "batch_size": 2}}
+            recorder = _RunMetricsRecorder(root, run, ULTRALYTICS_ENGINES["yolo26n_detect"])
+            trainer = SimpleNamespace(epoch=0, batch_i=2, train_loader=[None] * 5)
+            recorder.optimizer_steps = 1
+            recorder.execution = {"batch_size": 2, "gradient_accumulation": 2, "effective_batch_size": 4}
+            recorder.on_batch_end(trainer)
+            saved = json.loads((root / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual((saved["batch"], saved["batches_per_epoch"]), (3, 5))
+            self.assertEqual(saved["execution"]["optimizer_steps"], 1)
+            self.assertIn("Batch 3/5", saved["message"])
+
     def test_actual_optimizer_post_hook_excludes_amp_skipped_updates(self):
         try:
             import torch

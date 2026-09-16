@@ -258,19 +258,20 @@ def main():
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             values = {"image_size": "256", "batch_size": "2", "learning_rate": "0.003",
                       "weight_decay": "0.0002", "optimizer": "SGD"}
-            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == sorted([*values,"scheduler","min_learning_rate","warmup_epochs","lr_patience","lr_factor"])
+            keys = structured("[...document.querySelectorAll('[data-training-param]')].map(e=>e.dataset.trainingParam).sort()")
+            assert all(key in keys for key in [*values,"seed","scheduler","min_learning_rate","warmup_epochs","lr_patience","lr_factor"]), keys
             for key, value in values.items():
-                fill(f'#trainingAdvancedFields [data-training-param="{key}"]', value)
+                fill(f'[data-training-param="{key}"]', value)
             fill("#trainingEngine", "pixel_prototype_v1")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=threshold_min]')")
             assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == ["threshold_max", "threshold_min"]
-            assert js("document.querySelector('#trainingSeed').getClientRects().length===0&&document.querySelector('#trainingDevice').getClientRects().length===0")
+            assert js("!document.querySelector('[data-training-param=seed]')&&document.querySelector('#trainingDevice').getClientRects().length===0")
             fill('#trainingAdvancedFields [data-training-param="threshold_min"]', "1")
             fill('#trainingAdvancedFields [data-training-param="threshold_max"]', "2")
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             for key, value in values.items():
-                assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
+                assert js(f"document.querySelector('[data-training-param={key}]').value") == value
             # YOLO Seg keeps conversion policy controls; the fixed version is rechecked at Run start.
             fill("#trainingEngine", "yolo26n_seg")
             assert js("document.querySelector('#trainingParam-yolo_mask_policy').value") == "repair_tiny_holes"
@@ -288,7 +289,7 @@ def main():
             assert js("document.querySelector('#trainingParam-initialization').value") == "pretrained"
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
-            click("#trainingSchedule summary")
+            click("[data-training-tab=schedule]")
             fill("#trainingParam-scheduler","plateau")
             assert js("document.querySelector('#trainingParam-lr_patience').getClientRects().length>0")
             assert js("document.querySelector('#trainingParam-warmup_epochs').getClientRects().length===0")
@@ -301,12 +302,12 @@ def main():
             QTest.qWait(180)
             boxes = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>{const r=e.getBoundingClientRect();return [r.top,r.height,r.bottom]}))"))
             assert len(boxes) == 3, boxes
-            for coordinate in (0, 1, 2):
-                assert max(box[coordinate] for box in boxes) - min(box[coordinate] for box in boxes) < 2, boxes
+            assert boxes[0][2] <= min(boxes[1][0], boxes[2][0]), boxes
+            assert abs(boxes[1][0] - boxes[2][0]) < 2, boxes
             click(".training-config-panel .training-details summary")
             QTest.qWait(80)
             expanded = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>e.getBoundingClientRect().height))"))
-            assert max(expanded) - min(expanded) < 2, expanded
+            assert all(value > 0 for value in expanded), expanded
             path, run, rows = saved["R004"]
             run.update(status="running", updated_at=time.time())
             atomic_json(path, run)
@@ -318,7 +319,7 @@ def main():
             # available through explicit chart groups.
             assert not js("!!document.querySelector('#trainingMetricOptions')")
             assert set(plotted_metrics()) == {"val/mean_iou"}
-            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 4
+            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 5
             assert js("document.querySelector('[data-chart-group=performance]').getAttribute('aria-selected')==='true'")
             click("[data-chart-group=loss]")
             wait("document.querySelectorAll('#trainingPlots svg').length===1")

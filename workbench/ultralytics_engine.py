@@ -20,6 +20,7 @@ import numpy as np
 from composer_core.geometry import encode_rle, shape_polygons
 from .training_engine import atomic_json, read_json, _status, _stopping
 from .yolo_compatibility import analyze_manifest, blocker_message, compatible_shape
+from .augmentation import yolo_augmentation_args
 
 
 ULTRALYTICS_ENGINES = {
@@ -302,6 +303,28 @@ class _RunMetricsRecorder:
         if _stopping(self.run_dir):
             trainer.stop = True
 
+    def on_batch_end(self, trainer):
+        """Expose live mini-batch progress without calling it an optimizer step."""
+        epoch = int(getattr(trainer, "epoch", 0)) + 1
+        batch_index = int(getattr(trainer, "batch_i", -1)) + 1
+        loader = getattr(trainer, "train_loader", None)
+        try:
+            batches = len(loader)
+        except (TypeError, AttributeError):
+            batches = 0
+        if batch_index < 1 or batches < 1:
+            return
+        progress = 5 + round((((epoch - 1) + batch_index / batches) / self.epochs) * 82)
+        execution = {**self.execution, "optimizer_steps": self.optimizer_steps,
+                     "optimizer_attempts": self.optimizer_attempts,
+                     "optimizer_skipped_updates": self.skipped_updates}
+        _status(self.run_dir, self.run, status="running", phase="training",
+                message=f"{self.definition['name']} · Epoch {epoch}/{self.epochs} · Batch {batch_index}/{batches}",
+                epoch=epoch, batch=batch_index, batches_per_epoch=batches,
+                progress=progress, execution=execution)
+        if _stopping(self.run_dir):
+            trainer.stop = True
+
 
 def _initialization_source(definition, config):
     mode = config.get("initialization", "pretrained" if definition["architecture"].startswith("yolo26") else "scratch")
@@ -367,6 +390,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         epochs = int(run["config"]["epochs"])
         recorder = _RunMetricsRecorder(run_dir, run, definition)
         model.add_callback("on_train_epoch_start", recorder.on_epoch_start)
+        model.add_callback("on_train_batch_end", recorder.on_batch_end)
         model.add_callback("on_fit_epoch_end", recorder.on_epoch_end)
         requested = run["config"].get("device", "auto")
         device = "0" if requested == "cuda" else "cpu" if requested == "cpu" else None
@@ -374,6 +398,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         initial_lr = float(run["config"].get("learning_rate", .0005))
         batch_size = int(run["config"].get("batch_size", 1))
         accumulation = int(run["config"].get("gradient_accumulation", 1))
+        augmentation_args = yolo_augmentation_args(run["config"].get("augmentation"))
         model.train(data=str(data_yaml), epochs=epochs, imgsz=int(run["config"].get("image_size", 640)),
                              batch=batch_size, nbs=batch_size * accumulation, device=device, workers=0,
                              lr0=initial_lr, cos_lr=schedule == "cosine",
@@ -385,7 +410,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                              **({"momentum": float(run["config"].get("momentum", .9))}
                                 if run["config"].get("optimizer") == "SGD" else {}),
                              project=str(run_dir / "ultralytics"), name="fit", exist_ok=True, pretrained=mode == "pretrained",
-                             plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)))
+                             plots=False, verbose=False, deterministic=False, seed=int(run["config"].get("seed", 42)),
+                             **augmentation_args)
         if _stopping(run_dir):
             return _status(run_dir, run, status="stopped", message="已安全停止", progress=None, completed_at=time.time())
         trainer = getattr(model, "trainer", None)

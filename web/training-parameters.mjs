@@ -52,15 +52,15 @@ export class TrainingParameters {
     if(!discardCurrent)this.remember();
     this.engine=engine;this.fields=fields;this.signature=signature;
     const draft=this.drafts.get(engine?.key)||{},byKey=new Map(fields.map(field=>[field.key,field]));
-    for(const key of ['epochs','seed','device']){
+    for(const key of ['epochs','device','image_size','batch_size','initialization']){
       const wrapper=document.querySelector(`[data-core-param="${key}"]`),input=wrapper.querySelector('input,select'),field=byKey.get(key);
       wrapper.hidden=!field;input.disabled=!field;
-      if(field){wrapper.querySelector('label').textContent=field.label;this.configure(input,field,draft[key])}
+      if(field){if(['image_size','batch_size','initialization'].includes(key)){input.id=`trainingParam-${key}`;wrapper.querySelector('label').htmlFor=input.id}wrapper.querySelector('label').textContent=field.label;this.configure(input,field,draft[key])}
     }
     const openSections=new Set([...this.advanced.querySelectorAll('details[open]')].map(item=>item.dataset.section));
     this.advanced.replaceChildren();
     const sections={};
-    for(const [key,title] of [['schedule','學習率策略'],['compatibility','YOLO Seg 相容處理']]){
+    for(const [key,title] of [['schedule','學習率排程'],['compatibility','YOLO Seg 相容處理']]){
       const details=document.createElement('details'),summary=document.createElement('summary'),container=document.createElement('div');
       details.dataset.section=key;details.id=key==='schedule'?'trainingSchedule':'trainingCompatibilitySettings';details.className='training-schedule';details.open=openSections.has(key);summary.textContent=title;container.className='training-form-grid';details.append(summary,container);sections[key]={details,summary,container,title};
     }
@@ -74,6 +74,7 @@ export class TrainingParameters {
     if(sections.schedule.container.childElementCount){const preview=document.createElement('div');preview.id='learningRatePreview';sections.schedule.details.append(preview);this.advanced.append(sections.schedule.details)}
     if(sections.compatibility.container.childElementCount)this.advanced.append(sections.compatibility.details);
     this.updateVisibility();
+    window.dispatchEvent(new CustomEvent('training-parameters-rendered'));
     document.getElementById('trainingAdvancedSection').hidden=!this.advanced.childElementCount;
     this.resetButton.disabled=!fields.length;
     this.hint.textContent=fields.length?(engine.component==='builtin'?'內建基準在 CPU 調整分割閾值，不使用梯度優化參數。':'參數會隨本次訓練固定保存；影像尺寸與批次大小會影響記憶體需求。'):Array.isArray(engine?.parameters)?'此模型的訓練整合尚未完成。':'請更新並重新開啟工作台，以取得此模型的參數設定。';
@@ -93,7 +94,7 @@ export class TrainingParameters {
   updateVisibility(){
     const strategy=document.getElementById('trainingParam-scheduler');
     for(const field of this.fields){const input=document.getElementById(`trainingParam-${field.key}`);if(!input)continue;const dependent=field.depends_on,controller=dependent&&document.getElementById(`trainingParam-${dependent.key}`);input.parentElement.hidden=!!((field.when&&!field.when.includes(strategy?.value))||(dependent&&!dependent.values.includes(controller?.value)))}
-    const scheduleSummary=this.advanced.querySelector('[data-section="schedule"] summary');if(scheduleSummary)scheduleSummary.textContent=`學習率策略 · ${strategy?.selectedOptions[0]?.textContent||''}`;
+    const scheduleSummary=this.advanced.querySelector('[data-section="schedule"] summary');if(scheduleSummary){const warmup=document.getElementById('trainingParam-warmup_epochs'),warmupText=Number(warmup?.value||0)===0?'暖身關閉':`暖身 ${warmup.value} 輪`;scheduleSummary.textContent=`學習率排程 · ${strategy?.selectedOptions[0]?.textContent||''} · ${warmupText}`;}
     const policy=document.getElementById('trainingParam-yolo_mask_policy'),compatibilitySummary=this.advanced.querySelector('[data-section="compatibility"] summary');if(compatibilitySummary)compatibilitySummary.textContent=`YOLO Seg 相容處理 · ${policy?.selectedOptions[0]?.textContent||''}`;
     const preview=document.getElementById('learningRatePreview');if(!preview)return;
     const config=Object.fromEntries(this.inputs().map(input=>[input.dataset.trainingParam,input.value]));const rates=plannedRates(config);preview.replaceChildren();

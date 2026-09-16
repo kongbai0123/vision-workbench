@@ -29,6 +29,7 @@ from .training_parameters import parameter_schema, validate_config
 from .yolo_compatibility import analyze_manifest, blocker_message
 from .split_quality import split_class_coverage, loose_split_applies
 from .project_storage import ProjectStorage
+from .augmentation import normalize_augmentation
 
 
 AREA_SHAPES = {"mask", "polygon", "obb", "rectangle"}
@@ -275,7 +276,7 @@ class TrainingWorkspace:
                           "splits": splits, "classes": class_counts, "class_counts": coverage["class_counts"]},
                 "blockers": blockers, "warnings": warnings}
 
-    def create_dataset_version(self, project_id):
+    def create_dataset_version(self, project_id, augmentation=None):
         report = self.readiness(project_id)
         if not report["ready"]:
             raise ValueError("；".join(item["message"] for item in report["blockers"]))
@@ -315,6 +316,7 @@ class TrainingWorkspace:
                             "created_at": timestamp(), "classes": list(project["classes"]),
                             "class_mapping": [{"class_id": index, "name": name} for index, name in enumerate(project["classes"])],
                             "readiness": report, "assets": records,
+                            "augmentation": normalize_augmentation(augmentation),
                             "split_plan": project.get("split_plan")}
                 if loose_split_applies(project.get('split_plan'), records):
                     manifest['data_quality'] = {'purpose': 'experimental', 'independent_sources': False,
@@ -338,7 +340,9 @@ class TrainingWorkspace:
                 "created_at": manifest["created_at"], "classes": manifest["classes"],
                 "asset_count": len(manifest["assets"]), "splits": {name: sum(a["split"] == name for a in manifest["assets"])
                 for name in ("train", "val", "test")}, "manifest_sha256": manifest["manifest_sha256"],
-                "data_quality": manifest.get("data_quality"), "readiness": dataset_readiness(manifest)}
+                "data_quality": manifest.get("data_quality"),
+                "augmentation": normalize_augmentation(manifest.get("augmentation")),
+                "readiness": dataset_readiness(manifest)}
 
     def create_diagnostic_dataset_version(self, project_id, source_dataset_id):
         """Create a separately labelled copy without modifying project splits or history."""
@@ -408,6 +412,8 @@ class TrainingWorkspace:
             raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         effective_config = validate_config(definition, config)
         immutable = read_json(manifest)
+        if "augmentation" in immutable:
+            effective_config["augmentation"] = normalize_augmentation(immutable.get("augmentation"))
         coverage = dataset_readiness(immutable)
         if not coverage["ready"]:
             raise ValueError("固定資料版本的分割不適合訓練：" + "；".join(item["message"] for item in coverage["blockers"]))
