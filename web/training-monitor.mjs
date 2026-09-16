@@ -6,7 +6,7 @@ const finite=value=>typeof value==='number'&&Number.isFinite(value);
 const active=new Set(['queued','preparing','running','stopping']);
 const statusName=value=>({queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value);
 const evaluationNames={mean_iou:'Macro IoU',micro_iou:'Micro IoU',box_mean_iou:'Box IoU',mean_dice:'Dice',accuracy:'Accuracy',macro_f1:'Macro F1',macro_recall:'Macro Recall',mask_map50_95:'Mask mAP50–95',mask_map50:'Mask mAP50',box_map50_95:'Box mAP50–95',box_map50:'Box mAP50',precision_50:'Precision@0.5',recall_50:'Recall@0.5'};
-const executionLabels={batch_size:'每次前向批次大小',gradient_accumulation:'梯度累積步數',effective_batch_size:'有效批次大小',optimizer_step_measurement:'更新次數量測方式',optimizer_steps:'最佳化器累計更新次數'};
+const executionLabels={batch_size:'每次前向批次大小',gradient_accumulation:'梯度累積步數',effective_batch_size:'有效批次大小',optimizer_step_measurement:'更新次數量測方式',optimizer_attempts:'最佳化器累計更新嘗試',optimizer_steps:'最佳化器累計成功更新',optimizer_skipped_updates:'AMP 累計跳過更新'};
 
 export function runAuditSections(run,report){
   const recorded=report?.run?.run_id===run.run_id?report.run:run,sections=[];
@@ -223,7 +223,7 @@ export class TrainingMonitor {
   table(parent,headers,rows,scrollKey){const wrap=el('div',undefined,'training-table-wrap'),table=el('table'),head=el('thead'),tr=el('tr');headers.forEach(h=>{const th=el('th',h);th.scope='col';tr.append(th)});head.append(tr);table.append(head);const body=el('tbody');rows.forEach(values=>{const row=el('tr');values.forEach(v=>row.append(el('td',String(v??'—'))));body.append(row)});table.append(body);wrap.append(table);if(scrollKey){wrap.dataset.scrollKey=scrollKey;wrap.addEventListener('scroll',()=>this.rememberScroll(wrap))}parent.append(wrap);return wrap}
   renderEpochTable(runs,descriptors){
     const d=this.details('Epoch 數值明細','epochs'),rows=[];
-    const counts=[['train/optimizer_steps_epoch','本輪權重更新次數'],['train/optimizer_steps','累計權重更新次數']].filter(([key])=>runs.some(run=>normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]).some(row=>finite(row[key]))));
+    const counts=[['train/optimizer_attempts_epoch','本輪更新嘗試'],['train/optimizer_steps_epoch','本輪成功更新'],['train/optimizer_skipped_epoch','本輪 AMP 跳過'],['train/optimizer_steps','累計成功更新']].filter(([key])=>runs.some(run=>normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]).some(row=>finite(row[key]))));
     for(const run of runs)for(const row of normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]))rows.push([run.run_id,row.epoch,...descriptors.map(metric=>fmt(row[metric.key])),...counts.map(([key])=>finite(row[key])?String(row[key]):'—')]);
     if(rows.length){d.append(el('p',`共 ${rows.length} 筆 · 一次顯示最多 10 列，捲動查看全部 Epoch。`,'muted'));const wrap=this.table(d,['Run','Epoch',...descriptors.map(m=>m.label),...counts.map(([,label])=>label)],rows,'epochs');wrap.classList.add('training-epoch-scroll');wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Epoch 數值明細，可捲動查看全部資料')}
     else d.append(el('p','沒有可顯示的 Epoch 數值。','muted'));

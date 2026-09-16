@@ -1,10 +1,11 @@
-"""RT-DETR and YOLO26 Seg adapters for an isolated Ultralytics runtime."""
+"""RT-DETR and YOLO26 detection/segmentation adapters."""
 from __future__ import annotations
 
 from .learning_rates import measured_rates
 from .evaluation_metrics import EVALUATION_SCHEMA_VERSION, evaluation_protocol
 
 from collections.abc import Mapping
+import csv
 from hashlib import sha256
 import json
 import math
@@ -28,6 +29,10 @@ ULTRALYTICS_ENGINES = {
                     "architecture": "yolo26n-seg.yaml", "kind": "segment"},
     "yolo26s_seg": {"name": "YOLO26s Seg", "task": "instance_segmentation",
                     "architecture": "yolo26s-seg.yaml", "kind": "segment"},
+    "yolo26n_detect": {"name": "YOLO26n Detect", "task": "object_detection",
+                       "architecture": "yolo26n.yaml", "kind": "detect"},
+    "yolo26s_detect": {"name": "YOLO26s Detect", "task": "object_detection",
+                       "architecture": "yolo26s.yaml", "kind": "detect"},
 }
 
 
@@ -107,16 +112,57 @@ def _finite_metric(value):
     return round(number, 6) if math.isfinite(number) else None
 
 
+def _canonical_ultralytics_values(raw):
+    """Map Ultralytics CSV/callback names to one stable chart vocabulary."""
+    measured = {}
+    for raw_key, raw_value in (raw or {}).items():
+        value = _finite_metric(raw_value)
+        if value is None:
+            continue
+        key = str(raw_key).strip().lower()
+        if key.startswith(('train/', 'val/')) and key.endswith('_loss'):
+            measured[key] = value
+            continue
+        for source, target in (('precision', 'precision'), ('recall', 'recall'),
+                               ('map50-95', 'map50_95'), ('map50', 'map50')):
+            if key.endswith(f'{source}(b)'):
+                measured[f'val/box_{target}'] = value
+                break
+            if key.endswith(f'{source}(m)'):
+                measured[f'val/mask_{target}'] = value
+                break
+        if key == 'lr/pg0':
+            measured['train/learning_rate'] = value
+        elif key.startswith('lr/pg') and key[5:].isdigit():
+            measured[f'lr/group_{int(key[5:])}'] = value
+        elif key in {'train/loss', 'val/loss'}:
+            measured[key] = value
+    for split in ('train', 'val'):
+        components = [value for key, value in measured.items()
+                      if key.startswith(split + '/') and key.endswith('_loss')]
+        if components:
+            measured[split + '/loss'] = _finite_metric(sum(components))
+    return measured
+
+
+def read_ultralytics_results(path):
+    """Read native results.csv without exposing duplicate package aliases."""
+    path = Path(path)
+    if not path.is_file():
+        return []
+    rows = []
+    with path.open(encoding='utf-8-sig', newline='') as handle:
+        for raw in csv.DictReader(handle):
+            epoch = _finite_metric(raw.get('epoch'))
+            if epoch is None or epoch < 1 or epoch != int(epoch):
+                continue
+            rows.append({'epoch': int(epoch), **_canonical_ultralytics_values(raw)})
+    return rows
+
+
 def _numeric_metrics(trainer, kind):
     raw = getattr(trainer, "metrics", {}) or {}
-    values = {str(key).lower(): number for key, value in raw.items()
-              if (number := _finite_metric(value)) is not None}
-
-    def get(name):
-        for key, value in values.items():
-            if key.rsplit("/", 1)[-1] == name:
-                return value
-        return None
+    values = {str(key).lower(): value for key, value in raw.items()}
 
     # tloss is the running mean for the whole epoch. loss_items contains only
     # the final batch and is not a substitute for an epoch-average loss.
@@ -145,13 +191,17 @@ def _numeric_metrics(trainer, kind):
                           for i, value in enumerate(entries)}
     finite_components = {key: number for key, value in components.items()
                          if (number := _finite_metric(value)) is not None}
-    loss = (_finite_metric(sum(finite_components.values()))
-            if components and len(finite_components) == len(components)
-            else values.get("train/loss", values.get("loss")))
-    prefix, suffix = ("box", "b") if kind == "detect" else ("mask", "m")
-    measured = {**finite_components, "train/loss": loss, f"val/{prefix}_map50_95": get(f"map50-95({suffix})"),
-                f"val/{prefix}_map50": get(f"map50({suffix})")}
-    return {key: value for key, value in measured.items() if value is not None}
+    measured = _canonical_ultralytics_values(values)
+    if kind == 'detect':
+        measured = {key: value for key, value in measured.items() if not key.startswith('val/mask_')}
+    measured.update(finite_components)
+    if components and len(finite_components) == len(components):
+        measured['train/loss'] = _finite_metric(sum(finite_components.values()))
+    elif 'train/loss' not in measured:
+        fallback = _finite_metric(values.get('loss'))
+        if fallback is not None:
+            measured['train/loss'] = fallback
+    return measured
 
 
 class _RunMetricsRecorder:
@@ -167,6 +217,11 @@ class _RunMetricsRecorder:
         self.hook = None
         self.optimizer_steps = 0
         self.epoch_start_steps = 0
+        self.optimizer_attempts = 0
+        self.epoch_start_attempts = 0
+        self.skipped_updates = 0
+        self.epoch_start_skipped = 0
+        self._wrapped_trainer = None
         self.last_step_rates = {}
         self.execution = {}
 
@@ -185,6 +240,8 @@ class _RunMetricsRecorder:
         epoch = int(trainer.epoch) + 1
         if self.pending_epoch != epoch:
             self.epoch_start_steps = self.optimizer_steps
+            self.epoch_start_attempts = self.optimizer_attempts
+            self.epoch_start_skipped = self.skipped_updates
             self.last_step_rates = {}
         self.pending_epoch = epoch
         optimizer = getattr(trainer, "optimizer", None)
@@ -194,6 +251,17 @@ class _RunMetricsRecorder:
             register = getattr(optimizer, "register_step_post_hook", None)
             if callable(register):
                 self.hook = register(self._after_optimizer_step)
+        original = getattr(trainer, 'optimizer_step', None)
+        if self.hook is not None and callable(original) and trainer is not self._wrapped_trainer:
+            def measured_step(*args, **kwargs):
+                before = self.optimizer_steps
+                self.optimizer_attempts += 1
+                result = original(*args, **kwargs)
+                if self.optimizer_steps == before:
+                    self.skipped_updates += 1
+                return result
+            trainer.optimizer_step = measured_step
+            self._wrapped_trainer = trainer
         config = self.run["config"]
         batch = int(getattr(trainer, "batch_size", config.get("batch_size", 1)))
         accumulation = int(getattr(trainer, "accumulate", config.get("gradient_accumulation", 1)))
@@ -213,8 +281,12 @@ class _RunMetricsRecorder:
         if self.hook is not None:
             row.update(self.last_step_rates)
             row.update({"train/optimizer_steps": self.optimizer_steps,
-                        "train/optimizer_steps_epoch": self.optimizer_steps - self.epoch_start_steps})
-            self.execution["optimizer_steps"] = self.optimizer_steps
+                        "train/optimizer_steps_epoch": self.optimizer_steps - self.epoch_start_steps,
+                        "train/optimizer_attempts_epoch": self.optimizer_attempts - self.epoch_start_attempts,
+                        "train/optimizer_skipped_epoch": self.skipped_updates - self.epoch_start_skipped})
+            self.execution.update(optimizer_steps=self.optimizer_steps,
+                                  optimizer_attempts=self.optimizer_attempts,
+                                  optimizer_skipped_updates=self.skipped_updates)
             self.execution["learning_rate_source"] = "last_successful_optimizer_step"
         else:
             row.update(measured_rates(getattr(trainer, "optimizer", None)))
@@ -232,7 +304,7 @@ class _RunMetricsRecorder:
 
 
 def _initialization_source(definition, config):
-    mode = config.get("initialization", "pretrained" if definition["kind"] == "segment" else "scratch")
+    mode = config.get("initialization", "pretrained" if definition["architecture"].startswith("yolo26") else "scratch")
     if mode not in {"pretrained", "scratch"}:
         raise ValueError("模型初始化必須選擇 pretrained 或 scratch")
     source = definition["architecture"].replace(".yaml", ".pt") if mode == "pretrained" else definition["architecture"]
@@ -288,7 +360,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                 validation_split=validation_split)
         mode, source = _initialization_source(definition, run["config"])
         _status(run_dir, run, message="載入預訓練權重" if mode == "pretrained" else "建立隨機初始化模型")
-        model_class = RTDETR if definition["kind"] == "detect" else YOLO
+        model_class = RTDETR if run['engine'].startswith('rt_detr_') else YOLO
         model = model_class(source)
         initialization = _initialization_record(model, mode, source)
         _status(run_dir, run, initialization=initialization)
@@ -367,7 +439,7 @@ class Predictor:
         os.environ.setdefault("YOLO_OFFLINE", "true")
         from ultralytics import RTDETR, YOLO
         self.record = record; self.definition = ULTRALYTICS_ENGINES[record["engine"]]
-        constructor = RTDETR if self.definition["kind"] == "detect" else YOLO
+        constructor = RTDETR if record['engine'].startswith('rt_detr_') else YOLO
         self.model = constructor(str(Path(model_dir) / record["checkpoint"]))
         self.device = "0" if requested_device == "cuda" else "cpu" if requested_device == "cpu" else None
 

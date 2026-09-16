@@ -277,10 +277,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) == 6 and parts[3] == "training-runs":
                     self.app.store.get_project(pid, include_assets=False)
                     if parts[5] == "metrics":
-                        run = self.app.training.run(pid, parts[4])
-                        metrics = self.app.training._run_path(pid, parts[4]).parent / "metrics.jsonl"
-                        rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines() if line.strip()] if metrics.is_file() else []
-                        return self.json({"run":run, "metrics":rows})
+                        return self.json(self.app.training.run_metrics(pid, parts[4]))
                 if len(parts) >= 5 and parts[3] == "assets":
                     aid = parts[4]
                     if len(parts) == 5:

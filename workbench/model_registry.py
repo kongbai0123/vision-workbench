@@ -40,7 +40,7 @@ COMPONENTS = {
     },
     "ultralytics": {
         "name": "Ultralytics 偵測與分割環境", "installable": True,
-        "description": "RT-DETR 與 YOLO26 Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
+        "description": "RT-DETR 與 YOLO26 Detect／Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
         "requirements": "requirements-ultralytics.txt",
     },
 }
@@ -102,6 +102,12 @@ MODELS = (
     {"key": "yolo26s_seg", "name": "YOLO26s Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
      "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 實例分割；可嚴格檢查，或只在 Run 副本修補通過門檻的微小封閉孔洞。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
+    {"key": "yolo26n_detect", "name": "YOLO26n Detect", "family": "YOLO26 Detect", "task": "object_detection",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 nano 物件偵測；由矩形框或面積標註自動取得緊密框。",
+     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
+    {"key": "yolo26s_detect", "name": "YOLO26s Detect", "family": "YOLO26 Detect", "task": "object_detection",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 物件偵測；容量較高，適合與 nano 比較精度。",
+     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
 )
 
 

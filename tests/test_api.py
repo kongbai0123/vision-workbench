@@ -212,6 +212,7 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertIn('efficientad',engines)
         self.assertIn('rt_detr_r50',engines)
         self.assertIn('yolo26n_seg',engines)
+        self.assertIn('yolo26n_detect',engines)
         self.assertEqual(engines['efficientad']['integration'],'planned')
         self.assertFalse(engines['efficientad']['train'])
 

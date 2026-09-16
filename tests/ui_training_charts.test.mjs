@@ -205,6 +205,34 @@ test('actual LR plots use a useful small scale and keep it when hiding runs',()=
   assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
 });
 
+test('small valid mAP values use a disclosed zoomed axis instead of looking like zero',()=>{
+  const item=run('R1',{engine:'yolo26n_detect'}),domains=new Map();
+  const zero=buildChartModel({runs:[item],domains,reports:reportsFor([item,[
+    {epoch:1,'val/box_map50_95':0}]])},'val/box_map50_95');
+  assert.equal(zero.yMax,1);
+  const reports=reportsFor([item,[
+    {epoch:1,'val/box_map50_95':0},{epoch:2,'val/box_map50_95':.00637}]]);
+  const model=buildChartModel({runs:[item],reports,domains},'val/box_map50_95');
+  assert.ok(model.yMax>=.00637&&model.yMax<.1);
+  assert.match(model.notes[0],/Y 軸已自動放大/);
+});
+
+test('missing actual LR explains zero successful updates without claiming LR was zero',()=>{
+  const item=run('R1',{engine:'yolo26n_detect'}),reports=reportsFor([item,[
+    {epoch:26,'train/learning_rate':.00025,'train/optimizer_steps_epoch':3},
+    {epoch:27,'train/optimizer_steps_epoch':0},
+    {epoch:28,'train/learning_rate':.00022,'train/optimizer_steps_epoch':3}]]);
+  const model=buildChartModel({runs:[item],reports},'train/learning_rate');
+  assert.match(model.warnings.join(' '),/成功權重更新為 0 次/);
+  assert.match(model.warnings.join(' '),/無法事後確定/);
+  const diagnosed=buildChartModel({runs:[item],reports:reportsFor([item,[
+    {epoch:1,'train/learning_rate':.001,'train/optimizer_steps_epoch':2},
+    {epoch:2,'train/optimizer_steps_epoch':0,'train/optimizer_attempts_epoch':3,'train/optimizer_skipped_epoch':3},
+    {epoch:3,'train/learning_rate':.0008,'train/optimizer_steps_epoch':2}]])},'train/learning_rate');
+  assert.match(diagnosed.warnings.join(' '),/嘗試 3 次、AMP 跳過 3 次/);
+  assert.match(diagnosed.warnings.join(' '),/非有限梯度拒絕了全部更新/);
+});
+
 test('identical learning-rate groups share one panel and one curve per Run without removing other metrics',()=>{
   const first=run('R1'),second=run('R2');
   const rows=rate=>[1,2].map(epoch=>({epoch,'train/loss':1/epoch,'val/mean_iou':.7,
@@ -280,6 +308,14 @@ test('run details expose recorded initialization and actual batching without inv
   assert.equal(sections.length,2);
   assert.deepEqual(sections[0].rows[0],['初始化方式','預訓練權重']);
   assert.ok(sections[1].rows.some(([label,value])=>label==='有效批次大小'&&value===8));
-  assert.ok(sections[1].rows.some(([label,value])=>label==='最佳化器累計更新次數'&&value===0));
+  assert.ok(sections[1].rows.some(([label,value])=>label==='最佳化器累計成功更新'&&value===0));
   assert.deepEqual(runAuditSections(item,{run:{...recorded,run_id:'R2'}}),[]);
+});
+
+test('run details disclose overlapping Test source groups',()=>{
+  const item=run('R1',{evaluation_protocol:{selection_checkpoint:'best_validation',test_present:true,
+    test_independent_sources:false,test_source_overlap_groups:['session-a','session-b']}});
+  const section=runAuditSections(item)[0];
+  assert.ok(section.rows.some(([label,value])=>label==='Test 來源獨立'&&value==='否（僅流程驗證）'));
+  assert.ok(section.rows.some(([label,value])=>label==='跨集合來源群組'&&value==='session-a、session-b'));
 });

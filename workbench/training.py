@@ -429,7 +429,7 @@ class TrainingWorkspace:
             if missing_classes and not loose_split_applies(immutable.get('split_plan'), immutable['assets']):
                 raise ValueError(f"Train 缺少分類樣本：{'、'.join(missing_classes)}")
         compatibility = None
-        if engine.startswith("yolo26"):
+        if engine.startswith("yolo26") and definition.get('task') == 'instance_segmentation':
             compatibility = analyze_manifest(immutable, effective_config)
             if not compatibility["compatible"]:
                 raise ValueError(blocker_message(compatibility))
@@ -489,7 +489,7 @@ class TrainingWorkspace:
             raise ValueError("訓練參數必須是物件")
         engine = str(config.get("engine") or "")
         definition = self.registry.model(engine)
-        if definition is None or not engine.startswith("yolo26"):
+        if definition is None or not engine.startswith("yolo26") or definition.get('task') != 'instance_segmentation':
             raise ValueError("相容檢查只適用於 YOLO Seg")
         effective = validate_config(definition, config)
         return analyze_manifest(read_json(manifest), effective)
@@ -570,6 +570,31 @@ class TrainingWorkspace:
         if not path.is_file():
             raise FileNotFoundError("找不到訓練紀錄")
         return _with_evaluation_reassessment(read_json(path), path.parent)
+
+    def run_metrics(self, project_id, run_id):
+        """Return canonical epoch rows, enriching Ultralytics history from results.csv."""
+        run = self.run(project_id, run_id)
+        directory = self._run_path(project_id, run_id).parent
+        rows = {}
+        if run.get('engine') in ULTRALYTICS_ENGINES:
+            from .ultralytics_engine import read_ultralytics_results
+            for row in read_ultralytics_results(directory / 'ultralytics' / 'fit' / 'results.csv'):
+                # Native CSV rates are scheduled parameter-group values. The
+                # Workbench series means a rate observed on a successful
+                # optimizer update, so CSV values must not fill skipped gaps.
+                row = {key: value for key, value in row.items()
+                       if key != 'train/learning_rate' and not key.startswith('lr/group_')}
+                rows[row['epoch']] = row
+        metrics = directory / 'metrics.jsonl'
+        if metrics.is_file():
+            for line in metrics.read_text(encoding='utf-8').splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                epoch = row.get('epoch')
+                if type(epoch) is int and epoch > 0:
+                    rows[epoch] = {**rows.get(epoch, {'epoch': epoch}), **row}
+        return {'run': run, 'metrics': [rows[epoch] for epoch in sorted(rows)]}
 
     def list_runs(self, project_id):
         parent = self.runs_dir(project_id)

@@ -22,7 +22,8 @@ class TrainingParameterTests(unittest.TestCase):
         self.assertEqual({item["key"] for item in baseline}, {"epochs", "threshold_min", "threshold_max"})
         self.assertEqual(parameter_schema(self.definition("efficientad")), [])
         for key, size, multiple in (("resnet18_classification", 224, None),
-                                    ("maskrcnn_resnet50_fpn", 640, None), ("yolo26n_seg", 640, 32)):
+                                    ("maskrcnn_resnet50_fpn", 640, None), ("yolo26n_seg", 640, 32),
+                                    ('yolo26n_detect', 640, 32)):
             with self.subTest(engine=key):
                 schema = {item["key"]: item for item in parameter_schema(self.definition(key))}
                 self.assertEqual(schema["image_size"]["default"], size)
@@ -55,6 +56,9 @@ class TrainingParameterTests(unittest.TestCase):
             validate_config(self.definition("yolo26n_seg"), {"image_size": 641})
         ultra = validate_config(self.definition("yolo26n_seg"), {"optimizer": "SGD"})
         self.assertEqual(ultra["momentum"], .9)
+        detect = validate_config(self.definition('yolo26n_detect'), {})
+        self.assertEqual(detect['initialization'], 'pretrained')
+        self.assertNotIn('yolo_mask_policy', detect)
         baseline = self.definition("pixel_prototype_v1")
         for bounds in ({"threshold_min": 2, "threshold_max": 1}, {"threshold_min": 4}, {"threshold_min": 0}):
             with self.subTest(bounds=bounds), self.assertRaises(ValueError):

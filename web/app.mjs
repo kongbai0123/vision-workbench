@@ -1647,7 +1647,7 @@ function renderTraining(){
   const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
   for(const [label,value]of [['資料版本',dataset?.id||'—'],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
   $('startTraining').disabled=!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
-  if(engine?.key?.startsWith('yolo26')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
+  if(engine?.key?.endsWith('_seg')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
   trainingMonitor.render();
@@ -1657,7 +1657,7 @@ async function startTrainingRun(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
   if(dataset.readiness?.ready===false)throw Error(dataset.readiness.blockers.map(item=>item.message).join('；'));
   const config=trainingParameters.collect();
-  if($('trainingEngine').value.startsWith('yolo26')){const signature=yoloCompatibilitySignature(dataset,config),report=state.yoloCompatibilitySignature===signature?state.yoloCompatibility:await checkYoloCompatibility();if(!report?.compatible)throw Error('YOLO Seg 固定資料版本複查未通過；請回到「資料審核」查看標出的圖片與孔洞位置。')}
+  if($('trainingEngine').value.endsWith('_seg')){const signature=yoloCompatibilitySignature(dataset,config),report=state.yoloCompatibilitySignature===signature?state.yoloCompatibility:await checkYoloCompatibility();if(!report?.compatible)throw Error('YOLO Seg 固定資料版本複查未通過；請回到「資料審核」查看標出的圖片與孔洞位置。')}
   const run=await api(projectPath('/training-runs'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...config}});
   state.selectedRun=run.run_id;trainingMonitor.mode='single';await loadTraining();toast(`${run.run_id} 已啟動；可以切換到其他工作區。`)
 }

@@ -9,8 +9,9 @@ import numpy as np
 
 from workbench.ultralytics_engine import (
     ULTRALYTICS_ENGINES, _RunMetricsRecorder, _initialization_record,
-    _initialization_source, _numeric_metrics,
+    _initialization_source, _numeric_metrics, read_ultralytics_results,
 )
+from workbench.training import TrainingWorkspace
 
 
 class UltralyticsMetricsTests(unittest.TestCase):
@@ -66,6 +67,7 @@ class UltralyticsMetricsTests(unittest.TestCase):
             scaler = torch.amp.GradScaler("cpu")
             trainer = SimpleNamespace(epoch=0, optimizer=optimizer, batch_size=1, accumulate=1,
                                       tloss={"seg_loss": torch.tensor(2.0)}, metrics={})
+            trainer.optimizer_step = lambda: None
             try:
                 recorder.on_epoch_start(trainer)
                 for multiplier in (1., float("inf"), 2.):
@@ -82,20 +84,51 @@ class UltralyticsMetricsTests(unittest.TestCase):
                 rows = [json.loads(line) for line in recorder.path.read_text().splitlines()]
                 self.assertEqual(rows[0]["train/optimizer_steps"], 2)
                 self.assertEqual(rows[0]["train/optimizer_steps_epoch"], 2)
+                self.assertEqual(rows[0]["train/optimizer_attempts_epoch"], 0)
                 self.assertEqual(rows[0]["train/learning_rate"], .01)
                 self.assertEqual(rows[1]["train/optimizer_steps"], 2)
                 self.assertEqual(rows[1]["train/optimizer_steps_epoch"], 0)
+                trainer.optimizer_step()
+                self.assertEqual(recorder.optimizer_attempts, 1)
+                self.assertEqual(recorder.skipped_updates, 1)
                 self.assertNotIn("train/learning_rate", rows[1])
                 self.assertEqual(recorder.run["execution"]["optimizer_step_measurement"], "post_step_hook")
             finally:
                 recorder.close()
             self.assertFalse(optimizer._optimizer_step_post_hooks)
 
+    def test_native_results_are_canonical_and_run_report_preserves_actual_lr_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); run_dir = root / 'runs' / 'pid' / 'R001'
+            fit = run_dir / 'ultralytics' / 'fit'; fit.mkdir(parents=True)
+            (fit / 'results.csv').write_text(
+                'epoch,train/box_loss,train/cls_loss,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B),val/box_loss,val/cls_loss,lr/pg0,lr/pg1\n'
+                '1,1.2,.8,.3,.4,.5,.2,1.1,.9,.001,.001\n'
+                '2,1.0,.7,.4,.5,.6,.3,.9,.8,.0005,.0005\n', encoding='utf-8')
+            rows = read_ultralytics_results(fit / 'results.csv')
+            self.assertEqual(rows[0]['train/loss'], 2.0)
+            self.assertEqual(rows[0]['val/loss'], 2.0)
+            self.assertEqual(rows[0]['val/box_precision'], .3)
+            self.assertEqual(rows[0]['val/box_recall'], .4)
+            self.assertEqual(rows[0]['val/box_map50_95'], .2)
+            (run_dir / 'run.json').write_text(json.dumps({'run_id':'R001','engine':'yolo26n_detect'}), encoding='utf-8')
+            (run_dir / 'metrics.jsonl').write_text(
+                json.dumps({'epoch':1,'train/learning_rate':.001,'train/optimizer_steps_epoch':2})+'\n'+
+                json.dumps({'epoch':2,'train/optimizer_steps_epoch':0})+'\n', encoding='utf-8')
+            workspace = TrainingWorkspace.__new__(TrainingWorkspace)
+            workspace.runs = root / 'runs'; workspace._project_scoped = False
+            report = workspace.run_metrics('pid', 'R001')
+            self.assertEqual(report['metrics'][0]['train/learning_rate'], .001)
+            self.assertNotIn('train/learning_rate', report['metrics'][1])
+            self.assertEqual(report['metrics'][1]['val/box_map50'], .6)
+
     def test_pretrained_is_yolo_default_and_weights_are_auditable(self):
         yolo = ULTRALYTICS_ENGINES["yolo26n_seg"]
         self.assertEqual(_initialization_source(yolo, {}), ("pretrained", "yolo26n-seg.pt"))
         self.assertEqual(_initialization_source(yolo, {"initialization": "scratch"}),
                          ("scratch", "yolo26n-seg.yaml"))
+        self.assertEqual(_initialization_source(ULTRALYTICS_ENGINES['yolo26n_detect'], {}),
+                         ('pretrained', 'yolo26n.pt'))
         self.assertEqual(_initialization_source(ULTRALYTICS_ENGINES["rt_detr_r50"], {}),
                          ("scratch", "rtdetr-resnet50.yaml"))
         with tempfile.TemporaryDirectory() as directory:

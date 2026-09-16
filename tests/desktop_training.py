@@ -279,6 +279,13 @@ def main():
             assert js("document.querySelector('#trainingParam-tiny_hole_max_pixels').getClientRects().length===0")
             fill("#trainingParam-yolo_mask_policy", "repair_tiny_holes")
             fill("#trainingParam-tiny_hole_max_ratio", "0.01")
+            # YOLO Detect is a separate object-detection path and must not show
+            # segmentation conversion controls.
+            fill("#trainingEngine", "yolo26n_detect")
+            wait("!!document.querySelector('#trainingParam-initialization')")
+            assert js("document.querySelector('#trainingTaskLabel').textContent.includes('物件偵測')")
+            assert not js("!!document.querySelector('#trainingParam-yolo_mask_policy')")
+            assert js("document.querySelector('#trainingParam-initialization').value") == "pretrained"
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             click("#trainingSchedule summary")
@@ -431,4 +438,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

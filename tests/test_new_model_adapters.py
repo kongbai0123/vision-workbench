@@ -65,15 +65,17 @@ class NewModelAdapterTests(unittest.TestCase):
         self.assertEqual(_numeric_metrics(trainer, "detect"),
                          {"val/box_map50_95": .31, "val/box_map50": .62})
         self.assertEqual(_numeric_metrics(trainer, "segment"),
-                         {"val/mask_map50_95": .23, "val/mask_map50": .54})
+                         {"val/box_map50_95": .31, "val/box_map50": .62,
+                          "val/mask_map50_95": .23, "val/mask_map50": .54})
 
     def test_ultralytics_metrics_omit_unmeasured_values_and_preserve_real_zero(self):
         trainer = SimpleNamespace(metrics={"metrics/mAP50-95(M)": float("nan"),
             "metrics/mAP50(M)": 0., "train/loss": float("inf"), "val/loss": .9}, loss_items=None)
-        self.assertEqual(_numeric_metrics(trainer, "segment"), {"val/mask_map50": 0.})
+        self.assertEqual(_numeric_metrics(trainer, "segment"), {"val/mask_map50": 0., "val/loss": .9})
         self.assertEqual(_numeric_metrics(SimpleNamespace(metrics={}), "detect"), {})
         trainer.metrics["train/loss"] = 0.
-        self.assertEqual(_numeric_metrics(trainer, "segment"), {"train/loss": 0., "val/mask_map50": 0.})
+        self.assertEqual(_numeric_metrics(trainer, "segment"), {"train/loss": 0., "val/loss": .9,
+                                                                 "val/mask_map50": 0.})
 
     def test_ultralytics_result_omits_missing_metrics_without_faking_scores(self):
         self.assertEqual(_result_metrics(SimpleNamespace(), "detect", "test", 3),
@@ -85,7 +87,7 @@ class NewModelAdapterTests(unittest.TestCase):
     def _run_fake_ultralytics(self, splits, extra_config=None, engine="rt_detr_r50"):
         training_options = []
         loaded_sources = []
-        metric_prefix = "box" if engine == "rt_detr_r50" else "mask"
+        metric_prefix = "box" if engine == "rt_detr_r50" or engine.endswith('_detect') else "mask"
         class FakeModel:
             def __init__(self, architecture):
                 loaded_sources.append(architecture)
@@ -177,6 +179,14 @@ class NewModelAdapterTests(unittest.TestCase):
                     {"initialization": initialization}, engine="yolo26n_seg")
                 self.assertEqual(result["initialization"]["mode"], initialization)
                 self.assertEqual(record["initialization"], result["initialization"])
+
+    def test_yolo_detection_uses_box_dataset_pretrained_yolo_and_detection_record(self):
+        result, record, data = self._run_fake_ultralytics(
+            ('train', 'val', 'test'), {'initialization': 'pretrained'}, engine='yolo26n_detect')
+        self.assertEqual(record['task'], 'object_detection')
+        self.assertEqual(record['validation']['box_map50_95'], .4)
+        self.assertEqual(data['names'], {'0': 'part'})
+        self.assertNotIn('yolo_compatibility', record)
 
     def test_ultralytics_schedules_reach_native_trainer(self):
         for strategy in ("fixed", "cosine", "linear"):

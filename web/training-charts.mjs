@@ -16,15 +16,38 @@ const DEFINITIONS = {
   'val/macro_recall': ['Validation · Macro Recall', true, 'higher'],
   'val/box_map50_95': ['Validation · Box mAP50–95', true, 'higher'],
   'val/box_map50': ['Validation · Box mAP50', true, 'higher'],
+  'val/box_precision': ['Validation · Box Precision', true, 'higher'],
+  'val/box_recall': ['Validation · Box Recall', true, 'higher'],
   'val/mask_map50_95': ['Validation · Mask mAP50–95', true, 'higher'],
   'val/mask_map50': ['Validation · Mask mAP50', true, 'higher'],
+  'val/mask_precision': ['Validation · Mask Precision', true, 'higher'],
+  'val/mask_recall': ['Validation · Mask Recall', true, 'higher'],
+  'train/box_loss': ['Train · Box Loss', false, 'lower'],
+  'train/seg_loss': ['Train · Segmentation Loss', false, 'lower'],
+  'train/cls_loss': ['Train · Classification Loss', false, 'lower'],
+  'train/dfl_loss': ['Train · DFL Loss', false, 'lower'],
+  'train/giou_loss': ['Train · GIoU Loss', false, 'lower'],
+  'train/l1_loss': ['Train · L1 Loss', false, 'lower'],
+  'train/sem_loss': ['Train · Semantic Loss', false, 'lower'],
+  'val/box_loss': ['Validation · Box Loss', false, 'lower'],
+  'val/seg_loss': ['Validation · Segmentation Loss', false, 'lower'],
+  'val/cls_loss': ['Validation · Classification Loss', false, 'lower'],
+  'val/dfl_loss': ['Validation · DFL Loss', false, 'lower'],
+  'val/giou_loss': ['Validation · GIoU Loss', false, 'lower'],
+  'val/l1_loss': ['Validation · L1 Loss', false, 'lower'],
+  'val/sem_loss': ['Validation · Semantic Loss', false, 'lower'],
   threshold: ['分割閾值 · Threshold', false, null],
 };
-const PRIORITY = ['train/loss', 'val/mean_iou', 'val/box_mean_iou', 'val/accuracy',
-  'val/mask_map50_95', 'val/box_map50_95', 'val/loss'];
+const PRIORITY = ['train/loss', 'train/box_loss', 'train/seg_loss', 'train/cls_loss', 'train/dfl_loss',
+  'train/giou_loss', 'train/l1_loss', 'train/sem_loss', 'val/loss', 'val/box_loss', 'val/seg_loss',
+  'val/cls_loss', 'val/dfl_loss', 'val/giou_loss', 'val/l1_loss', 'val/sem_loss',
+  'val/box_precision', 'val/box_recall', 'val/box_map50_95', 'val/box_map50',
+  'val/mask_precision', 'val/mask_recall', 'val/mask_map50_95', 'val/mask_map50',
+  'val/mean_iou', 'val/box_mean_iou', 'val/accuracy'];
 const META_KEYS = new Set(['epoch', 'step', 'timestamp', 'time', 'created_at', 'progress',
   'optimizer_steps', 'optimizer_steps_total', 'effective_batch_size', 'gradient_accumulation',
-  'train/optimizer_steps', 'train/optimizer_steps_epoch']);
+  'train/optimizer_steps', 'train/optimizer_steps_epoch', 'train/optimizer_attempts_epoch',
+  'train/optimizer_skipped_epoch']);
 const PALETTE = ['#55d4bd', '#8ebdff', '#efb35b', '#c795f5', '#f28fab', '#c4d46e'];
 const DASHES = ['', '7 4', '2 3', '10 3 2 3', '9 5', '3 2 3 6'];
 
@@ -191,12 +214,17 @@ export function buildChartModel(options, key) {
   const values = domainSeries.flatMap(series => series.points.map(point => point.value));
   const isRate = key==='train/learning_rate'||key.startsWith('lr/');
   const rateCeiling = isRate ? domainRuns.reduce((max,run)=>Math.max(max,run.config?.learning_rate||0),1e-12) : 1;
-  const maximum = values.reduce((max, value) => Math.max(max, value), rateCeiling);
+  const maximum = values.reduce((max, value) => Math.max(max, value), isRate ? rateCeiling : 0);
   const minimum = values.reduce((min, value) => Math.min(min, value), 0);
-  const yMax = descriptor.unit ? 1 : Math.max(roundedBound(maximum), prior?.yMax || rateCeiling);
+  const zoomedUnit = descriptor.unit && maximum > 0 && maximum < .1;
+  const unitMaximum = zoomedUnit ? Math.max(.001, roundedBound(maximum)) : 1;
+  const positiveUnitValue = descriptor.unit && values.some(value => value > 0 && value <= 1);
+  const priorUnitMaximum = prior?.hadPositiveUnitValue ? prior.yMax : 0;
+  const yMax = descriptor.unit ? Math.max(unitMaximum, priorUnitMaximum) : Math.max(roundedBound(maximum), prior?.yMax || rateCeiling);
   const yMin = descriptor.unit ? 0 : Math.min(-roundedBound(Math.min(0, minimum)), prior?.yMin || 0);
   const expanded = Boolean(prior?.expanded || (prior && (yMax > prior.yMax || yMin < prior.yMin || xMax > prior.xMax)));
-  domains.set(domainKey, {xMax, yMax, yMin, expanded});
+  domains.set(domainKey, {xMax, yMax, yMin, expanded,
+    hadPositiveUnitValue: Boolean(prior?.hadPositiveUnitValue || positiveUnitValue)});
   const outOfRange = descriptor.unit && allSeries.some(series => series.points.some(point => point.value < 0 || point.value > 1));
   const visible = allSeries.filter(series => visibleRunIds.has(series.run.run_id));
   const series = (incompatible ? [] : visible).map(item => {
@@ -211,9 +239,18 @@ export function buildChartModel(options, key) {
     if(item.points.length<2)continue;
     const present=new Set(item.points.map(point=>point.epoch)),first=item.points[0].epoch,last=item.points.at(-1).epoch,missing=[];
     for(let epoch=first;epoch<=last;epoch++)if(!present.has(epoch))missing.push(epoch);
-    if(missing.length)warnings.push(`${item.run.run_id} 的 ${descriptor.label} 缺少 Epoch ${epochRanges(missing)}；折線保留缺口，表示該輪沒有有效指標，不代表訓練程序中斷。請查看 Epoch 明細或技術日誌。`);
+    const noUpdates=isRate?missing.filter(epoch=>item.rows.find(row=>row.epoch===epoch)?.['train/optimizer_steps_epoch']===0):[];
+    const unexplained=missing.filter(epoch=>!noUpdates.includes(epoch));
+    if(noUpdates.length){
+      const diagnosed=noUpdates.filter(epoch=>finiteMetric(item.rows.find(row=>row.epoch===epoch)?.['train/optimizer_attempts_epoch']));
+      const diagnosis=diagnosed.map(epoch=>{const row=item.rows.find(entry=>entry.epoch===epoch),attempts=row['train/optimizer_attempts_epoch'],skipped=row['train/optimizer_skipped_epoch'];return `Epoch ${epoch}：嘗試 ${attempts} 次、AMP 跳過 ${finiteMetric(skipped)?skipped:'—'} 次`}).join('；');
+      const allAmp=diagnosed.length&&diagnosed.every(epoch=>{const row=item.rows.find(entry=>entry.epoch===epoch);return row['train/optimizer_attempts_epoch']>0&&row['train/optimizer_attempts_epoch']===row['train/optimizer_skipped_epoch']});
+      warnings.push(`${item.run.run_id} 的 Epoch ${epochRanges(noUpdates)} 成功權重更新為 0 次，所以沒有「實際更新時的學習率」，並非學習率等於 0。${diagnosed.length?`${diagnosis}。${allAmp?'AMP 因非有限梯度拒絕了全部更新。':'請依嘗試／跳過次數判讀。'}`:'此舊 Run 未記錄更新嘗試與 AMP 跳過原因，無法事後確定；常見原因是 AMP 偵測到非有限梯度。'}`);
+    }
+    if(unexplained.length)warnings.push(`${item.run.run_id} 的 ${descriptor.label} 缺少 Epoch ${epochRanges(unexplained)}；折線保留缺口，表示該輪沒有有效指標，不代表訓練程序中斷。請查看 Epoch 明細或技術日誌。`);
   }
-  return {...descriptor, xMax, yMin, yMax, expanded, incompatible, outOfRange, series, allSeries, warnings};
+  const notes=zoomedUnit?[`數值低於 0.1，Y 軸已自動放大至 ${formatMetric(yMax)}；指標原始範圍仍為 0–1。`]:[];
+  return {...descriptor, xMax, yMin, yMax, expanded, incompatible, outOfRange, series, allSeries, warnings, notes};
 }
 
 export function valuesAtEpoch(model, epoch) {

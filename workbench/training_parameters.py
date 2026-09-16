@@ -58,6 +58,7 @@ def parameter_schema(definition):
                            "options": [{"value": "pretrained", "label": "預訓練權重微調（建議）"},
                                        {"value": "scratch", "label": "隨機權重 · 從零訓練"}],
                            "description": "首次開始預訓練微調時會下載官方權重，之後使用本機快取；選取選項本身不下載。"})
+    if definition.get('task') == 'instance_segmentation' and definition['key'].startswith('yolo26'):
         repair_only = {"key": "yolo_mask_policy", "values": ["repair_tiny_holes"]}
         parameters += [
             {"key": "yolo_mask_policy", "label": "YOLO Seg 遮罩相容方式", "type": "select",
@@ -158,7 +159,7 @@ def validate_config(definition, supplied):
     elif definition.get("component") == "ultralytics" and result.get("optimizer") == "SGD":
         # Ultralytics builds Nesterov SGD, which requires positive momentum.
         result["momentum"] = .9
-    if definition["key"].startswith("yolo26"):
+    if definition.get('task') == 'instance_segmentation' and definition['key'].startswith('yolo26'):
         if result["tiny_hole_total_pixels"] < result["tiny_hole_max_pixels"]:
             raise ValueError("單一實例修補總上限不得小於單一孔洞上限")
     if not definition["key"] == "pixel_prototype_v1":

@@ -12,7 +12,7 @@
 | GrabCut | 傳統影像分割 | 隨主程式提供 |
 | SAM2 | AI 輔助分割 | 執行下方 AI 安裝指令 |
 | TorchVision | Mask R-CNN、Faster R-CNN、DeepLabV3、圖片分類 | 設定中的模型與元件，或下方訓練環境指令 |
-| Ultralytics | RT-DETR、YOLO26 Seg | 設定 → 模型與元件 → 安裝必要元件 |
+| Ultralytics | RT-DETR、YOLO26 Detect／Seg | 設定 → 模型與元件 → 安裝必要元件 |
 | CVAT | 本機網頁標註編輯 | 在編輯器選擇 CVAT，依安裝引導準備 WSL 2 與 Docker |
 
 SAM2：
@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 
 TorchVision 使用 `.venv-training`；Ultralytics 使用 `.venv-models/ultralytics`。GPU 加速需要相容的 NVIDIA GPU 與驅動程式；是否可用以設定頁檢查結果為準。相機採集需要 Windows 可辨識的影像裝置。
 
-YOLO26 Seg 預設使用預訓練權重微調，也可選擇隨機初始化；首次訓練可能下載權重。RT-DETR 目前從隨機權重開始訓練。Ultralytics 元件使用 AGPL-3.0 或 Enterprise 授權，請查閱安裝頁說明。
+YOLO26 Detect／Seg 預設使用預訓練權重微調，也可選擇隨機初始化；首次訓練可能下載權重。Detect 將矩形或面積標註轉為緊密框，不執行 Seg 的多邊形孔洞相容檢查。RT-DETR 目前從隨機權重開始訓練。Ultralytics 元件使用 AGPL-3.0 或 Enterprise 授權，請查閱安裝頁說明。
 
 EfficientAD／PatchCore 目前列為規劃項目，尚未開放安裝與訓練。
 
@@ -94,4 +94,3 @@ Train 與 Validation 都須涵蓋所有已有標註的類別。若類別只有�
 每個專案的資料庫、原圖、固定資料版本、Run、模型、候選標註、模型匯出與編輯器同步資料都保存在 `data/projects/<專案名稱>__<識別碼>/`。備份前先停止訓練並關閉工作台，再複製該專案資料夾；CVAT 執行環境、虛擬環境與另行下載的基礎權重不包含在專案內。
 
 「設定 → 更新與版本」可檢查並套用本機已變更的程式檔案。這個功能負責驗證及重新啟動，並非從 GitHub 自動下載新版；套件需求變更時需重新執行 `bootstrap.ps1`。
-
