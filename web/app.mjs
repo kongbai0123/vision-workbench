@@ -1464,6 +1464,8 @@ const splitManager=new SplitManager({api,onApplied:async(result,pid,createVersio
 async function openSplitManager(){await flushAllEdits();await splitManager.open(state.project.id)}
 async function renderSplitPage(){
   if(!state.project||!state.training)return;
+  const augmentationPanel=document.querySelector('.augmentation-panel');
+  if(augmentationPanel&&augmentationPanel.nextElementSibling!==$('splitFlowStats'))augmentationPanel.parentElement.insertBefore(augmentationPanel,$('splitFlowStats'));
   const projectId=state.project.id,info=await api(projectPath('/split-info'),'POST',{});
   if(state.project?.id!==projectId||state.stage!=='split')return;
   const readiness=state.training.readiness||{},stats=readiness.stats||{},splits=stats.splits||{};
@@ -1507,13 +1509,17 @@ function renderAugmentationPreparation(){
   const preset=$('augmentationPreset');if(!preset)return;preset.value=state.augmentationPreset||preset.value;
   const profile=augmentationProfile();$('augmentationCustomFields').hidden=profile.preset!=='custom';
   const sample=(state.project?.assets||[]).find(asset=>asset.review_state==='approved'&&asset.split==='train')||(state.project?.assets||[]).find(asset=>asset.review_state==='approved');
-  for(const id of ['augmentationOriginalPreview','augmentationResultPreview']){const image=$(id);image.hidden=!sample;if(sample)image.src=thumbnailURL(sample)}
+  for(const id of ['augmentationOriginalPreview','augmentationResultPreview']){
+    const image=$(id);let stage=image.parentElement;
+    if(!stage.classList.contains('augmentation-preview-stage')){stage=element('div',undefined,'augmentation-preview-stage');image.parentElement.insertBefore(stage,image);stage.append(image)}
+    stage.hidden=!sample;image.hidden=!sample;if(sample)image.src=thumbnailURL(sample);else stage.querySelector('svg')?.remove();
+  }
   const result=$('augmentationResultPreview');result.style.filter=`brightness(${1+profile.brightness*.45}) contrast(${1+profile.contrast*.55})`;result.style.transform=profile.fliplr>0?'scaleX(-1)':'none';
   if(sample)api(projectPath(`/assets/${sample.id}`)).then(full=>{
     if($('augmentationOriginalPreview').src!==new URL(thumbnailURL(sample),location.href).href)return;
     for(const [id,flipped] of [['augmentationOriginalPreview',false],['augmentationResultPreview',profile.fliplr>0]]){
-      const image=$(id),parent=image.parentElement;let overlay=parent.querySelector('svg');
-      if(!overlay){overlay=document.createElementNS('http://www.w3.org/2000/svg','svg');overlay.classList.add('augmentation-annotation-overlay');parent.append(overlay)}
+      const image=$(id),stage=image.parentElement;let overlay=stage.querySelector('svg');
+      if(!overlay){overlay=document.createElementNS('http://www.w3.org/2000/svg','svg');overlay.classList.add('augmentation-annotation-overlay');stage.append(overlay)}
       overlay.replaceChildren();overlay.setAttribute('viewBox',`0 0 ${full.width} ${full.height}`);overlay.setAttribute('preserveAspectRatio','xMidYMid meet');overlay.style.transform=flipped?'scaleX(-1)':'none';drawReviewOverlay(overlay,full);
     }
   }).catch(()=>{});

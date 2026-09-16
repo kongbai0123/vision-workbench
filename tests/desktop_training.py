@@ -251,6 +251,11 @@ def main():
             click("#cancelDialog")
             click("[data-stage=split]")
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
+            wait("document.querySelectorAll('.augmentation-annotation-overlay > *').length>0")
+            assert js("document.querySelector('.augmentation-panel').nextElementSibling.id==='splitFlowStats'")
+            alignment = json.loads(js("JSON.stringify(['augmentationOriginalPreview','augmentationResultPreview'].map(id=>{const image=document.querySelector('#'+id).getBoundingClientRect(),overlay=document.querySelector('#'+id).parentElement.querySelector('svg').getBoundingClientRect();return {top:Math.abs(image.top-overlay.top),left:Math.abs(image.left-overlay.left),width:Math.abs(image.width-overlay.width),height:Math.abs(image.height-overlay.height)}}))"))
+            assert all(max(item.values()) < 1 for item in alignment), alignment
+            capture("34-augmentation-overlay-alignment", target=".augmentation-panel")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             # Parameter forms expose the selected engine's actual supported schema.
@@ -302,12 +307,12 @@ def main():
             QTest.qWait(180)
             boxes = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>{const r=e.getBoundingClientRect();return [r.top,r.height,r.bottom]}))"))
             assert len(boxes) == 3, boxes
-            assert boxes[0][2] <= min(boxes[1][0], boxes[2][0]), boxes
-            assert abs(boxes[1][0] - boxes[2][0]) < 2, boxes
+            for coordinate in (0, 1, 2):
+                assert max(box[coordinate] for box in boxes) - min(box[coordinate] for box in boxes) < 2, boxes
             click(".training-config-panel .training-details summary")
             QTest.qWait(80)
             expanded = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>e.getBoundingClientRect().height))"))
-            assert all(value > 0 for value in expanded), expanded
+            assert max(expanded) - min(expanded) < 2, expanded
             path, run, rows = saved["R004"]
             run.update(status="running", updated_at=time.time())
             atomic_json(path, run)

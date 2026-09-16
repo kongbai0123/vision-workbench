@@ -95,7 +95,7 @@
    <div class="section-heading"><div class="inline"><label class="check-label"><input id="reviewSelectAll" type="checkbox">選取本頁圖片</label><span id="reviewSelectedCount" class="muted">已選 0 張</span><button id="assignSelected" class="secondary">指定批次與分割</button></div><div class="inline"><input id="reviewSearch" type="search" placeholder="搜尋檔名"><select id="reviewFilter"><option value="pending">待審核</option><option value="all">所有狀態</option><option value="approved">已核准</option><option value="rejected">已退回</option></select></div></div><div id="reviewGrid" class="review-grid"></div><div class="review-pagination"><button id="reviewPrevious" class="secondary">上一頁</button><span id="reviewPageLabel"></span><button id="reviewNext" class="secondary">下一頁</button></div>
   </section>
   <section id="split" class="page split-page" hidden>
-   <div class="page-heading"><div><span class="eyebrow">DATA PREPARATION</span><h1>資料準備</h1><p>先完成資料分割，再設定只套用於 Train 的資料增強；兩者會一起固定在資料版本中。</p></div><button id="refreshSplitPage" class="secondary">重新整理</button></div>
+   <div class="page-heading"><div><span class="eyebrow">DATA PREPARATION</span><h1>資料準備</h1><p>先定義增強配方，再用原始圖片與來源群組完成分割；建立版本後只在 Train Batch 即時增強，避免變體流入 Validation／Test。</p></div><button id="refreshSplitPage" class="secondary">重新整理</button></div>
    <div id="splitFlowStats" class="split-flow-stats" aria-label="資料分割摘要"></div>
    <div class="split-flow-layout">
     <article class="panel split-flow-overview"><div class="panel-title"><span>CURRENT DISTRIBUTION</span><h2>目前分配</h2></div><div id="splitFlowDistribution" class="split-flow-distribution"></div><div id="splitFlowStatus" class="split-flow-status" role="status"></div></article>
