@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {mergeProjectDelta} from '../web/state.mjs';
 import {nativeCallbacks, installNativeCallbacks, connectNative} from '../web/native-bridge.mjs';
+import {filterModelVersions} from '../web/pages/training.mjs';
 
 test('project deltas preserve selection ordering, replace and delete only changed IDs', () => {
   const current={id:'p',revision:1,assets:[{id:'b'},{id:'a'},{id:'c'}]};
@@ -48,4 +49,18 @@ test('AI annotation and model trial have separate workflow locations',async()=>{
   assert.match(html,/影片逐幀推論，不跳幀/);
   assert.ok(html.indexOf('id="generateCurrentPrediction"')<html.indexOf('id="models"'));
   assert.ok(!html.includes('id="predictionTarget"'));
+});
+
+test('model versions can be narrowed by dataset, engine and search text',async()=>{
+  const models=[
+    {model_version_id:'M001',run_id:'R001',dataset_version_id:'D001',engine:'yolo',engine_name:'YOLO Detect'},
+    {model_version_id:'M002',run_id:'R002',dataset_version_id:'D002',engine:'maskrcnn',engine_name:'Mask R-CNN'},
+    {model_version_id:'M003',run_id:'R003',dataset_version_id:'D002',engine:'yolo',engine_name:'YOLO Detect'},
+  ];
+  assert.deepEqual(filterModelVersions(models,{dataset:'D002'}).map(item=>item.model_version_id),['M002','M003']);
+  assert.deepEqual(filterModelVersions(models,{dataset:'D002',engine:'yolo'}).map(item=>item.model_version_id),['M003']);
+  assert.deepEqual(filterModelVersions(models,{query:'r002'}).map(item=>item.model_version_id),['M002']);
+  const html=await readFile(new URL('../web/index.html',import.meta.url),'utf8');
+  for(const id of ['modelDatasetFilter','modelEngineFilter','modelSearch','modelFilterCount','clearModelFilters'])assert.match(html,new RegExp(`id="${id}"`));
+  const training=await readFile(new URL('../web/pages/training.mjs',import.meta.url),'utf8');assert.match(training,/訓練設定與差異說明/);
 });

@@ -1,5 +1,39 @@
 import {TaskTiming} from '../task-timing.mjs';
 import {decodeMask} from '../shapes.mjs';
+
+export function filterModelVersions(models,{dataset='',engine='',query=''}={}){
+  const needle=String(query).trim().toLocaleLowerCase();
+  return (models||[]).filter(model=>(!dataset||model.dataset_version_id===dataset)&&(!engine||model.engine===engine)&&(
+    !needle||[model.model_version_id,model.run_id,model.dataset_version_id,model.engine,model.engine_name].some(value=>String(value||'').toLocaleLowerCase().includes(needle))
+  ));
+}
+
+const modelParameterDefinitions={
+  epochs:['訓練輪數','完整走訪訓練事件的次數；較多輪不保證更好，需搭配 Validation 與早停判讀。'],
+  image_size:['影像尺寸','模型實際接收的影像邊長；較大通常保留更多細節，但增加顯存與運算時間。'],
+  batch_size:['批次大小','每次前向／反向處理的圖片數；受顯存限制，也會影響梯度穩定度。'],
+  gradient_accumulation:['梯度累積','累積多少個 Batch 後才更新一次權重；可在顯存不足時提高有效批次。'],
+  learning_rate:['初始學習率','每次更新權重的起始步幅；過大可能震盪，過小可能學習緩慢。'],
+  min_learning_rate:['最低學習率','排程下降後的學習率下限。'],
+  weight_decay:['權重衰減','正則化強度，用於抑制權重過度增長與過擬合。'],
+  optimizer:['最佳化器','決定如何依梯度更新模型權重。'],
+  scheduler:['學習率排程','決定學習率隨 Epoch 如何變化。'],
+  warmup_epochs:['暖身輪數','訓練初期逐步提高學習率，降低剛開始更新不穩定的風險。'],
+  initialization:['初始權重','預訓練權重通常收斂較快；隨機初始化需要更多資料與訓練。'],
+  seed:['隨機種子','固定資料順序與隨機操作，方便重現；它不是 Epoch 或迭代次數。'],
+  'augmentation.preset':['增強配方','Train 階段採用的資料增強組合。'],
+  'augmentation.expansion_count':['每張擴充數','每張 Train 原圖額外產生的獨立增強事件數。'],
+  'augmentation.brightness':['亮度強度','隨機亮度變化範圍。'],
+  'augmentation.contrast':['對比強度','隨機對比變化範圍。'],
+  'augmentation.fliplr':['水平翻轉率','每個訓練事件進行水平翻轉的機率。'],
+  'augmentation.flipud':['垂直翻轉率','每個訓練事件進行垂直翻轉的機率。'],
+  'augmentation.degrees':['旋轉角度','隨機旋轉的最大角度。'],
+  'augmentation.translate':['平移比例','隨機水平／垂直平移的最大比例。'],
+  'augmentation.scale':['縮放比例','隨機縮放變化範圍。'],
+  'augmentation.mosaic':['Mosaic 機率','將多張影像拼接為一個訓練事件的機率。'],
+};
+
+function parameterText(value){if(value===undefined||value===null||value==='')return '—';if(typeof value==='boolean')return value?'啟用':'停用';if(typeof value==='number')return Number.isInteger(value)?String(value):String(Number(value.toPrecision(7)));return String(value)}
 // Training and model pages share state through an explicit application context.
 export function createTrainingPage(context) {
   const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
@@ -191,11 +225,17 @@ async function startTrainingRun(){
 }
 async function stopTrainingRun(){const run=activeTrainingRun();if(!run)return;await api(projectPath(`/training-runs/${run.run_id}/stop`),'POST',{});await loadTraining();toast(`${run.run_id} 正在安全停止。`)}
 function renderModels(){
-  if(!state.training)return;const {models=[],predictions=[]}=state.training;
-  const list=$('modelList');list.replaceChildren();if(!models.length)list.append(element('p','尚無模型版本。','empty-list'));
-  for(const model of models){const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),row=button('','model-row'+(model.model_version_id===state.selectedModel?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});const top=element('div',undefined,'model-row-top');top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),element('span',definition?.predict?'可預標註':'訓練／匯出','run-status'));row.append(top,element('small',`${model.dataset_version_id} · ${date(model.created_at)}`));list.append(row)}
-  renderModelDetail(models.find(model=>model.model_version_id===state.selectedModel)||models[0]);
-  const selected=models.find(model=>model.model_version_id===state.selectedModel)||models[0],selectedDefinition=state.training?.capabilities?.engines?.find(item=>item.key===selected?.engine);for(const id of ['trialImages','trialVideo','runModelComparison']){$(id).disabled=!selected||!selectedDefinition?.predict;$(id).title=selected&&!selectedDefinition?.predict?'此模型尚未提供推論介面':''}
+  if(!state.training)return;const {models=[]}=state.training;
+  const datasetFilter=$('modelDatasetFilter'),engineFilter=$('modelEngineFilter'),query=$('modelSearch').value,datasetRemember=datasetFilter.value,engineRemember=engineFilter.value;
+  datasetFilter.onchange=renderModels;engineFilter.onchange=renderModels;$('modelSearch').oninput=renderModels;$('clearModelFilters').onclick=()=>{datasetFilter.value='';engineFilter.value='';$('modelSearch').value='';renderModels()};
+  datasetFilter.replaceChildren(new Option('全部資料版本',''));for(const value of [...new Set(models.map(model=>model.dataset_version_id).filter(Boolean))].sort())datasetFilter.append(new Option(value,value));datasetFilter.value=[...datasetFilter.options].some(option=>option.value===datasetRemember)?datasetRemember:'';
+  engineFilter.replaceChildren(new Option('全部模型引擎',''));for(const value of [...new Set(models.map(model=>model.engine).filter(Boolean))].sort()){const sample=models.find(model=>model.engine===value);engineFilter.append(new Option(sample?.engine_name||value,value))}engineFilter.value=[...engineFilter.options].some(option=>option.value===engineRemember)?engineRemember:'';
+  const visible=filterModelVersions(models,{dataset:datasetFilter.value,engine:engineFilter.value,query});$('modelFilterCount').textContent=`顯示 ${visible.length}／${models.length} 個模型`;
+  if(!visible.some(model=>model.model_version_id===state.selectedModel))state.selectedModel=visible[0]?.model_version_id||null;
+  const list=$('modelList');list.replaceChildren();if(!visible.length)list.append(element('p',models.length?'沒有符合目前篩選條件的模型。':'尚無模型版本。','empty-list'));
+  for(const model of visible){const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),row=button('','model-row'+(model.model_version_id===state.selectedModel?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});const top=element('div',undefined,'model-row-top');top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),element('span',definition?.predict?'可預標註':'訓練／匯出','run-status'));row.append(top,element('small',`${model.dataset_version_id} · ${model.run_id} · ${date(model.created_at)}`));list.append(row)}
+  const selected=visible.find(model=>model.model_version_id===state.selectedModel);renderModelDetail(selected);
+  const selectedDefinition=state.training?.capabilities?.engines?.find(item=>item.key===selected?.engine);for(const id of ['trialImages','trialVideo','runModelComparison']){$(id).disabled=!selected||!selectedDefinition?.predict;$(id).title=selected&&!selectedDefinition?.predict?'此模型尚未提供推論介面':''}
 }
 function renderAnnotationModels(){
   const select=$('annotationModel'),root=$('annotationPredictionList');if(!select||!root||!state.training)return;const models=state.training.models||[],predictable=models.filter(model=>state.training.capabilities?.engines?.find(item=>item.key===model.engine)?.predict),previous=select.value;select.replaceChildren();
@@ -214,10 +254,22 @@ function renderAnnotationModels(){
   }
   if(!root.children.length)root.append(element('p','目前圖片尚無模型候選。','empty-list'));
 }
-function renderModelDetail(model){const root=$('modelDetail');root.replaceChildren();if(!model){const empty=element('div',undefined,'report-empty');empty.append(element('span','◇'),element('h3','尚無可用模型'),element('p','完成一次訓練與評估後，模型會連同資料來源出現在這裡。'));root.append(empty);return}
-  const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),title=element('div',undefined,'model-title'),copy=element('div');copy.append(element('span','MODEL VERSION','eyebrow'),element('h2',`${model.model_version_id} · ${model.engine_name}`));title.append(copy,element('span',definition?.task_name||'模型版本','badge approved'));root.append(title);
+function flattenModelConfig(config){const flat={};for(const [key,value]of Object.entries(config||{})){if(key==='augmentation'&&value&&typeof value==='object')for(const [child,nested]of Object.entries(value))flat[`augmentation.${child}`]=nested;else if(value===null||typeof value!=='object')flat[key]=value}return flat}
+function renderModelParameters(model){
+  const run=state.training?.runs?.find(item=>item.run_id===model.run_id),config=run?.config||{},flat=flattenModelConfig(config),models=state.training?.models||[];
+  const previousModel=models.filter(item=>item.model_version_id!==model.model_version_id&&item.engine===model.engine&&Number(new Date(item.created_at||0))<=Number(new Date(model.created_at||0))).sort((a,b)=>Number(new Date(b.created_at||0))-Number(new Date(a.created_at||0)))[0];
+  const previousRun=state.training?.runs?.find(item=>item.run_id===previousModel?.run_id),previous=flattenModelConfig(previousRun?.config||{}),keys=[...new Set([...Object.keys(modelParameterDefinitions).filter(key=>key in flat||key in previous),...Object.keys(flat).filter(key=>!(key in modelParameterDefinitions))])];
+  const details=element('details',undefined,'model-parameters');details.open=true;const summary=document.createElement('summary');summary.append(element('span','TRAINING PARAMETERS','eyebrow'),element('b','訓練設定與差異說明'),element('small',previousModel?`比較基準：${previousModel.model_version_id} · ${previousModel.dataset_version_id}`:'第一個同引擎模型，沒有前版可比較'));details.append(summary);
+  if(!keys.length){details.append(element('p','此舊模型沒有保存可顯示的訓練參數。','readiness-item'));return details}
+  const note=element('p','此處讀取來源 Run 實際保存的設定。標示「已變更」表示與上一個同引擎模型不同，不代表設定一定較好或較差。','field-note'),table=document.createElement('table');table.className='model-parameter-table';const head=document.createElement('thead'),headRow=document.createElement('tr');for(const label of ['參數與用途','目前模型',previousModel?previousModel.model_version_id:'前一版'])headRow.append(element('th',label));head.append(headRow);const body=document.createElement('tbody');
+  for(const key of keys){const definition=modelParameterDefinitions[key]||[key,'由所選模型引擎提供的專用設定。'],current=flat[key],before=previous[key],changed=previousModel&&parameterText(current)!==parameterText(before),row=document.createElement('tr');if(changed)row.className='parameter-changed';const name=document.createElement('td');name.append(element('b',definition[0]),element('small',definition[1]));const currentCell=document.createElement('td');currentCell.append(element('code',parameterText(current)));if(changed)currentCell.append(element('span','已變更','parameter-change-badge'));row.append(name,currentCell,element('td',previousModel?parameterText(before):'—'));body.append(row)}
+  table.append(head,body);details.append(note,table);return details;
+}
+function renderModelDetail(model){const root=$('modelDetail');root.replaceChildren();
+  const heading=element('div',undefined,'model-section-heading'),headingCopy=element('div');headingCopy.append(element('span','MODEL VERSION'),element('h2',model?`${model.model_version_id} · ${model.engine_name}`:'模型版本'));heading.append(headingCopy);root.append(heading);if(!model){const empty=element('div',undefined,'report-empty');empty.append(element('span','◇'),element('h3','尚無可用模型'),element('p','完成一次訓練與評估後，模型會連同資料來源出現在這裡。'));root.append(empty);return}
+  const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine);heading.append(element('span',definition?.task_name||'模型版本','badge approved'));
   const result=model.test||model.validation||{},split=model.test?'Test':'Validation',invalid=model.evaluation_reassessment?.valid===false,values=invalid?[['評估結果','不可用'],['原因',model.evaluation_reassessment.reason||'資料或評估流程不符合要求']]:result.accuracy!==undefined?[[`${split} Accuracy`,Number(result.accuracy).toFixed(3)],[`${split} Macro F1`,Number(result.macro_f1).toFixed(3)],[`${split} Macro Recall`,Number(result.macro_recall).toFixed(3)]]:result.mask_map50_95!==undefined?[[`${split} Mask mAP50–95`,Number(result.mask_map50_95).toFixed(3)],[`${split} Mask mAP50`,Number(result.mask_map50).toFixed(3)]]:result.box_map50_95!==undefined?[[`${split} Box mAP50–95`,Number(result.box_map50_95).toFixed(3)],[`${split} Box mAP50`,Number(result.box_map50).toFixed(3)]]:result.box_map50!==undefined?[[`${split} Box mAP50`,Number(result.box_map50).toFixed(3)],[`${split} Recall@0.5`,Number(result.recall_50).toFixed(3)]]:result.mean_dice!==undefined?[[`${split} mIoU`,Number(result.mean_iou).toFixed(3)],[`${split} Dice`,Number(result.mean_dice).toFixed(3)]]:[[`${split} Mean IoU`,Number(result.mean_iou||0).toFixed(3)]];if(!invalid){values.push([`${split} 圖片`,number(result.images)],['類別數',number(model.classes?.length)]);if(!model.test)values.push(['獨立 Test','尚未執行'])}const score=element('div',undefined,'run-metrics');for(const [label,value]of values){const item=element('div',undefined,'run-metric');item.append(element('span',label),element('b',value));score.append(item)}root.append(score);
-  const abilities=['訓練','評估',...(definition?.predict?['預標註']:[]),'匯出'].join('／'),facts=element('dl',undefined,'model-facts');for(const [label,value]of [['來源 Run',model.run_id],['訓練資料',model.dataset_version_id],['類別',(model.classes||[]).join('、')],['模型能力',abilities],['建立時間',date(model.created_at)]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',model.task==='image_classification'?'分類結果保留為圖片層級評估，不會建立覆蓋整張圖片的 Bounding Box。':'模型與資料版本、類別映射和評估結果一起保存；專案後續修改不會回寫此模型。','readiness-item'));
+  const abilities=['訓練','評估',...(definition?.predict?['預標註']:[]),'匯出'].join('／'),facts=element('dl',undefined,'model-facts');for(const [label,value]of [['來源 Run',model.run_id],['訓練資料',model.dataset_version_id],['類別',(model.classes||[]).join('、')],['模型能力',abilities],['建立時間',date(model.created_at)]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',model.task==='image_classification'?'分類結果保留為圖片層級評估，不會建立覆蓋整張圖片的 Bounding Box。':'模型與資料版本、類別映射和評估結果一起保存；專案後續修改不會回寫此模型。','readiness-item'),renderModelParameters(model));
   if(model.yolo_compatibility){const report=model.yolo_compatibility,summary=report.summary||{},audit=element('details',undefined,'training-monitor-details'),heading=document.createElement('summary');heading.textContent=`YOLO Seg 相容稽核 · 修補 ${number(summary.pixels_repaired)} px`;const copy=element('p',`已掃描 ${number(summary.assets_scanned)} 張；${number(summary.affected_assets)} 張的 Run 副本修補 ${number(summary.holes_repaired)} 個微小孔洞。原始標註與固定資料版本未變更，模型內部評估使用相容副本。`,'readiness-item');audit.append(heading,copy);for(const issue of report.repairs||[]){const row=element('div',undefined,'yolo-issue');row.append(element('b',`${issue.name} · ${issue.label||'未命名標註'}`),button('放大位置','text-button',()=>safe(()=>showYoloLocation(issue))),element('p',issue.message));audit.append(row)}root.append(audit)}
   const actions=element('div',undefined,'model-export-actions'),exportButton=button('匯出模型封裝','primary',()=>safe(()=>exportSelectedModel(model.model_version_id)));actions.append(exportButton);const exports=(state.training?.model_exports||[]).filter(item=>item.model_version_id===model.model_version_id);if(exports.length){const latest=exports[0],open=button('開啟最近匯出資料夾','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:latest.export_id})));actions.append(open);root.append(actions,element('p',`最近匯出：${latest.export_id} · ${date(latest.created_at)} · ${number(latest.bytes)} bytes`,'field-note'))}else root.append(actions,element('p','封裝包含模型、checkpoint、評估、Epoch 指標、來源 Run 與 SHA-256 manifest，不包含訓練圖片。','field-note'))}
 async function exportSelectedModel(modelId){const job=await api(projectPath('/model-exports'),'POST',{model_version_id:modelId}),result=await pollJob(job);await loadTraining();toast(`${result.model_version_id} 已匯出為 ${result.export_id}。`);await api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:result.export_id})}
