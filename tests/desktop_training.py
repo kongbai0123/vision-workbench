@@ -329,7 +329,10 @@ def main():
             # available through explicit chart groups.
             assert not js("!!document.querySelector('#trainingMetricOptions')")
             assert set(plotted_metrics()) == {"val/mean_iou"}
-            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 5
+            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 8
+            assert js("getComputedStyle(document.querySelector('.training-summary-cards')).gridTemplateColumns.split(' ').length") == 4
+            assert js("[...document.querySelectorAll('.training-summary-cards .run-metric > span')].filter(e=>e.textContent==='完成／總 Epoch').length") == 1
+            assert not js("!!document.querySelector('.run-config')")
             assert js("document.querySelector('[data-chart-group=performance]').getAttribute('aria-selected')==='true'")
             click("[data-chart-group=loss]")
             wait("document.querySelectorAll('#trainingPlots svg').length===1")

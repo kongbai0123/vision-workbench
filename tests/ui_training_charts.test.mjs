@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finiteMetric, normalizedMetricRows, metricDescriptors, defaultMetricKeys,
-  runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
+  runAppearance, comparisonWarnings, trainingMetricDiagnostics, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
 import {buildLearningRateChartModel, buildChartModels} from '../web/training-charts.mjs';
 import {chartGroupForMetric, runAuditSections} from '../web/training-monitor.mjs';
 
@@ -203,6 +203,36 @@ test('actual LR plots use a useful small scale and keep it when hiding runs',()=
   const full=buildChartModel(options,'train/learning_rate');assert.ok(full.yMax>=.002&&full.yMax<.01);
   const hidden=buildChartModel({...options,visibleRunIds:new Set(['R1'])},'train/learning_rate');
   assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
+});
+
+test('diagnostics explain early precision recall volatility using recorded evidence', () => {
+  const item=run('R5',{engine:'yolo26n_detect',config:{epochs:150},evaluation:{validation:{images:11}}});
+  const rows=[
+    {epoch:7,'val/box_precision':.42,'val/box_recall':.56,'val/box_map50_95':.36},
+    {epoch:8,'val/box_precision':.01,'val/box_recall':.65,'val/box_map50_95':.36},
+    {epoch:9,'val/box_precision':1,'val/box_recall':.18,'val/box_map50_95':.38},
+    ...Array.from({length:10},(_,index)=>({epoch:120+index,'val/box_precision':.85,'val/box_recall':.49,'val/box_map50_95':.45+index*.001})),
+  ];
+  const findings=trainingMetricDiagnostics([item],reportsFor([item,rows]));
+  const early=findings.find(item=>item.kind==='early_volatility');
+  assert.match(early.evidence,/Epoch 8→9/);
+  assert.match(early.interpretation,/後段 mAP 波動已收斂/);
+  assert.match(early.interpretation,/Validation 只有 11 張/);
+});
+
+test('diagnostics identify a sustained precision recall gap as conservative missed detections', () => {
+  const item=run('R1',{engine:'yolo26n_detect'}),rows=Array.from({length:5},(_,index)=>({epoch:index+1,
+    'val/box_precision':.86,'val/box_recall':.48,'val/box_map50_95':.45}));
+  const finding=trainingMetricDiagnostics([item],reportsFor([item,rows])).find(item=>item.kind==='precision_recall_gap');
+  assert.match(finding.evidence,/Precision 0.860、Recall 0.480/);
+  assert.match(finding.interpretation,/偏保守/);
+  assert.match(finding.interpretation,/漏檢較多/);
+});
+
+test('stable balanced detection metrics do not create false diagnostics', () => {
+  const item=run('R1',{engine:'yolo26n_detect'}),rows=Array.from({length:8},(_,index)=>({epoch:index+1,
+    'val/box_precision':.72+index*.005,'val/box_recall':.69+index*.005,'val/box_map50_95':.6}));
+  assert.deepEqual(trainingMetricDiagnostics([item],reportsFor([item,rows])),[]);
 });
 
 test('monitor groups outcome, loss, and learning-rate charts without dropping metrics', () => {

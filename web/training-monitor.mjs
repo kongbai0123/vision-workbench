@@ -1,4 +1,4 @@
-import {createTrainingCharts, metricDescriptors, normalizedMetricRows, runAppearance, comparisonWarnings, formatMetric as fmt} from './training-charts.mjs';
+import {createTrainingCharts, metricDescriptors, normalizedMetricRows, runAppearance, comparisonWarnings, trainingMetricDiagnostics, formatMetric as fmt} from './training-charts.mjs';
 
 const el=(tag,text,className)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(className)n.className=className;return n};
 const action=(text,fn,className='secondary')=>{const n=el('button',text,className);n.type='button';n.onclick=fn;return n};
@@ -148,11 +148,13 @@ export class TrainingMonitor {
     if(this.mode==='single')this.renderSingleSummary(runs[0]);else this.renderComparisonSummary(runs);
     for(const run of runs){if(this.errors.has(run.run_id))this.root.append(el('p',`${run.run_id}：${this.errors.get(run.run_id)}；${this.reports.has(run.run_id)?'顯示上次成功取得的指標。':'可按重新整理重試。'}`,'readiness-item warning'))}
     const descriptors=metricDescriptors(runs,this.reports);
+    this.renderMetricSourceGuide(runs);
     this.renderChartToolbar(descriptors);
     const chosen=descriptors.filter(metric=>this.chartGroup==='all'||chartGroupForMetric(metric.key)===this.chartGroup).map(metric=>metric.key);
     const warnings=this.mode==='compare'?chosen.flatMap(key=>comparisonWarnings(runs.filter(run=>descriptors.find(d=>d.key===key)?.availableRunIds.includes(run.run_id)),[key])):[];
     const uniqueWarnings=[...new Set(warnings)];
     if(uniqueWarnings.length){const notice=el('details',undefined,'training-alert-summary');notice.append(el('summary',`比較提示 · ${uniqueWarnings.length}`));uniqueWarnings.forEach(warning=>notice.append(el('p',warning,'readiness-item warning')));this.root.append(notice)}
+    this.renderMetricDiagnostics(runs);
     const plot=el('div');plot.id='trainingPlots';this.root.append(plot);
     this.chart=createTrainingCharts(plot,{runs,domainRuns:this.mode==='compare'?this.comparisonCandidates():runs,reports:this.reports,comparison:this.mode==='compare',metricKeys:chosen,domains:this.domains,interaction:this.interaction});
     if(chosen.length)this.root.append(el('p','X 軸涵蓋完整 Run；切換圖表群組不會隱藏原始數值。移到圖表、點選或使用方向鍵可同步查看同一 Epoch。','metric-chart-note'));
@@ -179,6 +181,37 @@ export class TrainingMonitor {
     const tabs=el('div',undefined,'training-chart-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','圖表群組');
     for(const [key,label] of chartGroups){const count=key==='all'?descriptors.length:descriptors.filter(metric=>chartGroupForMetric(metric.key)===key).length,button=action(`${label} · ${count}`,()=>{this.chartGroup=key;this.render()},'secondary');button.dataset.chartGroup=key;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(this.chartGroup===key));button.disabled=!count;tabs.append(button)}
     bar.append(copy,tabs);this.root.append(bar);
+  }
+  renderMetricDiagnostics(runs){
+    const findings=trainingMetricDiagnostics(runs,this.reports);
+    if(!findings.length)return;
+    const section=el('section',undefined,'training-diagnostics');
+    const head=el('div',undefined,'training-diagnostics-heading');head.append(el('span','AUTOMATIC DIAGNOSIS','eyebrow'),el('h3',`曲線診斷 · ${findings.length}`));section.append(head);
+    const grid=el('div',undefined,'training-diagnostics-grid');
+    for(const item of findings){const card=el('article',undefined,`training-diagnostic ${item.level}`);card.append(el('h4',`${item.runId} · ${item.title}`),el('p',item.evidence,'training-diagnostic-evidence'),el('p',`判讀：${item.interpretation}`),el('p',`建議：${item.action}`,'muted'));grid.append(card)}
+    section.append(grid);this.root.append(section);
+  }
+  renderMetricSourceGuide(runs){
+    const items=[];
+    for(const run of runs){
+      const rows=normalizedMetricRows(this.reports.get(run.run_id)?.metrics||[]),keys=[['val/box_map50_95','box_map50_95','Box'],['val/mask_map50_95','mask_map50_95','Mask']];
+      const selected=keys.find(([curveKey,scoreKey])=>rows.some(row=>finite(row[curveKey]))||finite(run.evaluation?.validation?.[scoreKey])||finite(run.evaluation?.test?.[scoreKey]));
+      if(!selected)continue;
+      const [curveKey,scoreKey,family]=selected,latest=[...rows].reverse().find(row=>finite(row[curveKey])),{score,split}=this.evaluation(run);
+      const checkpoint=run.evaluation?.protocol?.selection_checkpoint==='best_validation'?'Validation 最佳權重':run.evaluation?.protocol?.selection_checkpoint==='final_epoch'?'最後一輪權重':'已保存評估權重';
+      items.push({run,latest,curveKey,scoreKey,family,score,split,checkpoint});
+    }
+    if(!items.length)return;
+    const section=el('section',undefined,'training-metric-source');section.append(el('span','METRIC SOURCE','eyebrow'),el('h3','mAP 數值怎麼對照'));
+    for(const item of items){
+      const grid=el('div',undefined,'training-metric-source-grid');
+      const chartValue=item.latest?`${item.family} mAP50–95 ${fmt(item.latest[item.curveKey])}`:'尚無數值';
+      const finalValue=finite(item.score?.[item.scoreKey])?`${item.family} mAP50–95 ${fmt(item.score[item.scoreKey])}`:'尚無數值';
+      for(const [label,value] of [['Epoch 曲線',`Validation · ${item.latest?`Epoch ${item.latest.epoch}`:'等待紀錄'} · ${chartValue}`],['最終評估表',`${item.split} · ${item.checkpoint} · ${finalValue}`],['mAP50',`IoU = 0.50；${finite(item.score?.[item.scoreKey.replace('map50_95','map50')])?fmt(item.score[item.scoreKey.replace('map50_95','map50')]):'—'}`],['mAP50–95',`IoU 0.50～0.95 的平均；${finite(item.score?.[item.scoreKey])?fmt(item.score[item.scoreKey]):'—'}`]]){const card=el('div');card.append(el('span',label),el('b',value));grid.append(card)}
+      section.append(el('h4',`${item.run.run_id} · ${item.family}`),grid,el('p','曲線與最終表若使用不同資料集合、不同 Epoch 權重，就不應期待數值相同；mAP50–95 的判定也比 mAP50 嚴格。','muted'));
+      if(item.run.evaluation?.protocol?.test_present&&item.run.evaluation.protocol.test_independent_sources===false)section.append(el('p','此 Test 與其他集合有來源重疊，分數只適合流程／實驗參考，不能當成獨立場景泛化成績。','readiness-item warning'));
+    }
+    this.root.append(section);
   }
   renderModelPicker(){
     const candidates=this.comparisonCandidates(),field=el('fieldset',undefined,'training-model-picker');field.id='trainingModelPicker';
@@ -225,12 +258,7 @@ export class TrainingMonitor {
     const cards=el('div',undefined,'run-metrics training-summary-cards');
     const batch=run.batch&&run.batches_per_epoch?`${run.batch} / ${run.batches_per_epoch}`:'等待 Batch',updates=run.execution?.optimizer_steps;
     const noEvaluation=run.data_quality?.purpose==='all_train';
-    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):noEvaluation?'依用途不執行':'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生']]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
-    this.root.append(this.configRow(run));
-  }
-  configRow(run){
-    const row=el('div',undefined,'run-config');
-    for(const [label,value]of [['資料版本',run.dataset_version_id],['引擎',run.engine_name],['完成／總 Epoch',`${run.epoch??this.reports.get(run.run_id)?.metrics?.at(-1)?.epoch??'—'} / ${run.config?.epochs??'—'}`],['裝置設定',String(run.config?.device||'auto').toUpperCase()]]){const item=el('div');item.append(el('span',label),el('b',value));row.append(item)}return row;
+    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):noEvaluation?'依用途不執行':'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生'],['資料版本',run.dataset_version_id],['引擎',run.engine_name],['裝置設定',String(run.config?.device||'auto').toUpperCase()]]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
   }
   renderComparisonSummary(runs){
     this.root.append(el('p',`${runs[0].dataset_version_id} · 已選 ${runs.length} 個模型 · 曲線來源：${runs[0].metricSplit==='test'?'Test（未設定 Validation）':runs[0].metricSplit==='val'?'Validation':'評估分割未知'}`,'muted'));

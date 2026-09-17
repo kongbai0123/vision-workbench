@@ -70,6 +70,83 @@ function reportRows(reports, run) {
   return normalizedMetricRows(report?.metrics || []);
 }
 
+const DETECTION_METRICS = [
+  {name: 'Box', precision: 'val/box_precision', recall: 'val/box_recall', map: 'val/box_map50_95'},
+  {name: 'Mask', precision: 'val/mask_precision', recall: 'val/mask_recall', map: 'val/mask_map50_95'},
+];
+
+const average = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+const range = values => values.length ? Math.max(...values) - Math.min(...values) : Infinity;
+
+// Explain recorded behaviour without pretending that a curve alone proves root cause.
+// The returned evidence and interpretation are intentionally separate so the UI can
+// distinguish observations from possible causes.
+export function trainingMetricDiagnostics(runs = [], reports = new Map()) {
+  const diagnostics = [];
+  for (const run of runs) {
+    const rows = reportRows(reports, run);
+    if (rows.length < 2) continue;
+    const recorded = reports?.get(run.run_id)?.run;
+    const validationImages = recorded?.evaluation?.validation?.images ?? run.evaluation?.validation?.images;
+    const sampleNote = Number.isInteger(validationImages)
+      ? `Validation 只有 ${validationImages} 張，單張結果會明顯放大曲線變化。`
+      : 'Validation 樣本數較少時，單張結果會明顯放大曲線變化。';
+    const configuredEpochs = Number(run.config?.epochs) || rows.at(-1).epoch;
+    const earlyLimit = Math.max(10, Math.ceil(configuredEpochs * .1));
+
+    for (const family of DETECTION_METRICS) {
+      const paired = rows.filter(row => finiteMetric(row[family.precision]) && finiteMetric(row[family.recall]));
+      if (paired.length < 2) continue;
+      const changes = [];
+      for (let index = 1; index < paired.length; index += 1) {
+        const previous = paired[index - 1], current = paired[index];
+        if (current.epoch !== previous.epoch + 1) continue;
+        const precisionDelta = current[family.precision] - previous[family.precision];
+        const recallDelta = current[family.recall] - previous[family.recall];
+        if (Math.max(Math.abs(precisionDelta), Math.abs(recallDelta)) >= .25) {
+          changes.push({from: previous.epoch, to: current.epoch, precisionDelta, recallDelta});
+        }
+      }
+      const earlyChanges = changes.filter(change => change.to <= earlyLimit);
+      if (earlyChanges.length) {
+        const strongest = earlyChanges.reduce((best, change) =>
+          Math.max(Math.abs(change.precisionDelta), Math.abs(change.recallDelta)) >
+          Math.max(Math.abs(best.precisionDelta), Math.abs(best.recallDelta)) ? change : best);
+        const laterMap = rows.filter(row => row.epoch > earlyLimit && finiteMetric(row[family.map])).slice(-10)
+          .map(row => row[family.map]);
+        const settled = laterMap.length >= 3 && range(laterMap) <= .12;
+        diagnostics.push({runId: run.run_id, family: family.name, kind: 'early_volatility',
+          level: settled ? 'info' : 'warning', title: `前段 ${family.name} Precision／Recall 劇烈變動`,
+          evidence: `最大變化在 Epoch ${strongest.from}→${strongest.to}：Precision ${strongest.precisionDelta >= 0 ? '+' : ''}${strongest.precisionDelta.toFixed(3)}、Recall ${strongest.recallDelta >= 0 ? '+' : ''}${strongest.recallDelta.toFixed(3)}。`,
+          interpretation: settled
+            ? `這通常屬於前段暖機與置信度排序快速重整；後段 mAP 波動已收斂，沒有看到整體訓練崩潰。${sampleNote}`
+            : `這可能來自前段暖機、置信度跨過評估門檻、少量評估樣本或標註差異；目前尚不足以只靠曲線判定為正常。${sampleNote}`,
+          action: settled
+            ? '持續看後段 mAP 與實際漏檢案例；若後段再次大幅跳動，再檢查標註、學習率與資料分布。'
+            : '先檢查同一 Epoch 的 mAP／loss，再抽查漏標與錯標；若後段持續出現，降低學習率並擴充 Validation。'});
+      }
+
+      const recent = paired.slice(-Math.min(5, paired.length));
+      if (recent.length < 3) continue;
+      const precision = average(recent.map(row => row[family.precision]));
+      const recall = average(recent.map(row => row[family.recall]));
+      const gap = precision - recall;
+      if (Math.abs(gap) < .25) continue;
+      const precisionHigher = gap > 0;
+      diagnostics.push({runId: run.run_id, family: family.name, kind: 'precision_recall_gap', level: 'warning',
+        title: precisionHigher ? `${family.name} Precision 高、Recall 低` : `${family.name} Recall 高、Precision 低`,
+        evidence: `最近 ${recent.length} 輪平均：Precision ${precision.toFixed(3)}、Recall ${recall.toFixed(3)}，落差 ${Math.abs(gap).toFixed(3)}。`,
+        interpretation: precisionHigher
+          ? `模型目前偏保守：誤報較少，但漏檢較多。可能原因包括置信度／NMS、難例或小物件不足、類別不平衡及漏標；這不是「訓練停止」的訊號。${sampleNote}`
+          : `模型目前偏積極：找到較多物件，但誤報也較多。可能原因包括置信度偏低、負樣本不足、相似背景或錯標；這不是單靠增加 Epoch 就一定會改善。${sampleNote}`,
+        action: precisionHigher
+          ? '若漏檢成本高，先看 PR 曲線並降低推論 confidence，再補充漏檢類型與一致標註。'
+          : '若誤報成本高，先提高推論 confidence，再補充負樣本並抽查錯標。'});
+    }
+  }
+  return diagnostics;
+}
+
 function definition(key) {
   const [label, unit, direction] = DEFINITIONS[key] || [key, false, null];
   return {key, label, unit, direction};

@@ -72,9 +72,9 @@ body.training-monitor-expanded {overflow:hidden}
 .training-monitor-actions {display:flex;gap:8px;flex-wrap:wrap}
 .training-monitor-actions [aria-pressed=true] {border-color:#438d82;background:#173b39;color:#8ce0d0}
 .run-progress-head {align-items:center;flex-wrap:wrap}
-.run-config {margin:14px 0 20px}
-.run-config > div {min-width:0}
-.run-config b {overflow-wrap:anywhere}
+.training-summary-cards {grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:20px}
+.training-summary-cards .run-metric {min-width:0}
+.training-summary-cards .run-metric b {overflow-wrap:anywhere}
 .training-comparison-list {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}
 .training-comparison-card {min-width:0;padding:14px 16px;background:#13232d;border:1px solid var(--line);border-radius:6px}
 .training-comparison-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -111,6 +111,18 @@ body.training-monitor-expanded {overflow:hidden}
 .training-alert-summary {margin:10px 0 14px;padding:9px 12px;border:1px solid #6f5d35;border-radius:5px;background:#211f18}
 .training-alert-summary summary {cursor:pointer;color:#e8c684;font-size:12px}
 .training-alert-summary .readiness-item {margin:9px 0 0}
+.training-diagnostics,.training-metric-source {margin:18px 0;padding:15px 16px;border:1px solid #304955;border-radius:6px;background:#101c24}
+.training-diagnostics-heading h3,.training-metric-source h3 {margin:5px 0 12px;font-size:16px}
+.training-diagnostics-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.training-diagnostic {min-width:0;padding:12px 13px;border-left:3px solid #62b9d9;background:#13232d}
+.training-diagnostic.warning {border-left-color:#d8a94c}
+.training-diagnostic h4,.training-metric-source h4 {margin:0 0 8px;font-size:13px}
+.training-diagnostic p {margin:6px 0;line-height:1.6}
+.training-diagnostic-evidence {font-family:Consolas,'Microsoft JhengHei',monospace;color:#d5e7ec}
+.training-metric-source-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:10px 0;background:var(--line);border:1px solid var(--line)}
+.training-metric-source-grid>div {min-width:0;padding:11px 12px;background:#13232d}
+.training-metric-source-grid span,.training-metric-source-grid b {display:block;overflow-wrap:anywhere}
+.training-metric-source-grid span {margin-bottom:5px;color:var(--muted)}
 .training-monitor-details {border-top:1px solid var(--line);margin-top:20px;padding-top:12px}
 .training-monitor-details summary {cursor:pointer;font-size:12px;padding:5px 0;color:#c3d6df}
 .training-monitor-details h3 {font-size:14px;margin-top:18px}
@@ -140,13 +152,14 @@ body.training-monitor-expanded {overflow:hidden}
 .training-history-row .run-row {min-width:0;overflow-wrap:anywhere}
 .training-history-row > .secondary {font-size:12px;padding:9px}
 @media(max-width:1100px){
+  .training-summary-cards,.training-metric-source-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
   .training-layout > .training-action-panel {display:grid;grid-template-columns:minmax(0,1fr) auto}
   .training-action-panel .training-summary {margin-bottom:0}
   .training-action-panel #startTraining,.training-action-panel #stopTraining {margin-top:0}
   .training-action-panel .field-note {min-height:0}
 }
 @media(max-width:760px){
-  .augmentation-layout,.augmentation-preview,.augmentation-fields,.training-architecture{grid-template-columns:1fr}
+  .augmentation-layout,.augmentation-preview,.augmentation-fields,.training-architecture,.training-summary-cards,.training-diagnostics-grid,.training-metric-source-grid{grid-template-columns:1fr}
   .training-chart-grid,.training-comparison-list,.training-detail-columns {grid-template-columns:1fr}
   .training-layout > .training-action-panel {display:flex}
   .training-action-panel #startTraining,.training-action-panel #stopTraining {margin-top:16px}
