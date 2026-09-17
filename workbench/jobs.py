@@ -57,10 +57,12 @@ class JobManager:
             with self.lock:
                 if self.jobs[jid]["state"] == "paused":
                     self.jobs[jid].update(state="running", message="繼續處理")
-        def progress(message, percent=None):
+        def progress(message, percent=None, *, phase=None):
             checkpoint()
             with self.lock:
                 self.jobs[jid].update(message=str(message), progress=percent)
+                if phase is not None:
+                    self.jobs[jid]['progress_phase'] = str(phase)
         with self.lock:
             self.jobs[jid].update(state="running", message="處理中")
         try:

@@ -65,6 +65,22 @@ class ApiWorkflowTests(unittest.TestCase):
             self.call('/api/projects', {'name': []})
         self.assertEqual(error.exception.code, 400)
 
+    def test_model_trial_job_and_media_are_ephemeral_and_authenticated(self):
+        project=self.call('/api/projects',{'name':'trial'});pid=project['id'];session='a'*32
+        def fake(_pid,_model,_paths,_progress):
+            media=self.root/'data'/'model-trials'/session/'media';media.mkdir(parents=True)
+            Image.new('RGB',(20,10),'red').save(media/'00000000.jpg')
+            result={'session_id':session,'frames':[{'index':0,'image':'00000000.jpg','width':20,'height':10,'shapes':[]}]}
+            (media.parent/'result.json').write_text(json.dumps(result),encoding='utf-8');return result
+        with patch.object(self.service.training,'create_model_trial',side_effect=fake):
+            result=self.job(self.call(f'/api/projects/{pid}/model-trials',{'model_version_id':'M001','paths':[str(self.source/'零件.png')]}))
+        self.assertEqual(result['session_id'],session)
+        url=f'{self.service.url}/api/model-trials/{session}/frames/0'
+        with self.assertRaises(HTTPError) as denied:urlopen(url)
+        self.assertEqual(denied.exception.code,403)
+        with urlopen(Request(url,headers={'X-Workbench-Token':self.service.api_token})) as response:
+            self.assertEqual(response.headers.get_content_type(),'image/jpeg');self.assertTrue(response.read())
+
     def test_non_annotation_trash_history_restore_is_400(self):
         pid, asset = self.imported()
         aid = asset['id']

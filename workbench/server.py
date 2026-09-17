@@ -104,6 +104,8 @@ class WorkbenchService:
         self.jobs.close()
         self._ai_runtime.close()
         self.training.close()
+        import shutil
+        shutil.rmtree(self.data_root / 'model-trials', ignore_errors=True)
         if self._camera:
             self._camera.close()
         if self._cvat is not None:
@@ -121,13 +123,14 @@ class WorkbenchService:
         self.store.get_project(pid, include_assets=False)
         def run(progress):
             from .pipeline import import_sources
-            progress("檢查影像與標註配對")
-            parsed = import_sources(paths)
+            progress("檢查影像與標註配對", 0, phase='scan')
+            parsed = import_sources(paths, progress=lambda message, percent: progress(message, percent))
             records = parsed.get("records", [])
             issues = parsed.get("issues", [])
             if not records:
                 details = "；".join(str(item.get("message", item)) if isinstance(item, dict) else str(item) for item in issues)
                 raise ValueError(details or "沒有找到可匯入的圖片")
+            progress("保存原圖", 0, phase='save')
             result = self.store.add_assets(pid, records, progress=lambda n,total: progress(f"保存原圖 {n} / {total}",round(n/total*95)))
             result["issues"] = issues
             return result
@@ -305,6 +308,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/model-catalog":
                 refresh = parse_qs(urlsplit(self.path).query).get("refresh", ["0"])[0] == "1"
                 return self.json(self.app.training.refresh_components() if refresh else self.app.training.capabilities())
+            if parts[:2] == ['api','model-trials'] and len(parts)==5 and parts[3]=='frames':
+                image=self.app.training.model_trial_image(parts[2],parts[4])
+                return self.send_bytes(image.read_bytes(),'image/jpeg')
             if parts[:2] == ["api", "jobs"] and len(parts) == 3:
                 return self.json(self.app.jobs.get(parts[2]))
             if path == "/api/camera/devices":

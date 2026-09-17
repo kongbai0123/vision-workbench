@@ -31,18 +31,21 @@ class ReviewWorkflow:
         self.previews = {}
         self.lock = threading.Lock()
 
-    def preview(self, pid, paths):
+    def preview(self, pid, paths, *, progress=lambda *_, **__: None):
         from .pipeline import import_sources, _sha
         self.store.get_project(pid, include_assets=False)
         if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
             raise ValueError('請選擇有效路徑')
-        parsed = import_sources(paths)
+        progress('掃描檔案、解碼圖片與解析標註', 0, phase='scan')
+        parsed = import_sources(paths, progress=lambda message, percent: progress(message, percent))
         items = []
+        progress('建立縮圖與分析清晰度', 0, phase='quality')
         for index, record in enumerate(parsed['records']):
             quality = image_quality(record['path'])
             record['expected_import_sha'] = _sha(record['path'])
             record['source'] = {**record.get('source', {}), 'quality': {k:v for k,v in quality.items() if k != 'thumbnail'}}
             items.append({'id': str(index), 'name': record['name'], 'shape_count': len(record['shapes']), **quality})
+            progress(f'縮圖、清晰度與雜湊 {index+1} / {len(parsed["records"])}', (index+1)/len(parsed['records'])*100)
         token = secrets.token_urlsafe(24)
         with self.lock:
             now = time.monotonic()
@@ -52,7 +55,7 @@ class ReviewWorkflow:
             self.previews[token] = (now, pid, parsed['records'])
         return {'token': token, 'items': items, 'issues': parsed['issues']}
 
-    def commit_import(self, pid, token, selected):
+    def commit_import(self, pid, token, selected, *, progress=lambda *_, **__: None):
         from .pipeline import _sha
         with self.lock:
             entry = self.previews.get(token)
@@ -64,10 +67,18 @@ class ReviewWorkflow:
             if any(not isinstance(i, str) or i not in valid for i in selected):
                 raise ValueError('選取項目無效')
             records = [dict(valid[i]) for i in dict.fromkeys(selected)]
-            for record in records:
+            progress('確認來源圖片未變更', 0, phase='verify')
+            for index, record in enumerate(records):
                 if _sha(record['path']) != record.pop('expected_import_sha'):
                     raise ConflictError('預覽後來源圖片已變更，請重新預覽')
-            result = self.store.add_assets(pid, records)
+                progress(f'來源完整性 {index+1} / {len(records)}', (index+1)/len(records)*100)
+            progress('保存原圖與標註', phase='save')
+            progress('保存原圖與標註', 0)
+            def saving(number, total):
+                progress(f'保存原圖 {number} / {total}', number/total*100)
+                if number == total:
+                    progress('寫入資料庫並更新專案；正在確認完成', phase='commit')
+            result = self.store.add_assets(pid, records, progress=saving)
             self.previews.pop(token, None)
             return result
 

@@ -1,7 +1,10 @@
+import {TaskTiming} from '../task-timing.mjs';
+import {decodeMask} from '../shapes.mjs';
 // Training and model pages share state through an explicit application context.
 export function createTrainingPage(context) {
-  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
+  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
+let runTiming=null,runTimingKey=null;
 function invalidateYoloCompatibility(){state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
 const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device'),onChange:invalidateYoloCompatibility});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
@@ -15,6 +18,7 @@ function applyTrainingConfigTab(){
 }
 window.addEventListener('training-parameters-rendered',applyTrainingConfigTab);
 let trainingLoadGeneration=0;
+let trialResult=null,trialIndex=0,trialTimer=null;
 function trainingStatusName(value){return {queued:'等待中',preparing:'準備資料',running:'訓練中',stopping:'正在停止',stopped:'已停止',completed:'已完成',failed:'失敗'}[value]||value||'未知'}
 function selectedDataset(){const id=$('trainingDataset')?.value||state.training?.datasets?.[0]?.id;return state.training?.datasets?.find(item=>item.id===id)||null}
 function activeTrainingRun(){return state.training?.runs?.find(run=>activeRunStates.has(run.status))||null}
@@ -26,6 +30,7 @@ async function loadTraining({quiet=false}={}) {
     const overview=await api(projectPath('/training'));
     if(!trainingProjectIsCurrent(projectId)||generation!==trainingLoadGeneration)return;
     state.training=overview;
+    renderAnnotationModels();
     if(!overview.runs?.some(run=>run.run_id===state.selectedRun))state.selectedRun=overview.runs?.[0]?.run_id||null;
     if(!overview.models?.some(model=>model.model_version_id===state.selectedModel))state.selectedModel=overview.models?.[0]?.model_version_id||null;
     await trainingMonitor.update(overview,projectId,state.selectedRun);
@@ -64,13 +69,20 @@ async function pollTrainingStatus(projectId){
 }
 function updateBackgroundTraining(error=''){
   const run=activeTrainingRun(),button=$('backgroundTraining');
+  $('backgroundTrainingProgress').hidden=true;
   button.hidden=!run&&!error;
   if(error){$('backgroundTrainingText').textContent=`訓練狀態暫時無法更新：${error}`;$('backgroundTrainingProgress').removeAttribute('value');return}
   if(!run)return;
   const epoch=run.epoch?` · Epoch ${number(run.epoch)}/${number(run.config?.epochs)}`:'';
   const batch=run.batch&&run.batches_per_epoch?` · Batch ${number(run.batch)}/${number(run.batches_per_epoch)}`:'';
   const updates=Number(run.execution?.optimizer_steps);const step=Number.isFinite(updates)?` · 權重更新 ${number(updates)}`:'';
-  $('backgroundTrainingText').textContent=`${run.run_id} ${trainingStatusName(run.status)}${epoch}${batch}${step}`;
+  const timingKey=`${state.project?.id}/${run.run_id}`;
+  if(runTimingKey!==timingKey){runTimingKey=timingKey;runTiming=new TaskTiming();}
+  const measured=run.status==='running'&&Number(run.config?.epochs)>0?Number(run.epoch||0)/Number(run.config.epochs)*100:null;
+  runTiming.update(measured,run.status==='preparing'?'running':run.status,run.status);
+  $('backgroundTrainingText').textContent=`${run.run_id} ${trainingStatusName(run.status)}${epoch}${batch}${step} · ${runTiming.text('訓練階段')}（依目前觀測；不含後續評估，早停可能提前結束）`;
+  button.title=$('backgroundTrainingText').textContent;
+  $('backgroundTrainingText').textContent=`${run.run_id} · ${runTiming.text('訓練階段')}`;
   const progress=Number(run.progress);if(Number.isFinite(progress))$('backgroundTrainingProgress').value=progress;else $('backgroundTrainingProgress').removeAttribute('value');
 }
 function renderReadiness(report){
@@ -183,10 +195,24 @@ function renderModels(){
   const list=$('modelList');list.replaceChildren();if(!models.length)list.append(element('p','尚無模型版本。','empty-list'));
   for(const model of models){const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),row=button('','model-row'+(model.model_version_id===state.selectedModel?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});const top=element('div',undefined,'model-row-top');top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),element('span',definition?.predict?'可預標註':'訓練／匯出','run-status'));row.append(top,element('small',`${model.dataset_version_id} · ${date(model.created_at)}`));list.append(row)}
   renderModelDetail(models.find(model=>model.model_version_id===state.selectedModel)||models[0]);
-  const selected=models.find(model=>model.model_version_id===state.selectedModel)||models[0],selectedDefinition=state.training?.capabilities?.engines?.find(item=>item.key===selected?.engine);$('generatePredictions').disabled=!selected||!selectedDefinition?.predict;$('generatePredictions').title=selected&&!selectedDefinition?.predict?'影像分類結果不會轉成整張圖片的 Bounding Box':'';
-  const predictionsRoot=$('predictionList');predictionsRoot.replaceChildren();
-  if(!predictions.length)predictionsRoot.append(element('p','尚無候選標註。','empty-list'));
-  for(const candidate of predictions){const pending=candidate.assets.filter(asset=>asset.status==='candidate'),accepted=candidate.assets.filter(asset=>asset.status==='accepted'),empty=candidate.assets.filter(asset=>asset.status==='empty');const row=element('article',undefined,'prediction-row');row.append(element('b',`${candidate.model_version_id} · ${date(candidate.created_at)}`),element('small',`候選 ${number(pending.length)} 張 · 已接受 ${number(accepted.length)} 張${empty.length?` · 未偵測 ${number(empty.length)} 張`:''}`));if(pending.length){const accept=button('接受候選並送審','secondary',()=>safe(()=>acceptPredictions(candidate.candidate_id)));row.append(accept)}predictionsRoot.append(row)}
+  const selected=models.find(model=>model.model_version_id===state.selectedModel)||models[0],selectedDefinition=state.training?.capabilities?.engines?.find(item=>item.key===selected?.engine);for(const id of ['trialImages','trialVideo','runModelComparison']){$(id).disabled=!selected||!selectedDefinition?.predict;$(id).title=selected&&!selectedDefinition?.predict?'此模型尚未提供推論介面':''}
+}
+function renderAnnotationModels(){
+  const select=$('annotationModel'),root=$('annotationPredictionList');if(!select||!root||!state.training)return;const models=state.training.models||[],predictable=models.filter(model=>state.training.capabilities?.engines?.find(item=>item.key===model.engine)?.predict),previous=select.value;select.replaceChildren();
+  if(!predictable.length)select.append(new Option('尚無可用的專案模型',''));else for(const model of predictable)select.append(new Option(`${model.model_version_id} · ${model.engine_name}`,model.model_version_id));if(predictable.some(m=>m.model_version_id===previous))select.value=previous;
+  $('generateCurrentPrediction').disabled=!predictable.length||!state.asset;root.replaceChildren();
+  for(const candidate of state.training.predictions||[]){
+    const row=candidate.assets.find(asset=>asset.asset_id===state.asset?.id);if(!row)continue;
+    const item=element('article',undefined,'prediction-row');item.append(element('b',`${candidate.model_version_id} · ${date(candidate.created_at)}`));
+    if(row.status==='candidate')item.append(
+      element('small',`${row.shapes.length} 個候選；黃色預覽不會修改圖片`),
+      button('預覽候選','secondary',()=>editor.setProposals(row.shapes)),
+      button('接受目前圖片','secondary',()=>safe(()=>acceptPredictions(candidate.candidate_id,[row.asset_id])))
+    );
+    else item.append(element('small','此模型在目前圖片沒有偵測到符合門檻的物件。'));
+    root.append(item);
+  }
+  if(!root.children.length)root.append(element('p','目前圖片尚無模型候選。','empty-list'));
 }
 function renderModelDetail(model){const root=$('modelDetail');root.replaceChildren();if(!model){const empty=element('div',undefined,'report-empty');empty.append(element('span','◇'),element('h3','尚無可用模型'),element('p','完成一次訓練與評估後，模型會連同資料來源出現在這裡。'));root.append(empty);return}
   const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),title=element('div',undefined,'model-title'),copy=element('div');copy.append(element('span','MODEL VERSION','eyebrow'),element('h2',`${model.model_version_id} · ${model.engine_name}`));title.append(copy,element('span',definition?.task_name||'模型版本','badge approved'));root.append(title);
@@ -195,9 +221,33 @@ function renderModelDetail(model){const root=$('modelDetail');root.replaceChildr
   if(model.yolo_compatibility){const report=model.yolo_compatibility,summary=report.summary||{},audit=element('details',undefined,'training-monitor-details'),heading=document.createElement('summary');heading.textContent=`YOLO Seg 相容稽核 · 修補 ${number(summary.pixels_repaired)} px`;const copy=element('p',`已掃描 ${number(summary.assets_scanned)} 張；${number(summary.affected_assets)} 張的 Run 副本修補 ${number(summary.holes_repaired)} 個微小孔洞。原始標註與固定資料版本未變更，模型內部評估使用相容副本。`,'readiness-item');audit.append(heading,copy);for(const issue of report.repairs||[]){const row=element('div',undefined,'yolo-issue');row.append(element('b',`${issue.name} · ${issue.label||'未命名標註'}`),button('放大位置','text-button',()=>safe(()=>showYoloLocation(issue))),element('p',issue.message));audit.append(row)}root.append(audit)}
   const actions=element('div',undefined,'model-export-actions'),exportButton=button('匯出模型封裝','primary',()=>safe(()=>exportSelectedModel(model.model_version_id)));actions.append(exportButton);const exports=(state.training?.model_exports||[]).filter(item=>item.model_version_id===model.model_version_id);if(exports.length){const latest=exports[0],open=button('開啟最近匯出資料夾','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:latest.export_id})));actions.append(open);root.append(actions,element('p',`最近匯出：${latest.export_id} · ${date(latest.created_at)} · ${number(latest.bytes)} bytes`,'field-note'))}else root.append(actions,element('p','封裝包含模型、checkpoint、評估、Epoch 指標、來源 Run 與 SHA-256 manifest，不包含訓練圖片。','field-note'))}
 async function exportSelectedModel(modelId){const job=await api(projectPath('/model-exports'),'POST',{model_version_id:modelId}),result=await pollJob(job);await loadTraining();toast(`${result.model_version_id} 已匯出為 ${result.export_id}。`);await api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:result.export_id})}
-async function generatePredictions(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先完成一個模型版本。');let assetIds;if($('predictionTarget').value==='current'){if(!state.asset)throw Error('請先在標註頁選擇圖片。');assetIds=[state.asset.id]}const job=await api(projectPath('/predictions'),'POST',{model_version_id:model.model_version_id,...(assetIds?{asset_ids:assetIds}:{})});await pollJob(job);await loadTraining();toast('預標註候選已產生，接受後會進入待審核。')}
-async function acceptPredictions(candidateId){const result=await api(`/api/predictions/${candidateId}/accept`,'POST',{});state.project=result.project;if(state.asset&&result.accepted.includes(state.asset.id))await loadAsset(state.asset.id);await loadTraining();renderAssetList();toast(`${number(result.accepted.length)} 張候選已寫入待審標註。`)}
-
-  return {invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions};
+async function generatePredictions(){if(!state.asset)throw Error('請先在標註頁選擇圖片。');const modelId=$('annotationModel').value;if(!modelId)throw Error('尚無可用的專案模型。');const job=await api(projectPath('/predictions'),'POST',{model_version_id:modelId,asset_ids:[state.asset.id]});await pollJob(job);await loadTraining();toast('目前圖片的模型候選已產生，請預覽後再接受。')}
+async function acceptPredictions(candidateId,assetIds){const result=await api(`/api/predictions/${candidateId}/accept`,'POST',{asset_ids:assetIds});editor.setProposals();state.project=result.project;if(state.asset&&result.accepted.includes(state.asset.id))await loadAsset(state.asset.id);await loadTraining();renderAssetList();toast('候選已寫入待審標註。')}
+function confidence(shape){return Number(shape.metadata?.confidence??shape.confidence??1)}
+function shapeBox(shape,frame){
+  if(shape.type==='rectangle')return [Number(shape.x),Number(shape.y),Number(shape.width),Number(shape.height)];
+  if(shape.points?.length){const xs=shape.points.map(point=>Number(point[0])),ys=shape.points.map(point=>Number(point[1]));const left=Math.min(...xs),top=Math.min(...ys);return [left,top,Math.max(0,Math.max(...xs)-left),Math.max(0,Math.max(...ys)-top)]}
+  if(shape.type==='mask'&&shape.counts){const data=decodeMask(shape.counts,frame.width,frame.height);let left=frame.width,top=frame.height,right=-1,bottom=-1;for(let index=0;index<data.length;index++)if(data[index]){const x=index%frame.width,y=Math.floor(index/frame.width);left=Math.min(left,x);top=Math.min(top,y);right=Math.max(right,x);bottom=Math.max(bottom,y)}if(right>=left)return [left,top,right-left+1,bottom-top+1]}
+  return [0,0,0,0];
 }
+function boxIou(left,right){const [ax,ay,aw,ah]=left,[bx,by,bw,bh]=right,x1=Math.max(ax,bx),y1=Math.max(ay,by),x2=Math.min(ax+aw,bx+bw),y2=Math.min(ay+ah,by+bh),intersection=Math.max(0,x2-x1)*Math.max(0,y2-y1),union=aw*ah+bw*bh-intersection;return union>0?intersection/union:0}
+function comparisonAtThreshold(threshold){
+  let tp=0,fp=0,fn=0;for(const frame of trialResult?.frames||[]){const predictions=(frame.shapes||[]).filter(shape=>confidence(shape)>=threshold),available=new Set(predictions.map((_,index)=>index));for(const truth of frame.ground_truth||[]){let best=-1,bestIou=0;for(const index of available){const candidate=predictions[index];if(candidate.label!==truth.label)continue;const overlap=boxIou(shapeBox(truth,frame),shapeBox(candidate,frame));if(overlap>bestIou){bestIou=overlap;best=index}}if(best>=0&&bestIou>=Number(trialResult.comparison?.iou_threshold||.5)){available.delete(best);tp++}else fn++}fp+=available.size}
+  const precision=tp+fp?tp/(tp+fp):null,recall=tp+fn?tp/(tp+fn):null;return {tp,fp,fn,precision,recall};
+}
+function drawTrial(){
+  if(!trialResult?.frames?.length)return;const frame=trialResult.frames[trialIndex],image=$('trialImage'),canvas=$('trialOverlay');$('trialTimeline').value=trialIndex;$('trialFrameLabel').textContent=frame.frame_index===null?`${trialIndex+1} / ${trialResult.frames.length}`:`Frame ${frame.frame_index+1} · ${Number(frame.time_seconds||0).toFixed(2)} s`;
+  image.onload=()=>{const width=image.clientWidth,height=image.clientHeight;canvas.width=Math.max(1,Math.round(width*devicePixelRatio));canvas.height=Math.max(1,Math.round(height*devicePixelRatio));canvas.style.width=width+'px';canvas.style.height=height+'px';const ctx=canvas.getContext('2d');ctx.scale(devicePixelRatio*width/frame.width,devicePixelRatio*height/frame.height);const threshold=Number($('trialConfidence').value);let shown=0;
+    for(const shape of frame.shapes||[]){if(confidence(shape)<threshold)continue;shown++;ctx.strokeStyle='#45c6b1';ctx.fillStyle='#45c6b166';ctx.lineWidth=Math.max(2,frame.width/700);if(shape.type==='rectangle'){ctx.strokeRect(shape.x,shape.y,shape.width,shape.height)}else if(shape.type==='polygon'&&shape.points?.length){ctx.beginPath();shape.points.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.closePath();ctx.fill();ctx.stroke()}else if(shape.type==='mask'&&shape.counts){const data=decodeMask(shape.counts,frame.width,frame.height),mask=document.createElement('canvas');mask.width=frame.width;mask.height=frame.height;const pixels=mask.getContext('2d').createImageData(frame.width,frame.height);for(let i=0;i<data.length;i++)if(data[i]){pixels.data[i*4]=69;pixels.data[i*4+1]=198;pixels.data[i*4+2]=177;pixels.data[i*4+3]=105}mask.getContext('2d').putImageData(pixels,0,0);ctx.drawImage(mask,0,0)}const label=`${shape.label||'object'} ${(confidence(shape)*100).toFixed(0)}%`;ctx.fillStyle='#102c29';ctx.fillRect(shape.x||0,Math.max(0,(shape.y||0)-24),ctx.measureText(label).width+10,24);ctx.fillStyle='#fff';ctx.fillText(label,(shape.x||0)+5,Math.max(14,(shape.y||0)-7))}
+    for(const truth of frame.ground_truth||[]){ctx.strokeStyle='#65a9ff';ctx.lineWidth=Math.max(2,frame.width/700);ctx.setLineDash([10,6]);if(truth.type==='rectangle')ctx.strokeRect(truth.x,truth.y,truth.width,truth.height);else if(truth.points?.length){ctx.beginPath();truth.points.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.closePath();ctx.stroke()}ctx.setLineDash([])}
+    const summary=$('trialSummary');summary.replaceChildren();if(trialResult.comparison){const metrics=comparisonAtThreshold(threshold);for(const [label,value,ratio]of [[`Confidence ≥ ${threshold.toFixed(2)}`,'Box IoU ≥ 0.50',false],['Precision',metrics.precision??'—',true],['Recall',metrics.recall??'—',true],['TP',metrics.tp,false],['FP',metrics.fp,false],['FN',metrics.fn,false]]){const item=element('div',undefined,'run-metric'),display=ratio&&typeof value==='number'?value.toFixed(3):String(value);item.append(element('span',label),element('b',display));summary.append(item)}}else{const item=element('div',undefined,'run-metric');item.append(element('span','目前顯示'),element('b',`${shown} 個預測`));summary.append(item)}};
+  image.onerror=()=>{$('modelTrialStatus').textContent='無法載入試跑影格，請重新執行模型試跑。'};image.src=`/api/model-trials/${trialResult.session_id}/frames/${trialIndex}`;
+}
+function stopTrialPlayback(){if(trialTimer)clearInterval(trialTimer);trialTimer=null;$('trialPlay').textContent='播放'}
+async function startModelTrial(kind){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');const paths=await nativeChoose(kind==='video'?'video':'images');if(!paths.length)return;stopTrialPlayback();$('modelTrialStatus').textContent='正在執行模型試跑；影片會逐幀處理。';trialResult=await pollJob(await api(projectPath('/model-trials'),'POST',{model_version_id:model.model_version_id,paths}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);$('modelTrialStatus').textContent=`試跑完成 · ${model.model_version_id} · ${trialResult.frames.length} 個影格。外部資料沒有人工標註，因此不計算準確率或 mAP。`;drawTrial()}
+async function runModelComparison(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');stopTrialPlayback();const split=$('comparisonSplit').value;$('comparisonStatus').textContent='正在固定標註資料上重新推論…';trialResult=await pollJob(await api(projectPath('/model-comparisons'),'POST',{model_version_id:model.model_version_id,split}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);const metric=trialResult.comparison;$('comparisonStatus').textContent=`${split} 比對完成 · 調整信心門檻會同步重算 Precision／Recall；藍色虛線為人工標註。`;drawTrial();$('modelTrialViewer').scrollIntoView({block:'nearest'})}
+function setTrialFrame(value){trialIndex=Math.max(0,Math.min(trialResult?.frames?.length-1||0,Number(value)));drawTrial()}
+function toggleTrialPlayback(){if(trialTimer){stopTrialPlayback();return}if(!trialResult?.frames?.length)return;$('trialPlay').textContent='暫停';const frames=trialResult.frames,delay=Math.max(16,Math.round(((frames[1]?.time_seconds||1/10)-(frames[0]?.time_seconds||0))*1000));trialTimer=setInterval(()=>{if(trialIndex>=frames.length-1){stopTrialPlayback();return}setTrialFrame(trialIndex+1)},delay)}
 
+  return {invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial};
+}

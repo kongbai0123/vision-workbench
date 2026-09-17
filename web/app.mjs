@@ -1,6 +1,7 @@
 import {AnnotationEditor, colorFor, shapeNames} from './editor.mjs';
 import {kind, decodeMask, encodeMask, brush} from './shapes.mjs';
 import {SaveQueue} from './save-queue.mjs';
+import {TaskTiming, taskStage} from './task-timing.mjs';
 import {TrainingMonitor} from './training-monitor.mjs';
 import {TrainingParameters} from './training-parameters.mjs';
 import {SplitManager} from './split-manager.mjs';
@@ -523,7 +524,7 @@ function updateAssetHeader() {
 }
 async function loadAsset(id) {
   const asset=await api(projectPath(`/assets/${id}`));asset.url=imageURL(asset);state.asset=asset;saver.load(asset);editor.load(asset);
-  updateAssetHeader();renderAssetList();
+  updateAssetHeader();renderAssetList();if(typeof renderAnnotationModels==='function')renderAnnotationModels();
 }
 async function selectAsset(id) {
   if(id===state.asset?.id||state.busy||state.transitioning)return;
@@ -703,14 +704,11 @@ async function nativeChoose(kind) {
 }
 class OperationStopped extends Error {constructor(message='工作已停止。'){super(message);this.silent=true;}}
 let acquisitionTask=null,acquisitionTaskHideTimer=null;
-function taskSeconds(task) {
-  const end=task.pausedAt||performance.now();return Math.max(0,(end-task.started-task.pausedTotal)/1000).toFixed(1)+' 秒';
-}
 function renderAcquisitionTask(task) {
   if(acquisitionTask!==task)return;
   const panel=$('acquisitionTask');panel.hidden=false;panel.classList.toggle('paused',task.paused);panel.classList.toggle('stopping',task.stopping);panel.classList.remove('completing');
-  $('acquisitionTaskTitle').textContent=task.title;$('acquisitionTaskMessage').textContent=task.message;$('acquisitionTaskElapsed').textContent=taskSeconds(task);
-  if(Number.isFinite(task.progress))$('acquisitionTaskProgress').value=Math.max(0,Math.min(100,task.progress));else $('acquisitionTaskProgress').removeAttribute('value');
+  $('acquisitionTaskTitle').textContent=task.title;$('acquisitionTaskMessage').textContent=taskStage(task.message);$('acquisitionTaskElapsed').textContent=task.timing.text();
+  $('acquisitionTaskProgress').hidden=true;
   $('pauseAcquisitionTask').textContent=task.paused?'繼續':'暫停';$('pauseAcquisitionTask').disabled=task.stopping;
   $('stopAcquisitionTask').disabled=task.stopping;
 }
@@ -718,12 +716,12 @@ function beginTimedTask(title) {
   clearTimeout(acquisitionTaskHideTimer);
   if(acquisitionTask)finishTimedTask(acquisitionTask,'stopped','已由下一項工作取代。',0);
   const task={title,message:'準備執行…',progress:null,started:performance.now(),pausedAt:0,pausedTotal:0,paused:false,stopping:false,stopped:false,jobId:null,timer:null};
-  acquisitionTask=task;task.timer=setInterval(()=>renderAcquisitionTask(task),100);renderAcquisitionTask(task);return task;
+  task.timing=new TaskTiming();task.timing.update(null);acquisitionTask=task;task.timer=setInterval(()=>renderAcquisitionTask(task),1000);renderAcquisitionTask(task);return task;
 }
-function updateTimedTask(task,message,progress=null) {if(acquisitionTask!==task||task.stopped)return;task.message=message;if(progress!==undefined)task.progress=progress;renderAcquisitionTask(task);}
+function updateTimedTask(task,message,progress=null) {if(acquisitionTask!==task||task.stopped)return;task.message=message;if(progress!==undefined)task.progress=progress;task.timing.update(null,task.paused?'paused':task.stopping?'stopping':'running');renderAcquisitionTask(task);}
 function finishTimedTask(task,state='complete',message='已完成',delay=1800) {
   if(acquisitionTask!==task)return;clearInterval(task.timer);task.stopped=true;task.paused=false;task.progress=state==='complete'?100:task.progress;task.message=message;
-  renderAcquisitionTask(task);$('pauseAcquisitionTask').disabled=true;$('stopAcquisitionTask').disabled=true;
+  task.timing.update(null,state);renderAcquisitionTask(task);$('pauseAcquisitionTask').disabled=true;$('stopAcquisitionTask').disabled=true;
   acquisitionTaskHideTimer=setTimeout(()=>{if(acquisitionTask!==task)return;$('acquisitionTask').classList.add('completing');setTimeout(()=>{if(acquisitionTask===task){$('acquisitionTask').hidden=true;$('acquisitionTask').classList.remove('completing');acquisitionTask=null}},230)},delay);
 }
 async function taskCheckpoint(task) {
@@ -733,30 +731,32 @@ async function taskCheckpoint(task) {
 }
 async function runTimedTask(title,work) {
   const task=beginTimedTask(title);
-  try{const result=await work(task);await taskCheckpoint(task);finishTimedTask(task,'complete','完成 · '+taskSeconds(task));return result;}
-  catch(error){if(error instanceof OperationStopped){finishTimedTask(task,'stopped','已停止 · '+taskSeconds(task),2400);throw error}finishTimedTask(task,'failed','失敗 · '+error.message,4500);throw error}
+  try{const result=await work(task);await taskCheckpoint(task);finishTimedTask(task,'complete','完成');return result;}
+  catch(error){if(error instanceof OperationStopped){finishTimedTask(task,'stopped','已停止',2400);throw error}finishTimedTask(task,'failed','失敗 · '+error.message,4500);throw error}
 }
 $('pauseAcquisitionTask').onclick=()=>safe(async()=>{
   const task=acquisitionTask;if(!task||task.stopping||task.stopped)return;
   if(task.jobId)await api(`/api/jobs/${task.jobId}/${task.paused?'resume':'pause'}`,'POST',{});
   if(task.paused){task.pausedTotal+=performance.now()-task.pausedAt;task.pausedAt=0;task.paused=false;task.message='繼續執行…'}else{task.paused=true;task.pausedAt=performance.now();task.message='已暫停';}
-  renderAcquisitionTask(task);
+  task.timing.update(null,task.paused?'paused':'running');renderAcquisitionTask(task);
 });
 $('stopAcquisitionTask').onclick=()=>safe(async()=>{
-  const task=acquisitionTask;if(!task||task.stopping||task.stopped)return;task.stopping=true;task.paused=false;task.message='正在安全停止…';renderAcquisitionTask(task);
-  if(task.jobId)await api(`/api/jobs/${task.jobId}/cancel`,'POST',{});else finishTimedTask(task,'stopped','已停止等待 · '+taskSeconds(task),2400);
+  const task=acquisitionTask;if(!task||task.stopping||task.stopped)return;task.stopping=true;task.paused=false;task.message='正在安全停止…';task.timing.update(null,'stopping');renderAcquisitionTask(task);
+  if(task.jobId)await api(`/api/jobs/${task.jobId}/cancel`,'POST',{});else finishTimedTask(task,'stopped','已停止等待',2400);
 });
 async function pollJob(job,onDone,onProgress) {
-  let current=job;const id=job.id||job.job_id||job.job;
+  let current=job;const id=job.id||job.job_id||job.job;const timing=new TaskTiming();
   if(!id) return onDone ? onDone(job.result||job) : job.result||job;
   const tracker=state.stage==='acquire'?acquisitionTask:null;if(tracker)tracker.jobId=id;
   $('jobStatus').hidden=false;
   try {
     while(true) {
       if(onProgress)onProgress(current);
-      $('jobMessage').textContent=current.message||'正在處理工作…';
-      if(Number.isFinite(current.progress))$('jobProgress').value=current.progress;else $('jobProgress').removeAttribute('value');
-      if(tracker){tracker.paused=current.state==='paused';tracker.stopping=current.state==='stopping';updateTimedTask(tracker,current.message||'正在處理工作…',current.progress)}
+      timing.update(current.progress,current.state,current.progress_phase);
+      $('jobMessage').textContent=`${timing.text()} · ${taskStage(current.message||'正在處理工作…')}`;
+      $('jobMessage').title=$('jobMessage').textContent;
+      $('jobProgress').hidden=true;
+      if(tracker){tracker.paused=current.state==='paused';tracker.stopping=current.state==='stopping';tracker.message=current.message||'正在處理工作…';tracker.progress=current.progress;tracker.timing=timing;renderAcquisitionTask(tracker)}
       if(current.state==='succeeded'){if(onDone)await onDone(current.result);return current.result;}
       if(current.state==='failed')throw Error(typeof current.error==='string'?current.error:current.error?.message||current.message||'工作未完成。');
       if(current.state==='cancelled')throw new OperationStopped(current.message||'工作已停止。');
@@ -847,7 +847,7 @@ async function runAI() {
 const {openSplitManager, renderSplitPage, setIndependentAssets, augmentationProfile, renderAugmentationPreparation}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,formDialog,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
-const {invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, augmentationProfile, TrainingParameters, TrainingMonitor});
+const {invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, augmentationProfile, TrainingParameters, TrainingMonitor});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);
@@ -948,7 +948,11 @@ $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEn
 bind('startTraining',startTrainingRun,{busy:true,task:'啟動獨立訓練程序'});
 bind('stopTraining',stopTrainingRun,{busy:true});
 bind('refreshModels',()=>loadTraining());
-bind('generatePredictions',generatePredictions,{busy:true,task:'產生預標註候選'});
+bind('generateCurrentPrediction',generatePredictions,{busy:true,task:'產生目前圖片候選'});
+bind('trialImages',()=>startModelTrial('images'),{busy:true,task:'外部圖片模型試跑'});
+bind('trialVideo',()=>startModelTrial('video'),{busy:true,task:'完整影片模型試跑'});
+bind('runModelComparison',runModelComparison,{busy:true,task:'標註比對評估'});
+$('trialTimeline').oninput=event=>setTrialFrame(event.target.value);$('trialPlay').onclick=toggleTrialPlayback;$('trialConfidence').oninput=()=>{$('trialConfidenceValue').value=Number($('trialConfidence').value).toFixed(2);drawTrial()};
 bind('openExchange',()=>switchStage('export'));bind('backToModels',()=>switchStage('models'));
 $('backgroundTraining').onclick=()=>safe(()=>switchStage('train'));
 bind('chooseOutput',async()=>{const paths=await nativeChoose('output');if(paths.length)$('outputPath').value=paths[0]});

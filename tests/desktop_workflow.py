@@ -241,13 +241,17 @@ def main():
             click("[data-stage='models']")
             wait("document.querySelector('#modelDetail').innerText.includes('M001')")
             assert js("document.querySelector('#modelDetail').innerText.includes('匯出模型封裝')")
-            fill("#predictionTarget","current");click("#generatePredictions")
-            wait("document.querySelector('#predictionList').innerText.includes('M001')",seconds=60)
+            click("[data-stage='annotate']")
+            wait("document.querySelector('#annotationModel').value==='M001'")
+            js("document.querySelector('.ai-section').open=true")
+            click("#generateCurrentPrediction")
+            wait("document.querySelector('#annotationPredictionList').textContent.includes('M001')",seconds=60)
             generated_candidate=service.training.list_predictions(pid)[0]
             assert generated_candidate['assets'][0]['status'] in {'candidate','empty'}
             if generated_candidate['assets'][0]['status']=='candidate':
-                click("#predictionList button")
-                wait("document.querySelector('#predictionList').innerText.includes('已接受 1 張')")
+                click("#annotationPredictionList button:first-of-type")
+                click("#annotationPredictionList button:last-of-type")
+                wait("!document.querySelector('#annotationPredictionList').innerText.includes('接受目前圖片')")
                 pending_after_prediction=service.store.get_project(pid)['stats']['pending']
                 assert pending_after_prediction==1,pending_after_prediction
             capture("06-model-and-prediction")

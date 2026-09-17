@@ -1,3 +1,4 @@
+import {TaskTiming, taskStage} from '../task-timing.mjs';
 // Settings and model-catalog page; dependencies are injected for browser tests.
 export function createSettingsPage(context) {
 const {$, state, api, element, button, safe, switchStage, toast, setUpdateIndicators, renderTraining, loadTraining, nativeCallbacks}=context;
@@ -92,9 +93,9 @@ function renderCatalogDetail(model){
 }
 async function installModelComponent(componentId){
   const component=(state.modelCatalog.components||[]).find(item=>item.id===componentId);if(!component)throw Error('找不到模型元件');
-  const job=await api(`/api/model-components/${componentId}/install`,'POST',{});state.settingsJob=job.id;$('settingsJobText').textContent=`正在準備 ${component.name}`;$('settingsJobProgress').hidden=false;
-  let current=job;
-  while(!['succeeded','failed','cancelled'].includes(current.state)){await new Promise(resolve=>setTimeout(resolve,650));current=await api(`/api/jobs/${job.id}`);$('settingsJobText').textContent=current.message||`正在準備 ${component.name}`;$('settingsJobProgress').value=Number(current.progress||0)}
+  const job=await api(`/api/model-components/${componentId}/install`,'POST',{});state.settingsJob=job.id;$('settingsJobText').textContent=`正在準備 ${component.name}`;$('settingsJobProgress').hidden=true;
+  let current=job;const timing=new TaskTiming();timing.update(current.progress,current.state);
+  while(!['succeeded','failed','cancelled'].includes(current.state)){await new Promise(resolve=>setTimeout(resolve,650));current=await api(`/api/jobs/${job.id}`);timing.update(current.progress,current.state,current.progress_phase);$('settingsJobText').textContent=`${timing.text()} · ${taskStage(current.message||`正在準備 ${component.name}`)}`;if(Number.isFinite(current.progress))$('settingsJobProgress').value=current.progress;else $('settingsJobProgress').removeAttribute('value')}
   state.settingsJob=null;$('settingsJobProgress').hidden=true;if(current.state!=='succeeded')throw Error(current.error||current.message||'安裝未完成');
   await loadModelCatalog(true);if(state.project)await loadTraining({quiet:true});$('settingsJobText').textContent=`${component.name} 已安裝並通過檢查`;toast(`${component.name} 已可使用。`);
 }

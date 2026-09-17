@@ -53,7 +53,7 @@ export class AnnotationEditor {
     this.draft = [];
     this.gesture = null;
     this.prompts = {positive: [], negative: []};
-    this.candidate = null;
+    this.candidate = null;this.proposals=[];
     this.history = history(40);
     this.maskCache = new WeakMap();
     this.zoom = 1;
@@ -75,7 +75,7 @@ export class AnnotationEditor {
     this.draft = [];
     this.gesture = null;
     this.prompts = {positive: [], negative: []};
-    this.candidate = null;
+    this.candidate = null;this.proposals=[];
     this.history = history(40);
     this.maskCache = new WeakMap();
     this.zoom = 1; this.pan = {x:0, y:0};
@@ -93,7 +93,7 @@ export class AnnotationEditor {
   }
   clear() {
     this.crosshair.hidden = true;
-    this.asset = null; this.selection.clear(); this.draft = []; this.candidate = null;
+    this.asset = null; this.selection.clear(); this.draft = []; this.candidate = null;this.proposals=[];
     this.$('imageStage').hidden = true;
     this.$('canvasEmpty').hidden = false;
     this.$('shapeList').replaceChildren();
@@ -259,6 +259,7 @@ export class AnnotationEditor {
       svg.append(svgElement('polyline',{points:points.map(p=>p.join(',')).join(' '),stroke:'#70f2d1','stroke-width':2/scale,fill:'none','stroke-dasharray':`${5/scale} ${3/scale}`,'pointer-events':'none'}));
       for (const [x,y] of this.draft) svg.append(svgElement('circle',{cx:x,cy:y,r:3/scale,fill:'#bcfff1','pointer-events':'none'}));
     }
+    for(const proposal of this.proposals)this.drawShape(proposal,true);
     if (this.candidate) this.drawShape(this.candidate,true);
     for (const [category,points] of Object.entries(this.prompts)) for (const [x,y] of points) {
       const scale = this.scale*this.zoom || 1;
@@ -492,6 +493,9 @@ export class AnnotationEditor {
   setCandidate(shape) {
     this.candidate=validateShape({...shape,label:shape.label||this.label()},this.asset.width,this.asset.height);
     this.updateCandidate();this.renderCanvas();
+  }
+  setProposals(shapes=[]) {
+    if(!this.asset)return;this.proposals=shapes.map(shape=>validateShape({...shape},this.asset.width,this.asset.height));this.renderCanvas();
   }
   updateCandidate() {
     this.$('acceptAI').disabled=!this.candidate||this.locked;

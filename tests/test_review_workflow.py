@@ -37,6 +37,25 @@ class ReviewWorkflowTests(unittest.TestCase):
         with self.assertRaises(ConflictError):
             self.flow.commit_import(self.pid, preview['token'], ['0'])
 
+    def test_import_reports_measured_phases_and_commit_wait(self):
+        updates, phases, phase = [], [], ['none']
+        def callback(message, percent=None, **metadata):
+            phase[0] = metadata.get('phase', phase[0])
+            updates.append((message, percent))
+            phases.append(phase[0])
+        preview = self.flow.preview(self.pid, [str(p) for p in self.images], progress=callback)
+        scan = [p for (_, p), name in zip(updates, phases) if name == 'scan' and p is not None]
+        self.assertEqual(scan, sorted(scan))
+        self.assertEqual((scan[0], scan[-1]), (0, 100))
+        self.assertEqual([p for (_, p), name in zip(updates, phases) if name == 'quality' and p is not None], [0, 50, 100])
+        updates.clear()
+        phases.clear()
+        result = self.flow.commit_import(self.pid, preview['token'], ['0', '1'], progress=callback)
+        self.assertEqual(result['added'], 2)
+        self.assertEqual([p for _, p in updates if p is not None], [0, 50, 100, 0, 50, 100])
+        self.assertIsNone(updates[-1][1])
+        self.assertIn('寫入資料庫', updates[-1][0])
+
     def test_trash_restore_keeps_image_history_and_resets_approval(self):
         result = self.store.add_assets(self.pid, [{'path': self.images[0], 'shapes': []}])
         aid = result['asset_ids'][0]

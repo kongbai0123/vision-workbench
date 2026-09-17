@@ -58,6 +58,21 @@ class JobControlTests(unittest.TestCase):
         result = self.wait_for(job_id, {"cancelled"})
         self.assertEqual(result["message"], "工作已停止")
 
+    def test_progress_phase_survives_updates_and_polling(self):
+        entered, release = threading.Event(), threading.Event()
+        def action(progress):
+            progress('save', 0, phase='save')
+            progress('save 1 / 2', 50)
+            entered.set()
+            release.wait(2)
+        jid = self.jobs.submit('import', action)['id']
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(self.jobs.get(jid)['progress_phase'], 'save')
+            self.assertEqual(self.jobs.get(jid)['progress'], 50)
+        finally:
+            release.set()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,3 +39,13 @@ test('review controls and augmentation layout are static markup', async () => {
   assert.ok(!app.includes('window.workbench'));
   assert.ok(!app.includes("createElement('link')"));
 });
+
+test('AI annotation and model trial have separate workflow locations',async()=>{
+  const html=await readFile(new URL('../web/index.html',import.meta.url),'utf8');
+  assert.match(html,/SAM2 使用官方預訓練權重，不需要先訓練專案模型/);
+  assert.match(html,/id="generateCurrentPrediction"/);
+  assert.match(html,/id="trialImages"/);assert.match(html,/id="trialVideo"/);
+  assert.match(html,/影片逐幀推論，不跳幀/);
+  assert.ok(html.indexOf('id="generateCurrentPrediction"')<html.indexOf('id="models"'));
+  assert.ok(!html.includes('id="predictionTarget"'));
+});

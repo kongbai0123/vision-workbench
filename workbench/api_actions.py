@@ -7,11 +7,11 @@ def action_maintenance(self, pid, payload, action):
 
 
 def action_import_preview(self, pid, payload, action):
-    return self.json(self.app.jobs.submit('import-preview', lambda progress: self.app.review_workflow.preview(pid, payload.get('paths'))))
+    return self.json(self.app.jobs.submit('import-preview', lambda progress: self.app.review_workflow.preview(pid, payload.get('paths'), progress=progress)))
 
 
 def action_import_confirm(self, pid, payload, action):
-    return self.json(self.app.jobs.submit('import', lambda progress: self.app.review_workflow.commit_import(pid, payload.get('token'), payload.get('selected'))))
+    return self.json(self.app.jobs.submit('import', lambda progress: self.app.review_workflow.commit_import(pid, payload.get('token'), payload.get('selected'), progress=progress)))
 
 
 def action_review_trash_list(self, pid, payload, action):
@@ -96,6 +96,14 @@ def action_predictions(self, pid, payload, action):
         self.app.training.create_predictions(pid, model_id, payload.get("asset_ids"), progress)
     )[1]))
 
+def action_model_trials(self,pid,payload,action):
+    model_id=payload.get('model_version_id');paths=payload.get('paths')
+    return self.json(self.app.jobs.submit('model-trial',lambda progress:self.app.training.create_model_trial(pid,model_id,paths,progress)))
+
+def action_model_comparisons(self,pid,payload,action):
+    return self.json(self.app.jobs.submit('model-comparison',lambda progress:self.app.training.create_model_comparison(
+        pid,payload.get('model_version_id'),payload.get('split','test'),progress)))
+
 
 def action_ai(self, pid, payload, action):
     return self.json(self.app.ai_job(pid,payload))
@@ -156,6 +164,8 @@ PROJECT_ACTIONS = {
     'review-compatibility': action_review_compatibility,
     'model-exports': action_model_exports,
     'predictions': action_predictions,
+    'model-trials': action_model_trials,
+    'model-comparisons': action_model_comparisons,
     'ai': action_ai,
     'capture': action_capture,
     'screen': action_capture,

@@ -33,6 +33,20 @@ VERIFIED_TYPE = 'sam2_human_verified_immutable_export'
 FLAT_TYPE = 'sam2_human_verified_flat_training'
 AUXILIARY = {'masks', 'mask', 'contours', 'overlays', 'overlay', 'pseudo', 'pending', 'rejected',
              '.venv', 'venv', 'node_modules', '__pycache__', '.git'}
+# Per-source failures become import issues; anything else (e.g. job cancellation) propagates.
+IMPORT_ERRORS = (ValueError, OSError, KeyError, TypeError, IndexError, cv2.error)
+
+
+def _subrange(report, start, end):
+    """Map a nested 0..1 progress fraction into [start, end] of the caller's fraction."""
+    if report is None:
+        return None
+    return lambda fraction, detail='': report(start + (end - start) * fraction, detail)
+
+
+def _tick(report, done, total, detail):
+    if report is not None and total:
+        report(done / total, f'{detail} {done} / {total}')
 
 
 def _json(path):
@@ -128,7 +142,7 @@ def _record(path, shapes, root, *, split='', batch=None, source=None, review='pe
             'review_state': review}
 
 
-def _native_import(root, document):
+def _native_import(root, document, report=None):
     if document.get('format') != NATIVE_FORMAT or document.get('schema_version') != 1:
         raise ValueError('不支援的 Native 資料版本')
     manifest_path = root / 'manifest.json'
@@ -138,10 +152,12 @@ def _native_import(root, document):
     declared_files = manifest.get('files', [])
     if not isinstance(declared_files, list) or 'project.json' not in {f.get('path') for f in declared_files}:
         raise ValueError('Native manifest 未驗證 project.json')
-    for item in declared_files:
+    verifying, loading = _subrange(report, 0, .5), _subrange(report, .5, 1)
+    for index, item in enumerate(declared_files, 1):
         file = _safe_child(root, item['path'])
         if _sha(file) != item['sha256'] or file.stat().st_size != item['bytes']:
             raise ValueError(f'Native 封裝檔案驗證失敗：{item["path"]}')
+        _tick(verifying, index, len(declared_files), '驗證 Native 檔案')
     assets = document.get('assets')
     if not isinstance(assets, list):
         raise ValueError('Native 封裝缺少 assets')
@@ -158,20 +174,27 @@ def _native_import(root, document):
         record['name'] = asset.get('name', path.name)
         record['source'] = {**record['source'], 'imported_from': str(root), 'native_asset_id': asset.get('id')}
         records.append(record)
+        _tick(loading, len(records), len(assets), '解析 Native 圖片')
     return records
 
 
-def _asset_lines_import(root, path):
+def _asset_lines_import(root, path, report=None):
     """Image JSONL is a lossless native asset interchange, not generic text data."""
     manifest = _json(root / 'manifest.json')
     files = manifest.get('files', [])
     declared = {entry['path']: entry for entry in files}
     if path.relative_to(root).as_posix() not in declared:
         raise ValueError('JSONL 未被 manifest 宣告')
-    for relative, entry in declared.items():
+    verifying, loading = _subrange(report, 0, .5), _subrange(report, .5, 1)
+    for index, (relative, entry) in enumerate(declared.items(), 1):
         file = _safe_child(root, relative)
         if _sha(file) != entry['sha256'] or file.stat().st_size != entry['bytes']:
             raise ValueError(f'JSONL 封裝雜湊不一致：{relative}')
+        _tick(verifying, index, len(declared), '驗證 JSONL 檔案')
+    total = 0
+    if loading is not None:
+        with path.open(encoding='utf-8-sig') as handle:
+            total = sum(1 for line in handle if line.strip())
     records = []
     with path.open(encoding='utf-8-sig') as handle:
         for number, line in enumerate(handle, 1):
@@ -192,10 +215,11 @@ def _asset_lines_import(root, path):
             record['name'] = asset.get('name', image.name)
             record['source'] = {**record['source'], 'imported_from': str(root), 'native_asset_id': asset.get('id')}
             records.append(record)
+            _tick(loading, len(records), total, '解析 JSONL 圖片')
     return records
 
 
-def _coco_import(path, root=None, flat_manifest=None):
+def _coco_import(path, root=None, flat_manifest=None, report=None):
     root = Path(root or path.parent).resolve()
     companion = root / 'manifest.json'
     if flat_manifest is None and companion.is_file():
@@ -237,6 +261,7 @@ def _coco_import(path, root=None, flat_manifest=None):
     file_names = [x['file_name'].casefold() for x in images]
     if len(file_names) != len(set(file_names)):
         raise ValueError('COCO 圖片檔名重複')
+    _tick(report, 0, len(images), '解析圖片')
     for image in images:
         image_path = _safe_child(root, image['file_name'])
         width, height = _dimensions(image_path)
@@ -294,10 +319,11 @@ def _coco_import(path, root=None, flat_manifest=None):
         records.append(_record(image_path, shapes, root, split=split, batch=batch, source=source,
                                review='approved' if flat_manifest is not None else 'pending',
                                expected_sha=sample.get('image_sha256')))
+        _tick(report, len(records), len(images), '解析圖片')
     return records
 
 
-def _working_import(root, manifest=None, selected_path=None):
+def _working_import(root, manifest=None, selected_path=None, report=None):
     """Import a reviewable SAM2 dataset as pending Workbench assets.
 
     A working manifest describes how source images, masks and QA overlays are
@@ -305,6 +331,14 @@ def _working_import(root, manifest=None, selected_path=None):
     valid images and COCO annotations.  Only canonical source images become
     assets.  Selecting a related mask or overlay resolves to that source image.
     """
+    records, samples = _working_records(root, manifest, report)
+    if selected_path is None:
+        return records
+    return _select_working(root, records, samples, selected_path)
+
+
+def _working_records(root, manifest=None, report=None):
+    """Parse one SAM2 working session; callers select from the result without re-parsing."""
     root = Path(root).resolve()
     manifest = manifest or _json(root / 'manifest.json')
     if manifest.get('dataset_type') != WORKING_TYPE:
@@ -312,7 +346,7 @@ def _working_import(root, manifest=None, selected_path=None):
     annotations = root / 'label' / 'instances.json'
     if not annotations.is_file():
         raise ValueError('SAM2 工作資料缺少 label/instances.json')
-    records = _coco_import(annotations, root)
+    records = _coco_import(annotations, root, report=report)
     samples = manifest.get('samples')
     if not isinstance(samples, list):
         raise ValueError('SAM2 manifest 缺少 samples 陣列')
@@ -329,8 +363,12 @@ def _working_import(root, manifest=None, selected_path=None):
         record['batch_id'] = str(manifest.get('session_id') or record['batch_id'])
         record['source']['sample'] = deepcopy(sample)
         record['source']['sam2_review_status'] = sample.get('review_status', manifest.get('review_status'))
-    if selected_path is None:
-        return records
+    return records, samples
+
+
+def _select_working(root, records, samples, selected_path):
+    root = Path(root).resolve()
+    annotations = root / 'label' / 'instances.json'
     selected = Path(selected_path).resolve()
     if selected in {root / 'manifest.json', annotations}:
         return records
@@ -466,7 +504,7 @@ def _files(root):
                   not any(part.lower() in AUXILIARY or part.startswith('.') for part in p.relative_to(root).parts[:-1]))
 
 
-def _folder_import(root):
+def _folder_import(root, report=None):
     # Protected roots are identified before any ordinary image traversal.
     for name in ('manifest.json', 'export_manifest.json'):
         candidate = root / name
@@ -475,7 +513,7 @@ def _folder_import(root):
         document = _json(candidate)
         kind = document.get('dataset_type')
         if kind == WORKING_TYPE:
-            return _working_import(root, document)
+            return _working_import(root, document, report=report)
         if kind == VERIFIED_TYPE:
             declared = document.get('training_ready', {}).get('path')
             if not isinstance(declared, str) or not declared:
@@ -486,19 +524,22 @@ def _folder_import(root):
             manifest = _json(ready / 'manifest.json')
             if manifest.get('dataset_type') != FLAT_TYPE:
                 raise ValueError('verified training_ready 類型不符')
-            return _coco_import(_safe_child(ready, manifest.get('annotations', 'annotations.json')), ready, manifest)
+            return _coco_import(_safe_child(ready, manifest.get('annotations', 'annotations.json')), ready, manifest,
+                                report=report)
         if kind == FLAT_TYPE:
-            return _coco_import(_safe_child(root, document.get('annotations', 'annotations.json')), root, document)
+            return _coco_import(_safe_child(root, document.get('annotations', 'annotations.json')), root, document,
+                                report=report)
     project_file = root / 'project.json'
     if project_file.is_file():
         document = _json(project_file)
         if document.get('format') == NATIVE_FORMAT:
-            return _native_import(root, document)
+            return _native_import(root, document, report=report)
     dataset_file = root / 'dataset.json'
     if dataset_file.is_file():
         document = _json(dataset_file)
         if document.get('format') in {'vision-workbench-jsonl', 'vision-workbench-classification'}:
-            return _asset_lines_import(root, _safe_child(root, document.get('annotations', 'dataset.jsonl')))
+            return _asset_lines_import(root, _safe_child(root, document.get('annotations', 'dataset.jsonl')),
+                                       report=report)
     working_manifests = []
     for candidate in root.rglob('manifest.json'):
         if any(part in {'.venv', 'node_modules', '.git'} for part in candidate.relative_to(root).parts):
@@ -510,21 +551,28 @@ def _folder_import(root):
             raise ValueError(f'無法解析 manifest：{candidate.name}')
     if working_manifests:
         records = []
-        for candidate in working_manifests:
-            records.extend(_working_import(candidate.parent, _json(candidate)))
+        for index, candidate in enumerate(working_manifests):
+            nested = _subrange(report, index / len(working_manifests), (index + 1) / len(working_manifests))
+            records.extend(_working_import(candidate.parent, _json(candidate), report=nested))
         return records
     files = _files(root)
     images = [p for p in files if p.suffix.lower() in IMAGE_EXTENSIONS]
     json_files = [p for p in files if p.suffix.lower() == '.json' and p.name not in {'manifest.json', 'conversion_report.json', 'export_manifest.json'}]
+    # One unit per annotation document and per image; COCO documents report inside their unit.
+    total, step = len(json_files) + len(images), 0
+    _tick(report, step, total, '掃描檔案')
     records, used_images, used_labels = [], set(), set()
     for file in json_files:
         document = _json(file)
+        nested = _subrange(report, step / total, (step + 1) / total)
         if isinstance(document, dict) and all(isinstance(document.get(k), list) for k in ('images', 'annotations', 'categories')):
-            found = _coco_import(file, file.parent)
+            found = _coco_import(file, file.parent, report=nested)
         elif isinstance(document, dict) and isinstance(document.get('shapes'), list) and 'imagePath' in document:
             found = _labelme_import(file)
         else:
-            continue
+            found = []
+        step += 1
+        _tick(report, step, total, '掃描檔案')
         for record in found:
             key = Path(record['path']).resolve()
             if key in used_images:
@@ -543,7 +591,9 @@ def _folder_import(root):
         if conversion.get('tool') == 'Vision Workbench' and str(conversion.get('format', '')).startswith('yolo'):
             report_items = {item['image']: item for item in conversion.get('items', [])}
     for image in images:
+        step += 1
         if image.resolve() in used_images:
+            _tick(report, step, total, '掃描檔案')
             continue
         relative = image.relative_to(root)
         possible = [image.with_suffix('.txt')]
@@ -564,6 +614,7 @@ def _folder_import(root):
             if yolo_dataset:
                 raise ValueError(f'{image.name}：YOLO 資料集缺少配對 TXT；空白背景圖片也請提供空 TXT')
             records.append(_record(image, [], root))
+        _tick(report, step, total, '掃描檔案')
     for label in files:
         if label.suffix.lower() == '.txt' and label.name not in {'classes.txt', 'README.txt', 'train.txt', 'val.txt', 'test.txt'} and ('labels' in label.relative_to(root).parts):
             if label.resolve() not in used_labels:
@@ -573,76 +624,172 @@ def _folder_import(root):
     return records
 
 
-def import_sources(paths: list[str | Path]) -> dict:
+YOLO_MARKERS = ('data.yaml', 'data.yml', 'dataset.yaml', 'dataset.yml', 'classes.txt')
+
+
+class _ScanProgress:
+    """Monotonic scan percentages over parse units; a folder or SAM2 session counts once."""
+
+    def __init__(self, callback, units):
+        self.callback, self.units, self.done, self.last = callback, max(1, units), 0, None
+
+    def unit(self, label):
+        if self.callback is None:
+            return None
+        base = self.done
+        return lambda fraction, detail='': self._emit(base + min(1.0, max(0.0, fraction)), label, detail)
+
+    def finish(self, label):
+        self.done += 1
+        self._emit(self.done, label, '')
+
+    def _emit(self, value, label, detail):
+        if self.callback is None:
+            return
+        percent = round(min(100.0, value * 100 / self.units), 2)
+        if self.last is not None and percent < self.last:
+            return
+        self.last = percent
+        self.callback(f'{label}：{detail}' if detail else label, percent)
+
+
+def _cached_json(path, cache):
+    if path not in cache:
+        cache[path] = _json(path)
+    return cache[path]
+
+
+def _cached(cache, key, parse):
+    """Parse once per import call; a failure is reported again for every dependent path."""
+    if key not in cache:
+        try:
+            cache[key] = (parse(), None)
+        except IMPORT_ERRORS as exc:
+            cache[key] = (None, exc)
+    value, error = cache[key]
+    if error is not None:
+        raise error.with_traceback(None)
+    return value
+
+
+def _source_working_root(path, manifests):
+    """Outermost SAM2 working root above path; verified packages only expose training_ready."""
+    working_root = None
+    for ancestor in (path.parent, *path.parent.parents):
+        for manifest_name in ('manifest.json', 'export_manifest.json'):
+            parent_manifest = ancestor / manifest_name
+            if not parent_manifest.is_file():
+                continue
+            try:
+                metadata = _cached_json(parent_manifest, manifests)
+            except json.JSONDecodeError:
+                raise ValueError('來源上層 manifest 無法解析')
+            if metadata.get('dataset_type') == WORKING_TYPE:
+                working_root = ancestor
+            if metadata.get('dataset_type') == VERIFIED_TYPE:
+                declared = metadata.get('training_ready', {}).get('path')
+                ready = (ancestor / declared).resolve() if isinstance(declared, str) else None
+                if ready is None or not ready.is_relative_to(ancestor) or not path.is_relative_to(ready):
+                    raise ValueError('verified 封裝只允許匯入宣告的 training_ready；不可單獨掃描 masks/overlay 等衍生檔案')
+    return working_root
+
+
+def _yolo_root(path):
+    root = next((parent for parent in path.parents
+                 if any((parent / name).is_file() for name in YOLO_MARKERS)), None)
+    if root is None:
+        raise ValueError('YOLO 標註需要配對圖片及 data.yaml 或 classes.txt；請拖入完整資料集資料夾')
+    if root.name == 'labels' and (root.parent / 'images').is_dir():
+        root = root.parent
+    return root
+
+
+def _plan_source(path, manifests):
+    """Name the parse unit a dropped path belongs to, without decoding any image."""
+    working_root = _source_working_root(path, manifests)
+    if working_root is not None and path.is_file():
+        return 'session', working_root
+    if path.is_dir():
+        return 'folder', path
+    suffix = path.suffix.lower()
+    if path.is_file() and suffix in {'.yaml', '.yml', '.txt'}:
+        return 'folder', _yolo_root(path)
+    if path.is_file() and suffix in IMAGE_EXTENSIONS:
+        parent_manifest = path.parent / 'manifest.json'
+        if parent_manifest.is_file() and _cached_json(parent_manifest, manifests).get('dataset_type') == FLAT_TYPE:
+            return 'folder', path.parent
+    return 'source', path
+
+
+def import_sources(paths: list[str | Path], progress=None) -> dict:
+    """Parse dropped sources read-only into import records.
+
+    ``progress(message, percent)`` receives monotonic scan percentages. A SAM2
+    session or dataset folder is parsed once per call however many of its files
+    are selected, so dropping N files costs about the same as dropping the folder.
+    """
     records, issues, seen = [], [], set()
     # A multi-file drop can list images before a COCO/native annotation file.
     # Read datasets and annotations first so de-duplication retains the labels.
     ordered = sorted(paths, key=lambda raw: 0 if Path(raw).is_dir() else
                      2 if Path(raw).suffix.lower() in IMAGE_EXTENSIONS else 1)
+    manifests, sessions, folders, plans = {}, {}, {}, []
     for raw in ordered:
         path = Path(raw).expanduser().resolve()
         try:
-            working_root = None
-            for ancestor in (path.parent, *path.parent.parents):
-                for manifest_name in ('manifest.json', 'export_manifest.json'):
-                    parent_manifest = ancestor / manifest_name
-                    if parent_manifest.is_file():
-                        try:
-                            metadata = _json(parent_manifest)
-                            if metadata.get('dataset_type') == WORKING_TYPE:
-                                working_root = ancestor
-                            if metadata.get('dataset_type') == VERIFIED_TYPE:
-                                declared = metadata.get('training_ready', {}).get('path')
-                                ready = (ancestor / declared).resolve() if isinstance(declared, str) else None
-                                if ready is None or not ready.is_relative_to(ancestor) or not path.is_relative_to(ready):
-                                    raise ValueError('verified 封裝只允許匯入宣告的 training_ready；不可單獨掃描 masks/overlay 等衍生檔案')
-                        except json.JSONDecodeError:
-                            raise ValueError('來源上層 manifest 無法解析')
-            if working_root is not None and path.is_file():
-                found = _working_import(working_root, selected_path=path)
+            plans.append((path, _plan_source(path, manifests), None))
+        except IMPORT_ERRORS as exc:
+            plans.append((path, ('failed', len(plans)), exc))
+    scan = _ScanProgress(progress, len({plan for _path, plan, _error in plans}))
+    finished = set()
+    for path, plan, error in plans:
+        kind, target = plan
+        label = (f'解析 SAM2 工作資料 {target.name}' if kind == 'session' else
+                 f'掃描資料夾 {target.name}' if kind == 'folder' else f'解析 {path.name}')
+        report = None if plan in finished else scan.unit(label)
+        def folder(root, report=report):
+            return _cached(folders, root, lambda: _folder_import(root, report=report))
+        try:
+            if error is not None:
+                raise error
+            if kind == 'session':
+                found = _select_working(target, *_cached(sessions, target,
+                                                          lambda: _working_records(target, report=report)), path)
                 if not found:
                     raise ValueError('選取的檔案未被 SAM2 manifest 宣告為圖片或標註')
             elif path.is_dir():
-                found = _folder_import(path)
+                found = folder(path)
             elif path.suffix.lower() == '.json' and path.is_file():
                 document = _json(path)
                 if document.get('dataset_type') in {WORKING_TYPE, VERIFIED_TYPE, FLAT_TYPE}:
-                    found = _folder_import(path.parent)
+                    found = folder(path.parent)
                 elif document.get('format') == NATIVE_FORMAT:
-                    found = _native_import(path.parent, document)
+                    found = _native_import(path.parent, document, report=report)
                 elif document.get('format') in {'vision-workbench-jsonl', 'vision-workbench-classification'}:
-                    found = _folder_import(path.parent)
+                    found = folder(path.parent)
                 elif isinstance(document.get('images'), list):
                     parent_manifest = path.parent / 'manifest.json'
                     if parent_manifest.is_file() and _json(parent_manifest).get('dataset_type') == FLAT_TYPE:
-                        found = _folder_import(path.parent)
+                        found = folder(path.parent)
                     else:
-                        found = _coco_import(path)
+                        found = _coco_import(path, report=report)
                 elif isinstance(document.get('shapes'), list):
                     found = _labelme_import(path)
                 else:
                     raise ValueError('不支援的 JSON 結構')
             elif path.suffix.lower() == '.jsonl' and path.is_file():
-                found = _asset_lines_import(path.parent, path)
+                found = _asset_lines_import(path.parent, path, report=report)
             elif path.is_file() and path.suffix.lower() in {'.yaml', '.yml', '.txt'}:
-                markers = ('data.yaml', 'data.yml', 'dataset.yaml', 'dataset.yml', 'classes.txt')
-                root = next((parent for parent in path.parents
-                             if any((parent / name).is_file() for name in markers)), None)
-                if root is None:
-                    raise ValueError('YOLO 標註需要配對圖片及 data.yaml 或 classes.txt；請拖入完整資料集資料夾')
-                if root.name == 'labels' and (root.parent / 'images').is_dir():
-                    root = root.parent
-                if path.suffix.lower() in {'.yaml', '.yml'} and path.name not in markers:
+                if path.suffix.lower() in {'.yaml', '.yml'} and path.name not in YOLO_MARKERS:
                     raise ValueError('不支援的 YAML；YOLO 請使用 data.yaml 或 dataset.yaml')
-                found = _folder_import(root)
-                if path.name not in markers:
+                found = folder(target)
+                if path.name not in YOLO_MARKERS:
                     found = [r for r in found if Path(r.get('source', {}).get('annotation_path', '')).resolve() == path]
                     if not found:
                         raise ValueError('找不到此 YOLO TXT 的配對圖片，請檢查 images／labels 目錄與檔名')
             elif path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-                parent_manifest = path.parent / 'manifest.json'
-                if parent_manifest.is_file() and _json(parent_manifest).get('dataset_type') == FLAT_TYPE:
-                    found = [r for r in _folder_import(path.parent) if Path(r['path']) == path]
+                if kind == 'folder':
+                    found = [r for r in folder(target) if Path(r['path']) == path]
                     if not found:
                         raise ValueError('此圖片未被 verified manifest 宣告')
                 elif path.with_suffix('.json').is_file():
@@ -662,8 +809,11 @@ def import_sources(paths: list[str | Path]) -> dict:
                 records.append(record)
                 if any(s.get('metadata', {}).get('canonical_origin') == 'coco_multipart_polygon' for s in record['shapes']):
                     issues.append({'level': 'warning', 'message': 'COCO 多區塊物件以 Mask 編輯；完整原始向量保留在標註 metadata', 'source': str(path)})
-        except (ValueError, OSError, KeyError, TypeError, IndexError, cv2.error) as exc:
+        except IMPORT_ERRORS as exc:
             issues.append({'level': 'error', 'message': str(exc), 'source': str(path)})
+        if plan not in finished:
+            finished.add(plan)
+            scan.finish(label)
     return {'records': records, 'issues': issues}
 
 

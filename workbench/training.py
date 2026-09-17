@@ -872,6 +872,83 @@ class TrainingWorkspace:
         self._sync_catalog(project_id)
         return record
 
+    def create_model_trial(self, project_id, model_id, paths, progress=lambda _message, _percent=None, **_meta: None):
+        """Predict external media into an isolated, read-only preview session."""
+        model=self.model(project_id,model_id);definition=self.registry.model(model.get('engine'),refresh=True)
+        from .engine_specs import engine_spec
+        worker=engine_spec(model['engine']).predict_module
+        if not worker or not definition or not definition.get('predict'):
+            raise ValueError('此模型目前不支援外部圖片／影片試跑')
+        if not isinstance(paths,list) or not paths or not all(isinstance(value,str) for value in paths):
+            raise ValueError('請選擇圖片或影片')
+        allowed={'.png','.jpg','.jpeg','.webp','.bmp','.tif','.tiff','.mp4','.avi','.mov','.mkv','.webm'}
+        sources=[]
+        for raw in paths:
+            path=Path(raw).expanduser().resolve()
+            if not path.is_file() or path.suffix.lower() not in allowed: raise ValueError(f'試跑檔案不存在或格式不支援：{path.name}')
+            sources.append(path)
+        session=uuid.uuid4().hex;session_dir=self.root/'model-trials'/session;session_dir.mkdir(parents=True)
+        request_path=session_dir/'request.json';output_path=session_dir/'result.json'
+        atomic_json(request_path,{'model_path':str(self._model_path(project_id,model_id)),'predict_module':worker,'paths':[str(p) for p in sources],
+                                  'output_dir':str(session_dir/'media'),'device':'auto'})
+        try:
+            from .resources import accelerator_lease
+            from .process_control import run_controlled
+            python=str(self.registry.component_python(definition['component']))
+            with accelerator_lease(self.root,checkpoint=lambda:progress('等待運算資源')):
+                run_controlled([python,'-m','workbench.model_trial_worker','--request',str(request_path),'--output',str(output_path)],progress,
+                               cwd=Path(__file__).resolve().parents[1],timeout=None,idle_timeout=1800)
+            result=read_json(output_path);result.update(session_id=session,model_version_id=model_id,engine=model['engine'],classes=model.get('classes',[]))
+            atomic_json(output_path,result);return result
+        except BaseException:
+            shutil.rmtree(session_dir,ignore_errors=True);raise
+
+    def model_trial(self, session_id):
+        if not isinstance(session_id,str) or len(session_id)!=32 or not session_id.isalnum(): raise ValueError('模型試跑 ID 無效')
+        path=self.root/'model-trials'/session_id/'result.json'
+        if not path.is_file(): raise FileNotFoundError('找不到模型試跑結果')
+        return read_json(path)
+
+    def create_model_comparison(self, project_id, model_id, split='test', progress=lambda _message, _percent=None, **_meta: None):
+        """Run the model on immutable labeled data and report explicit IoU=.5 box outcomes."""
+        model=self.model(project_id,model_id);dataset_id=model.get('dataset_version_id');dataset_dir=self.datasets_dir(project_id)/str(dataset_id)
+        manifest=read_json(dataset_dir/'manifest.json');split=str(split or 'test')
+        if split not in {'val','test'}: raise ValueError('標註比對僅支援 Validation 或 Test')
+        assets=[asset for asset in manifest.get('assets',[]) if asset.get('split')==split]
+        if not assets: raise ValueError(f'{split} 沒有可用的人工標註圖片')
+        result=self.create_model_trial(project_id,model_id,[str(dataset_dir/asset['image_file']) for asset in assets],progress)
+        tp=fp=fn=0
+        def box(shape,width,height):
+            if all(key in shape for key in ('x','y','width','height')): return [float(shape[k]) for k in ('x','y','width','height')]
+            return list(bounds(shape,width,height))
+        def iou(left,right,width,height):
+            ax,ay,aw,ah=box(left,width,height);bx,by,bw,bh=box(right,width,height);x1=max(ax,bx);y1=max(ay,by);x2=min(ax+aw,bx+bw);y2=min(ay+ah,by+bh)
+            intersection=max(0,x2-x1)*max(0,y2-y1);union=aw*ah+bw*bh-intersection
+            return intersection/union if union>0 else 0
+        score_threshold=.5
+        for frame,asset in zip(result['frames'],assets):
+            expected=asset.get('shapes',[]);predicted=[shape for shape in frame.get('shapes',[]) if float(shape.get('metadata',{}).get('confidence',shape.get('confidence',1)))>=score_threshold];available=set(range(len(predicted)));matches=[]
+            for expected_index,truth in enumerate(expected):
+                choices=[(iou(truth,predicted[index],frame['width'],frame['height']),index) for index in available if predicted[index].get('label')==truth.get('label')]
+                score,index=max(choices,default=(0,None))
+                if index is not None and score>=.5: available.remove(index);matches.append({'expected':expected_index,'predicted':index,'iou':round(score,6)});tp+=1
+                else: fn+=1
+            fp+=len(available);frame.update(ground_truth=expected,matches=matches,false_positive_indices=sorted(available))
+        precision=tp/(tp+fp) if tp+fp else None;recall=tp/(tp+fn) if tp+fn else None
+        result['comparison']={'split':split,'iou_threshold':.5,'score_threshold':score_threshold,'tp':tp,'fp':fp,'fn':fn,
+                              'precision':round(precision,6) if precision is not None else None,
+                              'recall':round(recall,6) if recall is not None else None,
+                              'f1':round(2*precision*recall/(precision+recall),6) if precision is not None and recall is not None and precision+recall else None,
+                              'scope':'box_iou_per_prediction_at_model_score_threshold'}
+        atomic_json(self.root/'model-trials'/result['session_id']/'result.json',result);return result
+
+    def model_trial_image(self, session_id, index):
+        result=self.model_trial(session_id);index=int(index)
+        if index<0 or index>=len(result['frames']): raise FileNotFoundError('找不到試跑影格')
+        path=self.root/'model-trials'/session_id/'media'/result['frames'][index]['image']
+        if not path.is_file() or path.parent.resolve()!=(self.root/'model-trials'/session_id/'media').resolve(): raise FileNotFoundError('找不到試跑影格')
+        return path
+
     def list_predictions(self, project_id):
         rows = []
         for path in self.predictions_dir(project_id).glob("*.json"):
