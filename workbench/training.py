@@ -182,22 +182,9 @@ class TrainingWorkspace:
             return False
 
     @staticmethod
-    def _pid_alive(pid):
-        try:
-            pid = int(pid)
-            if pid <= 0:
-                return False
-            if os.name == "nt":
-                import ctypes
-                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-                if not handle:
-                    return False
-                ctypes.windll.kernel32.CloseHandle(handle)
-                return True
-            os.kill(pid, 0)
-            return True
-        except (OSError, TypeError, ValueError):
-            return False
+    def _pid_alive(pid, created=None):
+        from .process_identity import alive
+        return alive(pid, created)
 
     def _reconcile_runs(self):
         active = {"queued", "preparing", "running", "stopping"}
@@ -205,12 +192,15 @@ class TrainingWorkspace:
                  for path in self.runs_dir(project["id"]).glob("*/run.json"))
         for path in paths:
             try:
-                from .run_events import latest_state
-                run = latest_state(path) or read_json(path)
+                from .run_events import read_state
+                run = read_state(path)
                 metadata = path.parent / 'worker.json'
                 if metadata.is_file():
                     run.update(read_json(metadata))
-                if run.get("status") in active and not self._pid_alive(run.get("worker_pid")):
+                if run.get("status") in active and self._pid_alive(run.get("worker_pid"), run.get('worker_created')) is False:
+                    run = read_state(path)
+                    if run.get('status') not in active:
+                        continue
                     run.update(status="failed", progress=None, message="上次訓練程序已不在執行",
                                error="工作台重新開啟時找不到原訓練程序", completed_at=time.time(), updated_at=time.time())
                     atomic_json(path.parent / 'control' / 'terminal.json', run)
@@ -555,7 +545,9 @@ class TrainingWorkspace:
                 stdout.close()
                 stderr.close()
             self.processes[(project_id, run_id)] = process
-            atomic_json(run_dir / 'worker.json', {'worker_pid': process.pid})
+            from .process_identity import identity
+            atomic_json(run_dir / 'worker.json', {'worker_pid': process.pid,
+                                                 'worker_created': identity(process.pid)['created']})
             current = self.run(project_id, run_id)
             threading.Thread(target=self._reap, args=(project_id, run_id, process),
                              name=f"training-{run_id}", daemon=True).start()
@@ -660,8 +652,8 @@ class TrainingWorkspace:
         path = self._run_path(project_id, run_id)
         if not path.is_file():
             raise FileNotFoundError("找不到訓練紀錄")
-        from .run_events import latest_state
-        run = _with_evaluation_reassessment(latest_state(path) or read_json(path), path.parent)
+        from .run_events import read_state
+        run = _with_evaluation_reassessment(read_state(path), path.parent)
         terminal = path.parent / 'control' / 'terminal.json'
         if terminal.is_file() and run.get('status') in {'queued', 'preparing', 'running', 'stopping'}:
             run.update(read_json(terminal))
@@ -675,6 +667,19 @@ class TrainingWorkspace:
         metadata = path.parent / 'worker.json'
         if metadata.is_file():
             run.update(read_json(metadata))
+        active = {'queued', 'preparing', 'running', 'stopping'}
+        if (run.get('status') in active and metadata.is_file()
+                and (project_id, run_id) not in self.processes
+                and self._pid_alive(run.get('worker_pid'), run.get('worker_created')) is False):
+            # The worker can publish completed immediately before exiting.
+            # Probe death first, then reread; never overwrite a terminal event.
+            final = read_state(path)
+            if final.get('status') in active:
+                final.update(status='failed', progress=None, completed_at=time.time(), updated_at=time.time(),
+                             message='訓練程序已結束但未回報完成', error='已確認原訓練程序不存在或 PID 已被重用')
+                atomic_json(terminal, final)
+            run.update(final)
+            run.pop('health_warning', None)
         from .training_engine import stop_requested
         if stop_requested(path.parent) and run.get('status') in {'queued', 'preparing', 'running'}:
             run.update(status='stopping', message='正在安全停止…')

@@ -1,5 +1,7 @@
 # 架構整頓：實作與驗收紀錄
 
+> 後續發現的 A–E 回歸與修復驗證，見 [回歸修復紀錄](regression-hardening.md)。下列為第一輪整頓紀錄，不代表當時已覆蓋後續新增案例。
+
 分支：`codex/architecture-hardening`。本次未提高版本號、未建立 Release、未推送 GitHub。
 原有未提交功能保留；不可把目前整個工作目錄當成本次單一變更直接提交。
 

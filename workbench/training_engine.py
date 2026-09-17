@@ -31,7 +31,14 @@ def atomic_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == 'run.json' and 'status' in value:
         from .run_events import append_state
-        append_state(path, value)
+        from .file_lock import exclusive_file_lock
+        with exclusive_file_lock(path.with_name('.events.lock')):
+            _atomic_json_file(path, append_state(path, value))
+        return
+    _atomic_json_file(path, value)
+
+
+def _atomic_json_file(path, value):
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")

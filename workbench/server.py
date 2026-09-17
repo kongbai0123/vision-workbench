@@ -41,6 +41,11 @@ class WorkbenchService:
         self._camera = None
         self._camera_lock = threading.Lock()
         self._ai_lock = threading.Lock()
+        from .interactive_runtime import InteractiveRuntime
+        def unload_ai():
+            from .acquisition import close_ai
+            close_ai()
+        self._ai_runtime = InteractiveRuntime(self.data_root, unload_ai)
         self._cvat = None
         self._cvat_lock = threading.Lock()
         self._cvat_tickets = {}
@@ -97,6 +102,7 @@ class WorkbenchService:
             self.httpd.shutdown()
         self.httpd.server_close()
         self.jobs.close()
+        self._ai_runtime.close()
         self.training.close()
         if self._camera:
             self._camera.close()
@@ -158,19 +164,19 @@ class WorkbenchService:
             raise ConflictError("圖片已修改，請先儲存最新內容再執行 AI")
         def run(progress):
             from .acquisition import segment_image
-            from .resources import accelerator_lease
             progress("載入本機模型並執行分割")
-            with self._ai_lock, accelerator_lease(self.data_root, device='cpu' if payload.get('engine') == 'grabcut' else 'auto', checkpoint=lambda: progress('等待運算資源')):
-                from .acquisition import close_ai
-                try:
-                    result = segment_image(asset["image_path"], engine=payload.get("engine", "sam2"),
+            def predict():
+                return segment_image(asset["image_path"], engine=payload.get("engine", "sam2"),
                         points=payload.get("points"), negative_points=payload.get("negative_points"),
                         box=payload.get("box"), label=label, model_dir=APP_ROOT/"models"/"sam2.1-hiera-tiny")
-                finally:
-                    close_ai()
+            if payload.get('engine') == 'grabcut':
+                result = predict()
+            else:
+                result = self._ai_runtime.run(predict, lambda: progress('SAM2 處理／等待運算資源'))
+            progress('候選已產生')
             result.update(asset_id=asset["id"], revision=asset["revision"])
             return result
-        return self.jobs.submit("ai", run)
+        return self.jobs.submit('ai-cpu' if payload.get('engine') == 'grabcut' else 'ai', run)
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -221,7 +221,7 @@ class ModelRegistry:
         return next((item for item in self.snapshot(refresh)["models"] if item["key"] == key), None)
 
     def install(self, component_id, progress):
-        from .process_control import run_controlled
+        from .process_control import run_controlled, installation_options
         if component_id not in COMPONENTS:
             raise FileNotFoundError("找不到模型元件")
         component = COMPONENTS[component_id]
@@ -235,10 +235,11 @@ class ModelRegistry:
             target = self.component_python(component_id).parent.parent
             target.parent.mkdir(parents=True, exist_ok=True)
             if not self.component_python(component_id).is_file():
-                run_controlled([sys.executable, '-m', 'venv', str(target)], progress, cwd=self.app_root)
+                run_controlled([sys.executable, '-m', 'venv', str(target)], progress, cwd=self.app_root,
+                               **installation_options())
             command = [str(self.component_python(component_id)), "-m", "pip", "install", "-r",
                        str(self.app_root / component["requirements"])]
-        run_controlled(command, progress, cwd=self.app_root)
+        run_controlled(command, progress, cwd=self.app_root, **installation_options())
         self._probe_cache = None
         status = self.component_status(refresh=True)[component_id]
         if status["state"] != "ready":

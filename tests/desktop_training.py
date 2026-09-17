@@ -318,9 +318,14 @@ def main():
             QTest.qWait(80)
             expanded = json.loads(js("JSON.stringify([...document.querySelectorAll('.training-layout > .panel')].map(e=>e.getBoundingClientRect().height))"))
             assert max(expanded) - min(expanded) < 2, expanded
-            path, run, rows = saved["R004"]
-            run.update(status="running", updated_at=time.time())
+            # A terminal Run cannot return to running. Start a new fixture Run
+            # instead of resurrecting R004, matching the production contract.
+            _old_path, previous, rows = saved["R004"]
+            run = dict(previous, run_id='R005', model_version_id='M005', status='running', updated_at=time.time())
+            path = service.training._run_path(pid, 'R005')
             atomic_json(path, run)
+            (path.parent / 'metrics.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+            saved['R005'] = (path, run, rows)
             click("#refreshTraining")
             wait("!document.querySelector('#backgroundTraining').hidden")
             assert js("document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]').value") == "0.003"
@@ -411,18 +416,18 @@ def main():
 
             # Actual polling reads a newly appended Epoch while retaining table scroll.
             history()
-            click('[data-select-run="R004"]')
+            click('[data-select-run="R005"]')
             wait("document.querySelector('#trainingRunDetail').innerText.includes('訓練中')")
             wait("document.querySelector('.training-epoch-scroll tbody')?.rows.length===12")
             js("document.querySelector('.training-epoch-scroll').scrollTop=65")
-            path, run, rows = saved["R004"]
+            path, run, rows = saved["R005"]
             live_domains = domains()
             new_row = {"epoch": 13, "train/loss": .1714, "val/mean_iou": .9012}
             with (path.parent / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(new_row) + "\n")
             run.update(epoch=13, metrics=new_row, progress=65, updated_at=time.time())
             atomic_json(path, run)
-            wait(chart_script("val/mean_iou", ".querySelectorAll('circle[data-run-id=R004]').length===13"))
+            wait(chart_script("val/mean_iou", ".querySelectorAll('circle[data-run-id=R005]').length===13"))
             assert "0.9012" in hover_epoch("val/mean_iou", 13)
             assert domains() == live_domains, (live_domains, domains())
             assert abs(epoch_stats()["scroll"] - 65) <= 2, epoch_stats()

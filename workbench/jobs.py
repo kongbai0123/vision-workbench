@@ -14,6 +14,7 @@ class JobManager:
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="workbench")
         self.install_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='installation')
         self.interactive_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='interactive')
+        self.cpu_interactive_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='interactive-cpu')
         self.lock = threading.RLock()
         self.jobs = {}
         self.controls = {}
@@ -38,7 +39,8 @@ class JobManager:
             job = dict(id=jid, kind=kind, state="queued", message="等待處理", progress=None, created_at=time.time(), pauseable=True, stoppable=True)
             self.jobs[jid] = job
             self.controls[jid] = dict(paused=threading.Event(), cancelled=threading.Event())
-            pool = self.install_pool if kind == 'model-install' else self.interactive_pool if kind == 'ai' else self.pool
+            pool = (self.install_pool if kind == 'model-install' else self.interactive_pool if kind == 'ai'
+                    else self.cpu_interactive_pool if kind == 'ai-cpu' else self.pool)
             pool.submit(self._run, jid, action)
             return dict(job)
 
@@ -124,3 +126,4 @@ class JobManager:
         self.pool.shutdown(wait=True, cancel_futures=False)
         self.install_pool.shutdown(wait=True, cancel_futures=False)
         self.interactive_pool.shutdown(wait=True, cancel_futures=False)
+        self.cpu_interactive_pool.shutdown(wait=True, cancel_futures=False)

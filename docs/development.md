@@ -98,3 +98,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -TrainingOnl
 | `tests/`、`docs/` | 自動測試、整合驗證與技術文件 |
 
 開發資料、模型權重及測試產物應放在已忽略的本機目錄。使用自訂資料目錄時，先確認該路徑已列於 `.gitignore`。
+
+## 架構回歸修復
+
+2026-09-17 的遷移、worker 生命週期、SAM2 資源、安裝與事件日誌修復及部署注意事項，見 [regression-hardening.md](regression-hardening.md)。
