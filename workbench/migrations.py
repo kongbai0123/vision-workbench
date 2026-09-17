@@ -39,6 +39,12 @@ def _migrate(db):
             if db.execute('SELECT 1 FROM schema_migrations WHERE version=?', (version,)).fetchone():
                 db.commit()
                 continue
+            prior = None
+            if version == 2:
+                from .independence import confirmation, fingerprint, valid, preserve
+                candidate = confirmation(db)
+                if valid(candidate, fingerprint(db)):
+                    prior = candidate
             statement = ''
             for line in path.read_text(encoding='utf-8').splitlines(True):
                 statement += line
@@ -47,6 +53,8 @@ def _migrate(db):
                     statement = ''
             if statement.strip():
                 raise ValueError(f'Incomplete migration: {path.name}')
+            if version == 2 and prior is not None:
+                preserve(db, prior, fingerprint(db), migration='0002')
             if version == 1:
                 for hid, raw in db.execute('SELECT id,data FROM history').fetchall():
                     data = json.loads(raw)

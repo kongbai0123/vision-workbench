@@ -309,14 +309,8 @@ class ProjectStore:
     @staticmethod
     def _independence_fingerprint(db):
         """Fingerprint review-relevant approved content, excluding split assignment."""
-        rows = []
-        for row in db.execute("""SELECT id,sha256,batch_id,review_state,source,shapes
-                                  FROM assets WHERE review_state='approved' ORDER BY id"""):
-            source = json.loads(row['source'])
-            rows.append({'id': row['id'], 'sha256': row['sha256'], 'batch_id': row['batch_id'],
-                         'review_state': row['review_state'], 'source': source,
-                         'annotation_sha256': hashlib.sha256(row['shapes'].encode('utf-8')).hexdigest()})
-        return hashlib.sha256(dump(rows).encode('utf-8')).hexdigest(), len(rows)
+        from .independence import fingerprint
+        return fingerprint(db)
 
     def _independence_review(self, db):
         row = db.execute("SELECT data FROM independence_reviews WHERE id=1").fetchone()
@@ -616,6 +610,9 @@ class ProjectStore:
                 image_files.append(row["image_file"])
             placeholders = ",".join("?" for _ in ids)
             db.execute(f"DELETE FROM history WHERE asset_id IN ({placeholders})", ids)
+            for table in ('asset_summaries', 'annotation_revisions', 'asset_review', 'asset_quality'):
+                db.execute(f'DELETE FROM {table} WHERE asset_id IN ({placeholders})', ids)
+            db.execute('DELETE FROM annotation_blobs WHERE NOT EXISTS (SELECT 1 FROM history WHERE history.annotation_hash=annotation_blobs.hash)')
             db.execute(f"DELETE FROM assets WHERE id IN ({placeholders})", ids)
             # The image-admission lock spans commit and file cleanup. Never
             # delete bytes before commit: a rollback must retain its images.
@@ -778,6 +775,8 @@ class ProjectStore:
         target = next((item for item in history if item["id"] == history_id), None)
         if target is None:
             raise FileNotFoundError("找不到歷史版本")
+        if 'shapes' not in target['data']:
+            raise ValueError('此歷史紀錄不含標註內容；垃圾桶項目請使用垃圾桶還原功能')
         return self.save_asset(project_id, asset_id, target["data"]["shapes"], revision)
 
     def record_export(self, project_id, result):

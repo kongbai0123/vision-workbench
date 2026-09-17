@@ -13,8 +13,8 @@ class HistoryRepository:
             key = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
             db.execute('INSERT OR IGNORE INTO annotation_blobs VALUES(?,?)', (key, serialized))
             data['annotation_hash'] = key
-        db.execute('INSERT INTO history(asset_id,revision,action,created_at,data) VALUES(?,?,?,?,?)',
-                   (asset_id, revision, action, timestamp(), dump(data)))
+        db.execute('INSERT INTO history(asset_id,revision,action,created_at,data,annotation_hash) VALUES(?,?,?,?,?,?)',
+                   (asset_id, revision, action, timestamp(), dump(data), data.get('annotation_hash')))
 
     @staticmethod
     def list(db, asset_id):

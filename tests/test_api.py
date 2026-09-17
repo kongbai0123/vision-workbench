@@ -65,6 +65,15 @@ class ApiWorkflowTests(unittest.TestCase):
             self.call('/api/projects', {'name': []})
         self.assertEqual(error.exception.code, 400)
 
+    def test_non_annotation_trash_history_restore_is_400(self):
+        pid, asset = self.imported()
+        aid = asset['id']
+        self.call(f'/api/projects/{pid}/review-trash', {'asset_ids': [aid], 'revisions': {aid: asset['revision']}})
+        history = self.service.store.history(pid, aid)[-1]
+        with self.assertRaises(HTTPError) as error:
+            self.call(f'/api/projects/{pid}/assets/{aid}/restore', {'history_id': history['id'], 'revision': asset['revision']})
+        self.assertEqual(error.exception.code, 400)
+
     def test_image_conditional_cache_and_project_delta(self):
         pid, asset = self.imported()
         url = f"{self.service.url}/api/projects/{pid}/assets/{asset['id']}/image?thumbnail=1"
