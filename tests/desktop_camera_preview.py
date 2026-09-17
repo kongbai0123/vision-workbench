@@ -59,7 +59,7 @@ def main():
             if control['frame_error']:raise AcquisitionError('模擬暫時無影格')
             return original_frame(processed)
         camera.frame_jpeg=get_frame
-        view=QWebEngineView();view.resize(1440,900);view.show();view.setUrl(QUrl(service.url))
+        view=QWebEngineView();view.resize(1440,900);view.show();view.setUrl(QUrl(service.entry_url))
         def js(script):
             result=[];loop=QEventLoop()
             view.page().runJavaScript(script,lambda value:(result.append(value),loop.quit()))

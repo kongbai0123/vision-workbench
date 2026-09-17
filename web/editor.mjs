@@ -68,6 +68,7 @@ export class AnnotationEditor {
     this.resizeObserver.observe(this.$('canvasArea'));
   }
   load(asset) {
+    this.crosshair.hidden = true;
     this.asset = asset;
     this.asset.shapes ||= [];
     this.selection.clear();
@@ -91,6 +92,7 @@ export class AnnotationEditor {
     this.updateCandidate();
   }
   clear() {
+    this.crosshair.hidden = true;
     this.asset = null; this.selection.clear(); this.draft = []; this.candidate = null;
     this.$('imageStage').hidden = true;
     this.$('canvasEmpty').hidden = false;
@@ -119,7 +121,8 @@ export class AnnotationEditor {
       'ai-positive':'點選物件內部，加入前景提示點 · 提示點不會直接成為標註',
       'ai-negative':'點選需要排除的背景，加入背景提示點',
     };
-    this.$('toolHint').textContent = hints[tool] || '';
+    const hint = document.getElementById('toolHint');
+    if (hint) hint.textContent = hints[tool] || '';
     this.$('overlay').style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
     if(tool.startsWith('ai-'))document.querySelector('.ai-section').open=true;
     this.updateToolPanels();
@@ -151,6 +154,17 @@ export class AnnotationEditor {
       this.pan.y = y - (y - this.pan.y) * this.zoom / before;
     }
     this.transform();
+  }
+  focusPoint(x, y, targetPixelSize = 7) {
+    if (!this.asset) return;
+    this.fit();
+    this.zoom = Math.max(1, Math.min(24, targetPixelSize / Math.max(this.scale, .001)));
+    this.pan = {
+      x: -(x - this.asset.width / 2) * this.scale * this.zoom,
+      y: -(y - this.asset.height / 2) * this.scale * this.zoom,
+    };
+    this.transform();
+    this.notice(`已定位至 X=${Math.round(x)}、Y=${Math.round(y)}；可直接使用遮罩筆刷或橡皮擦。`);
   }
   point(event) {
     const rect = this.$('overlay').getBoundingClientRect();
@@ -292,6 +306,33 @@ export class AnnotationEditor {
   }
   installEvents() {
     const svg = this.$('overlay'), area = this.$('canvasArea');
+    // Screen-space guides stay one pixel wide at every image zoom level.
+    const guides = document.createElement('div');
+    guides.setAttribute('aria-hidden', 'true');
+    guides.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2';
+    guides.hidden = true;
+    const horizontal = document.createElement('div'), vertical = document.createElement('div');
+    const lineStyle = 'position:absolute;pointer-events:none;background:rgba(112,242,209,.8);box-shadow:0 0 1px 1px rgba(0,0,0,.45);';
+    horizontal.style.cssText = lineStyle + 'left:0;right:0;height:1px;top:0';
+    vertical.style.cssText = lineStyle + 'top:0;bottom:0;width:1px;left:0';
+    guides.append(horizontal, vertical);
+    area.append(guides);
+    this.crosshair = guides;
+    const updateGuides = event => {
+      const rect = area.getBoundingClientRect();
+      const x = event.clientX - rect.left - area.clientLeft;
+      const y = event.clientY - rect.top - area.clientTop;
+      guides.hidden = !this.asset || this.locked || event.pointerType === 'touch' ||
+        x < 0 || y < 0 || x >= area.clientWidth || y >= area.clientHeight;
+      if (guides.hidden) return;
+      horizontal.style.transform = `translateY(${Math.round(y)}px)`;
+      vertical.style.transform = `translateX(${Math.round(x)}px)`;
+    };
+    area.addEventListener('pointermove', updateGuides);
+    area.addEventListener('pointerenter', updateGuides);
+    area.addEventListener('pointerleave', () => { guides.hidden = true; });
+    area.addEventListener('pointercancel', () => { guides.hidden = true; });
+    window.addEventListener('blur', () => { guides.hidden = true; });
     document.querySelectorAll('[data-tool]').forEach(button => button.onclick=()=>this.setTool(button.dataset.tool));
     svg.addEventListener('pointerdown',event=>this.pointerDown(event));
     svg.addEventListener('pointermove',event=>this.pointerMove(event));

@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .training_engine import ENGINE_KEY as BASELINE_ENGINE, read_json
+from .training_engine import read_json
 
 
 def main(argv=None):
@@ -13,20 +13,17 @@ def main(argv=None):
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    engine = read_json(args.run_dir / "run.json").get("engine")
-    if engine == BASELINE_ENGINE:
-        from .training_engine import train
-    elif engine == "maskrcnn_resnet50_fpn":
-        from .maskrcnn_engine import train
-    elif engine.startswith("fasterrcnn_") or engine.startswith("deeplabv3_"):
-        from .torchvision_engines import train
-    elif engine.endswith("_classification"):
-        from .classification_engine import train
-    elif engine == "rt_detr_r50" or engine.startswith("yolo26"):
-        from .ultralytics_engine import train
-    else:
-        raise ValueError(f"未知訓練引擎：{engine}")
-    train(args.dataset.resolve(), args.run_dir.resolve(), args.model_dir.resolve())
+    from .engine_specs import engine_spec
+    from .worker_lifecycle import worker_lifecycle
+    run = read_json(args.run_dir / 'run.json')
+    try:
+        with worker_lifecycle(args.run_dir, run):
+            engine_spec(run['engine']).train(args.dataset.resolve(), args.run_dir.resolve(), args.model_dir.resolve())
+    except InterruptedError as exc:
+        import time
+        from .training_engine import atomic_json
+        run.update(status='stopped', message=str(exc), completed_at=time.time(), updated_at=time.time())
+        atomic_json(args.run_dir / 'run.json', run)
     return 0
 
 

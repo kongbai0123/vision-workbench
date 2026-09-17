@@ -11,7 +11,7 @@ from PIL import Image
 
 from composer_core.geometry import decode_rle, encode_rle
 from workbench.store import ProjectStore
-from workbench.training import TrainingWorkspace
+from workbench.training import TrainingWorkspace, _with_evaluation_reassessment
 
 
 class TrainingWorkflowTests(unittest.TestCase):
@@ -42,6 +42,17 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.workspace.close()
         self.tmp.cleanup()
 
+    def test_stop_request_does_not_overwrite_worker_state(self):
+        directory = self.workspace.runs_dir(self.pid, create=True) / 'R901'
+        directory.mkdir()
+        path = directory / 'run.json'
+        original = json.dumps({'run_id': 'R901', 'status': 'running', 'epoch': 12})
+        path.write_text(original, encoding='utf-8')
+        self.assertEqual(self.workspace.stop_run(self.pid, 'R901')['status'], 'stopping')
+        self.assertEqual(path.read_text(encoding='utf-8'), original)
+        path.write_text(json.dumps({'run_id': 'R901', 'status': 'completed'}), encoding='utf-8')
+        self.assertEqual(self.workspace.run(self.pid, 'R901')['status'], 'completed')
+
     def wait_run(self, run_id, timeout=20):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -56,13 +67,40 @@ class TrainingWorkflowTests(unittest.TestCase):
             time.sleep(.04)
         self.fail("training worker timed out")
 
+    def test_loose_split_creates_version_and_trains_missing_classes(self):
+        pid = self.store.create_project('loose unique classes')['id']
+        records = json.loads(json.dumps(self.records))
+        for i, record in enumerate(records):
+            record['batch_id'] = 'single-source'
+            record['split'] = ''
+            record['shapes'][0]['label'] = f'unique-{i}'
+        self.store.add_assets(pid, records)
+        options = {'strategy': 'random_loose'}
+        plan = self.store.preview_split(pid, options)
+        self.store.apply_split(pid, options, plan['project_revision'], plan['fingerprint'])
+        self.assertTrue(self.workspace.readiness(pid)['ready'])
+        dataset = self.workspace.create_dataset_version(pid)
+        self.assertTrue(dataset['readiness']['ready'])
+        self.assertEqual(dataset['data_quality']['purpose'], 'experimental')
+        run = self.workspace.start_run(pid, dataset['id'], {'engine': 'pixel_prototype_v1', 'epochs': 2})
+        original_pid = self.pid
+        self.pid = pid
+        try:
+            completed = self.wait_run(run['run_id'])
+            self.assertEqual(completed['status'], 'completed', completed)
+        finally:
+            self.pid = original_pid
+        model = json.loads((self.workspace.models_dir(pid) / run['model_version_id'] / 'model.json').read_text(encoding='utf-8'))
+        self.assertTrue(model['unlearned_classes'])
+        self.assertTrue(model['uncalibrated_classes'])
+
     def test_dataset_version_is_immutable_and_preserves_native_masks(self):
         report = self.workspace.readiness(self.pid)
         self.assertTrue(report["ready"], report)
         dataset = self.workspace.create_dataset_version(self.pid)
         self.assertEqual(dataset["id"], "D001")
         self.assertEqual(dataset["splits"], {"train": 2, "val": 2, "test": 2})
-        manifest_path = self.workspace.datasets / self.pid / "D001" / "manifest.json"
+        manifest_path = self.workspace.datasets_dir(self.pid) / "D001" / "manifest.json"
         before = manifest_path.read_bytes()
         manifest = json.loads(before)
         shape = manifest["assets"][0]["shapes"][0]
@@ -72,6 +110,37 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.store.save_asset(self.pid, current["id"], [], current["revision"])
         self.assertEqual(manifest_path.read_bytes(), before)
 
+    def test_dataset_version_reports_expanded_train_events_without_changing_assets(self):
+        dataset = self.workspace.create_dataset_version(
+            self.pid, {"preset": "light", "expansion_count": 3})
+        self.assertEqual(dataset["asset_count"], 6)
+        self.assertEqual(dataset["splits"], {"train": 2, "val": 2, "test": 2})
+        self.assertEqual(dataset["augmentation"]["expansion_count"], 3)
+        self.assertEqual(dataset["training_events"], {
+            "originals": 2, "expanded": 6, "events": 8, "events_per_image": 4,
+        })
+        manifest = json.loads((self.workspace.datasets_dir(self.pid) / dataset["id"] / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["assets"]), 6)
+        self.assertEqual(manifest["augmentation"]["expansion_count"], 3)
+
+    def test_review_compatibility_scans_latest_pending_and_approved_annotations(self):
+        initial = self.workspace.review_yolo_compatibility(self.pid)
+        self.assertTrue(initial["compatible"], initial)
+        self.assertEqual(initial["review_scope"], {"pending": 0, "approved": 6, "excluded_rejected": 0})
+
+        asset = self.store.get_asset(self.pid, self.store.get_project(self.pid)["assets"][0]["id"])
+        mask = decode_rle(asset["shapes"][0]["counts"], asset["width"], asset["height"])
+        mask[14:20, 14:20] = 0
+        shapes = list(asset["shapes"]); shapes[0] = dict(shapes[0], counts=encode_rle(mask))
+        self.store.save_asset(self.pid, asset["id"], shapes, asset["revision"])
+
+        current = self.store.get_project(self.pid)
+        report = self.workspace.review_yolo_compatibility(self.pid)
+        self.assertEqual(report["project_revision"], current["revision"])
+        self.assertEqual(report["review_scope"]["pending"], 1)
+        self.assertFalse(report["compatible"])
+        self.assertEqual(report["summary"]["blocked_assets"], 1)
+
     def test_real_train_evaluate_predict_accept_roundtrip(self):
         dataset = self.workspace.create_dataset_version(self.pid)
         run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 6,
@@ -79,7 +148,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         finished = self.wait_run(run["run_id"])
         self.assertEqual(finished["status"], "completed", finished)
         self.assertGreaterEqual(finished["evaluation"]["test"]["mean_iou"], .95)
-        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        metrics = [json.loads(row) for row in (self.workspace.runs_dir(self.pid) / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
         self.assertEqual(metrics[0]["threshold"], .5)
         self.assertEqual(metrics[-1]["threshold"], 2.5)
         model_id = finished["model_version_id"]
@@ -118,7 +187,7 @@ class TrainingWorkflowTests(unittest.TestCase):
                                                                 "threshold_min": 1e-8, "threshold_max": 1e-7})
         finished = self.wait_run(run["run_id"])
         self.assertEqual(finished["status"], "completed", finished)
-        metrics = [json.loads(row) for row in (self.workspace.runs / self.pid / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
+        metrics = [json.loads(row) for row in (self.workspace.runs_dir(self.pid) / run["run_id"] / "metrics.jsonl").read_text().splitlines()]
         self.assertEqual([row["threshold"] for row in metrics], [1e-8, 1e-7])
         model = self.workspace.model(self.pid, finished["model_version_id"])
         self.assertTrue(all(1e-8 <= value <= 1e-7 for value in model["thresholds"].values()))
@@ -132,7 +201,23 @@ class TrainingWorkflowTests(unittest.TestCase):
             "x": 1, "y": 1, "width": 5, "height": 5}]}])
         report = self.workspace.readiness(project["id"])
         codes = {item["code"] for item in report["blockers"]}
-        self.assertIn("no_evaluation_split", codes)
+        self.assertIn("no_validation_split", codes)
+
+    def test_versioned_reassessment_overlays_scores_and_preserves_legacy_values(self):
+        directory = self.root / "historical"
+        directory.mkdir()
+        legacy = {"model_version_id": "M001", "validation": {"mean_iou": .81},
+                  "test": {"mean_iou": .87}}
+        reassessment = {"schema_version": 2, "valid": True, "reason": "metric correction",
+                        "validation": {"mean_iou": .33}, "test": {"mean_iou": .59},
+                        "protocol": {"selection_split": "val", "test_present": True}}
+        (directory / "evaluation.v2.json").write_text(json.dumps(reassessment), encoding="utf-8")
+        current = _with_evaluation_reassessment(legacy, directory, model=True)
+        self.assertEqual(current["validation"]["mean_iou"], .33)
+        self.assertEqual(current["test"]["mean_iou"], .59)
+        self.assertEqual(current["legacy_evaluation"], {"validation": {"mean_iou": .81},
+                                                         "test": {"mean_iou": .87}})
+        self.assertEqual(legacy["validation"]["mean_iou"], .81)
 
     def test_reopen_marks_orphaned_active_run_failed(self):
         run_dir = self.root / "runs" / self.pid / "R099"

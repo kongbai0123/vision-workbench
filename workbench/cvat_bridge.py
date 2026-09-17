@@ -18,17 +18,48 @@ from .editor_sync import retain_identity, commit_updates, geometry_key
 
 
 class CvatProjectBridge:
-    def __init__(self, data_root):
+    def __init__(self, data_root, store=None):
+        self.store = store
         self.mapping_file = Path(data_root) / "cvat" / "project-links.json"
+
+    def _integration_dir(self, pid):
+        if self.store is None:
+            return self.mapping_file.parent
+        path = self.store.directory(pid) / "integrations" / "cvat"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _load(self):
         try:
             value = json.loads(self.mapping_file.read_text("utf-8"))
-            return value if isinstance(value, dict) else {}
+            value = value if isinstance(value, dict) else {}
         except (OSError, ValueError):
-            return {}
+            value = {}
+        if self.store is not None:
+            for project in self.store.list_projects():
+                path = self._integration_dir(project["id"]) / "project-link.json"
+                try:
+                    linked = json.loads(path.read_text("utf-8"))
+                    if isinstance(linked, dict):
+                        value[project["id"]] = linked
+                except (OSError, ValueError):
+                    pass
+        return value
 
     def _save(self, value):
+        if self.store is not None:
+            known = set()
+            for project in self.store.list_projects():
+                pid = project["id"]
+                known.add(pid)
+                path = self._integration_dir(pid) / "project-link.json"
+                if pid not in value:
+                    path.unlink(missing_ok=True)
+                    continue
+                temporary = path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(value[pid], ensure_ascii=False, indent=2), "utf-8")
+                temporary.replace(path)
+            value = {pid: linked for pid, linked in value.items() if pid not in known}
         self.mapping_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.mapping_file.with_suffix(".tmp")
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), "utf-8")
@@ -125,7 +156,7 @@ class CvatProjectBridge:
             {"version":0,"tags":[],"shapes":shapes,"tracks":[]},expected=(200,201))
         return skipped_masks
 
-    def _restore_skipped_masks(self, linked, snapshot, cookies, progress):
+    def _restore_skipped_masks(self, linked, snapshot, cookies, progress, pid):
         if linked.get("mask_sync_version", 0) >= 1:
             return
         task_id=linked["task_id"]
@@ -153,7 +184,7 @@ class CvatProjectBridge:
                     "group":0,"source":"manual","occluded":False,"outside":False,"z_order":0,"rotation":0,"attributes":[]})
         if missing:
             progress(f"補入 {len(missing)} 個遮罩標註",95)
-            backup=self.mapping_file.parent/"annotation-backups"/f"task-{task_id}-{uuid.uuid4().hex}.json"
+            backup=self._integration_dir(pid)/"annotation-backups"/f"task-{task_id}-{uuid.uuid4().hex}.json"
             backup.parent.mkdir(parents=True,exist_ok=True)
             backup.write_text(json.dumps(annotations,ensure_ascii=False),"utf-8")
             # Append only; never replace annotations already edited inside CVAT.
@@ -168,7 +199,7 @@ class CvatProjectBridge:
 
     def _baseline_path(self,pid):
         from .store import identifier
-        return self.mapping_file.parent/f'sync-{identifier(pid)}.json'
+        return self._integration_dir(identifier(pid))/'sync.json'
 
     @staticmethod
     def _digest(value):
@@ -205,7 +236,7 @@ class CvatProjectBridge:
             snapshot=store.snapshot(pid)
         # Comparing through the converters preserves OBB identity and ignores IDs.
         if self.read_annotations(snapshot,cookies):
-            backup=self.mapping_file.parent/'annotation-backups'/f'task-{linked["task_id"]}-{uuid.uuid4().hex}.json'
+            backup=self._integration_dir(pid)/'annotation-backups'/f'task-{linked["task_id"]}-{uuid.uuid4().hex}.json'
             backup.parent.mkdir(parents=True,exist_ok=True)
             backup.write_text(json.dumps(remote,ensure_ascii=False),'utf-8')
             self._sync_annotations(linked['task_id'],self.ordered_assets(snapshot),linked['project_id'],cookies)
@@ -221,7 +252,7 @@ class CvatProjectBridge:
             except (KeyError, ValueError, RuntimeError):
                 links.pop(pid,None)
             else:
-                self._restore_skipped_masks(linked,snapshot,cookies,progress)
+                self._restore_skipped_masks(linked,snapshot,cookies,progress,pid)
                 linked['asset_ids']=asset_ids
                 self._save(links)
                 if store is not None:self.synchronize(snapshot,cookies,store)

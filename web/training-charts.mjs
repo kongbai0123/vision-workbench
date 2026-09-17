@@ -16,13 +16,38 @@ const DEFINITIONS = {
   'val/macro_recall': ['Validation · Macro Recall', true, 'higher'],
   'val/box_map50_95': ['Validation · Box mAP50–95', true, 'higher'],
   'val/box_map50': ['Validation · Box mAP50', true, 'higher'],
+  'val/box_precision': ['Validation · Box Precision', true, 'higher'],
+  'val/box_recall': ['Validation · Box Recall', true, 'higher'],
   'val/mask_map50_95': ['Validation · Mask mAP50–95', true, 'higher'],
   'val/mask_map50': ['Validation · Mask mAP50', true, 'higher'],
+  'val/mask_precision': ['Validation · Mask Precision', true, 'higher'],
+  'val/mask_recall': ['Validation · Mask Recall', true, 'higher'],
+  'train/box_loss': ['Train · Box Loss', false, 'lower'],
+  'train/seg_loss': ['Train · Segmentation Loss', false, 'lower'],
+  'train/cls_loss': ['Train · Classification Loss', false, 'lower'],
+  'train/dfl_loss': ['Train · DFL Loss', false, 'lower'],
+  'train/giou_loss': ['Train · GIoU Loss', false, 'lower'],
+  'train/l1_loss': ['Train · L1 Loss', false, 'lower'],
+  'train/sem_loss': ['Train · Semantic Loss', false, 'lower'],
+  'val/box_loss': ['Validation · Box Loss', false, 'lower'],
+  'val/seg_loss': ['Validation · Segmentation Loss', false, 'lower'],
+  'val/cls_loss': ['Validation · Classification Loss', false, 'lower'],
+  'val/dfl_loss': ['Validation · DFL Loss', false, 'lower'],
+  'val/giou_loss': ['Validation · GIoU Loss', false, 'lower'],
+  'val/l1_loss': ['Validation · L1 Loss', false, 'lower'],
+  'val/sem_loss': ['Validation · Semantic Loss', false, 'lower'],
   threshold: ['分割閾值 · Threshold', false, null],
 };
-const PRIORITY = ['train/loss', 'val/mean_iou', 'val/box_mean_iou', 'val/accuracy',
-  'val/mask_map50_95', 'val/box_map50_95', 'val/loss'];
-const META_KEYS = new Set(['epoch', 'step', 'timestamp', 'time', 'created_at', 'progress']);
+const PRIORITY = ['train/loss', 'train/box_loss', 'train/seg_loss', 'train/cls_loss', 'train/dfl_loss',
+  'train/giou_loss', 'train/l1_loss', 'train/sem_loss', 'val/loss', 'val/box_loss', 'val/seg_loss',
+  'val/cls_loss', 'val/dfl_loss', 'val/giou_loss', 'val/l1_loss', 'val/sem_loss',
+  'val/box_precision', 'val/box_recall', 'val/box_map50_95', 'val/box_map50',
+  'val/mask_precision', 'val/mask_recall', 'val/mask_map50_95', 'val/mask_map50',
+  'val/mean_iou', 'val/box_mean_iou', 'val/accuracy'];
+const META_KEYS = new Set(['epoch', 'step', 'timestamp', 'time', 'created_at', 'progress',
+  'optimizer_steps', 'optimizer_steps_total', 'effective_batch_size', 'gradient_accumulation',
+  'train/optimizer_steps', 'train/optimizer_steps_epoch', 'train/optimizer_attempts_epoch',
+  'train/optimizer_skipped_epoch']);
 const PALETTE = ['#55d4bd', '#8ebdff', '#efb35b', '#c795f5', '#f28fab', '#c4d46e'];
 const DASHES = ['', '7 4', '2 3', '10 3 2 3', '9 5', '3 2 3 6'];
 
@@ -43,6 +68,83 @@ function reportRows(reports, run) {
   const report = reports?.get(run.run_id);
   if (report?.run?.run_id && report.run.run_id !== run.run_id) return [];
   return normalizedMetricRows(report?.metrics || []);
+}
+
+const DETECTION_METRICS = [
+  {name: 'Box', precision: 'val/box_precision', recall: 'val/box_recall', map: 'val/box_map50_95'},
+  {name: 'Mask', precision: 'val/mask_precision', recall: 'val/mask_recall', map: 'val/mask_map50_95'},
+];
+
+const average = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+const range = values => values.length ? Math.max(...values) - Math.min(...values) : Infinity;
+
+// Explain recorded behaviour without pretending that a curve alone proves root cause.
+// The returned evidence and interpretation are intentionally separate so the UI can
+// distinguish observations from possible causes.
+export function trainingMetricDiagnostics(runs = [], reports = new Map()) {
+  const diagnostics = [];
+  for (const run of runs) {
+    const rows = reportRows(reports, run);
+    if (rows.length < 2) continue;
+    const recorded = reports?.get(run.run_id)?.run;
+    const validationImages = recorded?.evaluation?.validation?.images ?? run.evaluation?.validation?.images;
+    const sampleNote = Number.isInteger(validationImages)
+      ? `Validation 只有 ${validationImages} 張，單張結果會明顯放大曲線變化。`
+      : 'Validation 樣本數較少時，單張結果會明顯放大曲線變化。';
+    const configuredEpochs = Number(run.config?.epochs) || rows.at(-1).epoch;
+    const earlyLimit = Math.max(10, Math.ceil(configuredEpochs * .1));
+
+    for (const family of DETECTION_METRICS) {
+      const paired = rows.filter(row => finiteMetric(row[family.precision]) && finiteMetric(row[family.recall]));
+      if (paired.length < 2) continue;
+      const changes = [];
+      for (let index = 1; index < paired.length; index += 1) {
+        const previous = paired[index - 1], current = paired[index];
+        if (current.epoch !== previous.epoch + 1) continue;
+        const precisionDelta = current[family.precision] - previous[family.precision];
+        const recallDelta = current[family.recall] - previous[family.recall];
+        if (Math.max(Math.abs(precisionDelta), Math.abs(recallDelta)) >= .25) {
+          changes.push({from: previous.epoch, to: current.epoch, precisionDelta, recallDelta});
+        }
+      }
+      const earlyChanges = changes.filter(change => change.to <= earlyLimit);
+      if (earlyChanges.length) {
+        const strongest = earlyChanges.reduce((best, change) =>
+          Math.max(Math.abs(change.precisionDelta), Math.abs(change.recallDelta)) >
+          Math.max(Math.abs(best.precisionDelta), Math.abs(best.recallDelta)) ? change : best);
+        const laterMap = rows.filter(row => row.epoch > earlyLimit && finiteMetric(row[family.map])).slice(-10)
+          .map(row => row[family.map]);
+        const settled = laterMap.length >= 3 && range(laterMap) <= .12;
+        diagnostics.push({runId: run.run_id, family: family.name, kind: 'early_volatility',
+          level: settled ? 'info' : 'warning', title: `前段 ${family.name} Precision／Recall 劇烈變動`,
+          evidence: `最大變化在 Epoch ${strongest.from}→${strongest.to}：Precision ${strongest.precisionDelta >= 0 ? '+' : ''}${strongest.precisionDelta.toFixed(3)}、Recall ${strongest.recallDelta >= 0 ? '+' : ''}${strongest.recallDelta.toFixed(3)}。`,
+          interpretation: settled
+            ? `這通常屬於前段暖機與置信度排序快速重整；後段 mAP 波動已收斂，沒有看到整體訓練崩潰。${sampleNote}`
+            : `這可能來自前段暖機、置信度跨過評估門檻、少量評估樣本或標註差異；目前尚不足以只靠曲線判定為正常。${sampleNote}`,
+          action: settled
+            ? '持續看後段 mAP 與實際漏檢案例；若後段再次大幅跳動，再檢查標註、學習率與資料分布。'
+            : '先檢查同一 Epoch 的 mAP／loss，再抽查漏標與錯標；若後段持續出現，降低學習率並擴充 Validation。'});
+      }
+
+      const recent = paired.slice(-Math.min(5, paired.length));
+      if (recent.length < 3) continue;
+      const precision = average(recent.map(row => row[family.precision]));
+      const recall = average(recent.map(row => row[family.recall]));
+      const gap = precision - recall;
+      if (Math.abs(gap) < .25) continue;
+      const precisionHigher = gap > 0;
+      diagnostics.push({runId: run.run_id, family: family.name, kind: 'precision_recall_gap', level: 'warning',
+        title: precisionHigher ? `${family.name} Precision 高、Recall 低` : `${family.name} Recall 高、Precision 低`,
+        evidence: `最近 ${recent.length} 輪平均：Precision ${precision.toFixed(3)}、Recall ${recall.toFixed(3)}，落差 ${Math.abs(gap).toFixed(3)}。`,
+        interpretation: precisionHigher
+          ? `模型目前偏保守：誤報較少，但漏檢較多。可能原因包括置信度／NMS、難例或小物件不足、類別不平衡及漏標；這不是「訓練停止」的訊號。${sampleNote}`
+          : `模型目前偏積極：找到較多物件，但誤報也較多。可能原因包括置信度偏低、負樣本不足、相似背景或錯標；這不是單靠增加 Epoch 就一定會改善。${sampleNote}`,
+        action: precisionHigher
+          ? '若漏檢成本高，先看 PR 曲線並降低推論 confidence，再補充漏檢類型與一致標註。'
+          : '若誤報成本高，先提高推論 confidence，再補充負樣本並抽查錯標。'});
+    }
+  }
+  return diagnostics;
 }
 
 function definition(key) {
@@ -189,12 +291,17 @@ export function buildChartModel(options, key) {
   const values = domainSeries.flatMap(series => series.points.map(point => point.value));
   const isRate = key==='train/learning_rate'||key.startsWith('lr/');
   const rateCeiling = isRate ? domainRuns.reduce((max,run)=>Math.max(max,run.config?.learning_rate||0),1e-12) : 1;
-  const maximum = values.reduce((max, value) => Math.max(max, value), rateCeiling);
+  const maximum = values.reduce((max, value) => Math.max(max, value), isRate ? rateCeiling : 0);
   const minimum = values.reduce((min, value) => Math.min(min, value), 0);
-  const yMax = descriptor.unit ? 1 : Math.max(roundedBound(maximum), prior?.yMax || rateCeiling);
+  const zoomedUnit = descriptor.unit && maximum > 0 && maximum < .1;
+  const unitMaximum = zoomedUnit ? Math.max(.001, roundedBound(maximum)) : 1;
+  const positiveUnitValue = descriptor.unit && values.some(value => value > 0 && value <= 1);
+  const priorUnitMaximum = prior?.hadPositiveUnitValue ? prior.yMax : 0;
+  const yMax = descriptor.unit ? Math.max(unitMaximum, priorUnitMaximum) : Math.max(roundedBound(maximum), prior?.yMax || rateCeiling);
   const yMin = descriptor.unit ? 0 : Math.min(-roundedBound(Math.min(0, minimum)), prior?.yMin || 0);
   const expanded = Boolean(prior?.expanded || (prior && (yMax > prior.yMax || yMin < prior.yMin || xMax > prior.xMax)));
-  domains.set(domainKey, {xMax, yMax, yMin, expanded});
+  domains.set(domainKey, {xMax, yMax, yMin, expanded,
+    hadPositiveUnitValue: Boolean(prior?.hadPositiveUnitValue || positiveUnitValue)});
   const outOfRange = descriptor.unit && allSeries.some(series => series.points.some(point => point.value < 0 || point.value > 1));
   const visible = allSeries.filter(series => visibleRunIds.has(series.run.run_id));
   const series = (incompatible ? [] : visible).map(item => {
@@ -209,14 +316,77 @@ export function buildChartModel(options, key) {
     if(item.points.length<2)continue;
     const present=new Set(item.points.map(point=>point.epoch)),first=item.points[0].epoch,last=item.points.at(-1).epoch,missing=[];
     for(let epoch=first;epoch<=last;epoch++)if(!present.has(epoch))missing.push(epoch);
-    if(missing.length)warnings.push(`${item.run.run_id} 的 ${descriptor.label} 缺少 Epoch ${epochRanges(missing)}；折線保留缺口，表示該輪沒有有效指標，不代表訓練程序中斷。請查看 Epoch 明細或技術日誌。`);
+    const noUpdates=isRate?missing.filter(epoch=>item.rows.find(row=>row.epoch===epoch)?.['train/optimizer_steps_epoch']===0):[];
+    const unexplained=missing.filter(epoch=>!noUpdates.includes(epoch));
+    if(noUpdates.length){
+      const diagnosed=noUpdates.filter(epoch=>finiteMetric(item.rows.find(row=>row.epoch===epoch)?.['train/optimizer_attempts_epoch']));
+      const diagnosis=diagnosed.map(epoch=>{const row=item.rows.find(entry=>entry.epoch===epoch),attempts=row['train/optimizer_attempts_epoch'],skipped=row['train/optimizer_skipped_epoch'];return `Epoch ${epoch}：嘗試 ${attempts} 次、AMP 跳過 ${finiteMetric(skipped)?skipped:'—'} 次`}).join('；');
+      const allAmp=diagnosed.length&&diagnosed.every(epoch=>{const row=item.rows.find(entry=>entry.epoch===epoch);return row['train/optimizer_attempts_epoch']>0&&row['train/optimizer_attempts_epoch']===row['train/optimizer_skipped_epoch']});
+      warnings.push(`${item.run.run_id} 的 Epoch ${epochRanges(noUpdates)} 成功權重更新為 0 次，所以沒有「實際更新時的學習率」，並非學習率等於 0。${diagnosed.length?`${diagnosis}。${allAmp?'AMP 因非有限梯度拒絕了全部更新。':'請依嘗試／跳過次數判讀。'}`:'此舊 Run 未記錄更新嘗試與 AMP 跳過原因，無法事後確定；常見原因是 AMP 偵測到非有限梯度。'}`);
+    }
+    if(unexplained.length)warnings.push(`${item.run.run_id} 的 ${descriptor.label} 缺少 Epoch ${epochRanges(unexplained)}；折線保留缺口，表示該輪沒有有效指標，不代表訓練程序中斷。請查看 Epoch 明細或技術日誌。`);
   }
-  return {...descriptor, xMax, yMin, yMax, expanded, incompatible, outOfRange, series, allSeries, warnings};
+  const notes=zoomedUnit?[`數值低於 0.1，Y 軸已自動放大至 ${formatMetric(yMax)}；指標原始範圍仍為 0–1。`]:[];
+  return {...descriptor, xMax, yMin, yMax, expanded, incompatible, outOfRange, series, allSeries, warnings, notes};
 }
 
 export function valuesAtEpoch(model, epoch) {
   return model.series.map(series => ({runId: series.run.run_id, color: series.color,
+    label: series.label || series.run.run_id,
     value: series.points.find(point => point.epoch === epoch)?.value ?? null}));
+}
+
+const isLearningRate = key => key === 'train/learning_rate' || key.startsWith('lr/');
+const rateGroupLabel = key => key === 'train/learning_rate' ? '主學習率' : key.replace(/^lr\/group_/, '參數組 ');
+
+/** One LR panel; merge aliases only when every selected Run has identical points. */
+export function buildLearningRateChartModel(options = {}) {
+  const runs = options.runs || [], reports = options.reports || new Map();
+  const domainRuns = options.domainRuns || runs, domains = options.domains || new Map();
+  const keys = metricDescriptors(runs, reports).map(item => item.key).filter(isLearningRate)
+    .sort((a, b) => a === 'train/learning_rate' ? -1 : b === 'train/learning_rate' ? 1 : a.localeCompare(b, undefined, {numeric: true}));
+  const domainKeys = metricDescriptors(domainRuns, reports).map(item => item.key).filter(isLearningRate);
+  const models = new Map([...new Set([...keys, ...domainKeys])].map(key => [key, buildChartModel({...options, domains}, key)]));
+  const groups = [];
+  for (const key of keys) {
+    const model = models.get(key);
+    const signature = JSON.stringify(model.allSeries.map(series => [series.run.run_id, series.points]));
+    const same = groups.find(group => group.signature === signature);
+    if (same) same.keys.push(key);
+    else groups.push({signature, keys: [key], model});
+  }
+  const domainKey = JSON.stringify([domainRuns.map(run => run.run_id).sort(), 'learning-rate-panel']);
+  const prior = domains.get(domainKey);
+  const bounds = [...models.values()];
+  const xMax = Math.max(1, prior?.xMax || 1, ...bounds.map(model => model.xMax));
+  const yMax = Math.max(1e-12, prior?.yMax || 0, ...bounds.map(model => model.yMax));
+  const yMin = Math.min(0, prior?.yMin || 0, ...bounds.map(model => model.yMin));
+  const expanded = Boolean(prior?.expanded || (prior && (xMax > prior.xMax || yMax > prior.yMax || yMin < prior.yMin)));
+  domains.set(domainKey, {xMax, yMax, yMin, expanded});
+  const series = groups.flatMap((group, index) => group.model.series.filter(item => item.points.length).map(item => ({
+    ...item, metricKeys: group.keys, label: `${item.run.run_id} · ${group.keys.map(rateGroupLabel).join('／')}`,
+    // Run identity stays in its color; distinguish parameter groups by line style.
+    dash: groups.length === 1 ? item.dash : DASHES[index % DASHES.length],
+  })));
+  const warnings = [...new Set(groups.flatMap(group => group.model.warnings))];
+  if (expanded && !warnings.some(message => message.includes('已擴大座標'))) warnings.push('新資料超出原座標範圍，已擴大座標以完整顯示；之後不會自動縮小。');
+  const notes = ['每輪最後一步的實測學習率；顏色代表 Run，線型代表不同參數組。'];
+  if (groups.some(group => group.keys.length > 1)) notes.push('所選 Run 中完全相同的學習率序列已合併，圖例列出其參數組；Epoch 明細保留各組數值。');
+  return {...definition('train/learning_rate'), xMax, yMax, yMin, expanded, incompatible: false,
+    outOfRange: false, series, allSeries: groups.flatMap(group => group.model.allSeries), warnings, notes,
+    metricGroups: groups.map(group => group.keys)};
+}
+
+export function buildChartModels(options, keys) {
+  const models = [];
+  let hasRate = false;
+  for (const key of new Set(keys)) {
+    if (isLearningRate(key)) {
+      if (!hasRate) models.push(buildLearningRateChartModel(options));
+      hasRate = true;
+    } else models.push(buildChartModel(options, key));
+  }
+  return models;
 }
 
 function html(document, tag, className, text) {
@@ -249,7 +419,7 @@ export function createTrainingCharts(container, options = {}) {
   const descriptors = metricDescriptors(options.runs, options.reports);
   const keys = options.metricKeys === undefined ? defaultMetricKeys(descriptors) : options.metricKeys;
   const grid = html(document, 'div', 'training-chart-grid');
-  const models = [...new Set(keys)].map(key => buildChartModel(options, key));
+  const models = buildChartModels(options, keys);
   const charts = [];
   let destroyed = false;
   function showEpoch(epoch) {
@@ -271,13 +441,13 @@ export function createTrainingCharts(container, options = {}) {
       const value = model.yMin + (model.yMax - model.yMin) * index / 4;
       const label = Math.abs(value) > 999 || (Math.abs(value) > 0 && Math.abs(value) < .01) ? value.toExponential(1) : value.toFixed(model.unit ? 2 : 1);
       svg.append(svgNode(document, 'line', {x1: left, y1: y(value), x2: width - right, y2: y(value), stroke: '#304550'}),
-        svgNode(document, 'text', {x: left - 7, y: y(value) + 4, 'text-anchor': 'end', fill: '#9aafba', 'font-size': 11}, label));
+        svgNode(document, 'text', {x: left - 7, y: y(value) + 4, 'text-anchor': 'end', fill: '#9aafba', 'font-size': 12}, label));
     }
     const tickCount = Math.min(width < 360 ? 3 : 5, model.xMax);
     const ticks = new Set(Array.from({length: tickCount}, (_, index) => Math.round(1 + (model.xMax - 1) * index / Math.max(1, tickCount - 1))));
     for (const tick of ticks) svg.append(svgNode(document, 'text', {x: x(tick), y: height - 23,
-      'text-anchor': tick === 1 ? 'start' : tick === model.xMax ? 'end' : 'middle', fill: '#9aafba', 'font-size': 11}, tick));
-    svg.append(svgNode(document, 'text', {x: left + plotWidth / 2, y: height - 4, 'text-anchor': 'middle', fill: '#9aafba', 'font-size': 11}, 'Epoch'));
+      'text-anchor': tick === 1 ? 'start' : tick === model.xMax ? 'end' : 'middle', fill: '#9aafba', 'font-size': 12}, tick));
+    svg.append(svgNode(document, 'text', {x: left + plotWidth / 2, y: height - 4, 'text-anchor': 'middle', fill: '#9aafba', 'font-size': 12}, 'Epoch'));
     for (const series of model.series) {
       for (const segment of series.segments) {
         if (segment.length > 1) svg.append(svgNode(document, 'polyline', {
@@ -287,7 +457,7 @@ export function createTrainingCharts(container, options = {}) {
       for (const point of series.points) {
         const dot = svgNode(document, 'circle', {cx: x(point.epoch), cy: y(point.value), r: 3,
           fill: series.color, 'data-run-id': series.run.run_id, 'data-epoch': point.epoch});
-        dot.append(svgNode(document, 'title', {}, `${series.run.run_id} · Epoch ${point.epoch} · ${format(point.value)}`));
+        dot.append(svgNode(document, 'title', {}, `${series.label || series.run.run_id} · Epoch ${point.epoch} · ${format(point.value)}`));
         svg.append(dot);
       }
     }
@@ -301,7 +471,7 @@ export function createTrainingCharts(container, options = {}) {
       guide.setAttribute('x1', x(bounded)); guide.setAttribute('x2', x(bounded));
       guide.setAttribute('visibility', model.series.length ? 'visible' : 'hidden');
       const values = valuesAtEpoch(model, bounded);
-      hover.textContent = values.length ? `Epoch ${bounded} · ${values.map(item => `${item.runId} ${item.value === null ? '無資料' : format(item.value)}`).join('　｜　')}` : model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
+      hover.textContent = values.length ? `Epoch ${bounded} · ${values.map(item => `${item.label} ${item.value === null ? '無資料' : format(item.value)}`).join('　｜　')}` : model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
       hit.setAttribute('aria-valuenow', bounded);
       hit.setAttribute('aria-valuetext', hover.textContent);
     };
@@ -332,14 +502,24 @@ export function createTrainingCharts(container, options = {}) {
     heading.append(html(document, 'h3', '', model.label));
     const latest = html(document, 'div', 'training-chart-latest');
     for (const series of model.series) {
-      const point = series.points.at(-1), chip = html(document, 'span', '', `${series.run.run_id} 最新 ${point ? `${format(point.value)} · E${point.epoch}` : '無資料'}`);
+      const point = series.points.at(-1), chip = html(document, series.metricKeys ? 'div' : 'span', '', `${series.label || series.run.run_id} 最新 ${point ? `${format(point.value)} · E${point.epoch}` : '無資料'}`);
       chip.style.setProperty('--series-color', series.color);
+      chip.dataset.metricKeys = (series.metricKeys || [model.key]).join(',');
+      chip.title = series.dash ? '虛線：' + (series.metricKeys || [model.key]).map(rateGroupLabel).join('／') : '實線';
+      if (series.metricKeys) {
+        chip.style.cssText += ';display:flex;align-items:center;gap:5px;color:#c4d9e0;min-width:0';
+        const swatch = svgNode(document, 'svg', {width: 28, height: 10, 'aria-hidden': 'true'});
+        swatch.style.flexShrink = '0';
+        swatch.append(svgNode(document, 'line', {x1: 0, y1: 5, x2: 28, y2: 5, stroke: series.color, 'stroke-width': 2, 'stroke-dasharray': series.dash}));
+        chip.insertBefore(swatch, chip.firstChild);
+      }
       latest.append(chip);
     }
     heading.append(latest); card.append(heading);
     const host = html(document, 'div', 'training-chart-host'), hover = html(document, 'p', 'training-chart-hover', '移到圖表或點選 Epoch，可同時查看各 Run 的數值。');
     if (model.incompatible || !model.series.length) hover.textContent = model.incompatible ? '此指標無法疊圖比較。' : '請開啟至少一個 Run 以顯示曲線。';
     card.append(host, hover);
+    for (const note of model.notes || []) card.append(html(document, 'p', 'metric-chart-note', note));
     if (model.direction) card.append(html(document, 'p', 'training-chart-direction', model.direction === 'lower' ? '越低越好' : '越高越好'));
     for (const warning of model.warnings) card.append(html(document, 'p', 'training-chart-warning', warning));
     grid.append(card); charts.push({host, model, hover});

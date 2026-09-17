@@ -1,4 +1,4 @@
-"""Isolated inference entry point for RT-DETR and YOLO26 Seg."""
+"""Isolated inference entry point for RT-DETR and YOLO26 Detect/Seg."""
 import argparse
 from pathlib import Path
 

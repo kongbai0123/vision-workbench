@@ -21,6 +21,11 @@ import uuid
 
 from PIL import Image
 
+from composer_core.geometry import decode_rle, encode_rle
+from composer_core.mask_cleanup import repair_tiny_holes
+from .migrations import migrate
+from .maintenance import serialized_images
+
 
 class ConflictError(ValueError):
     pass
@@ -96,10 +101,44 @@ def clean_shapes(shapes, width, height):
     return cleaned
 
 
+def repair_saved_mask_holes(shapes, width, height):
+    """Apply the same conservative cleanup after editor changes."""
+    repaired_shapes, audits = [], []
+    for shape in shapes:
+        if shape.get("type") != "mask":
+            repaired_shapes.append(shape)
+            continue
+        metadata = shape.get("metadata") if isinstance(shape.get("metadata"), dict) else {}
+        mask = decode_rle(shape["counts"], width, height)
+        repaired, report = repair_tiny_holes(
+            mask,
+            protected_background_points=metadata.get("negative_points", []),
+        )
+        if not report["pixels_filled"]:
+            repaired_shapes.append(shape)
+            continue
+        updated = json.loads(dump(shape))
+        updated["counts"] = encode_rle(repaired)
+        updated_metadata = updated.setdefault("metadata", {})
+        updated_metadata["mask_cleanup"] = {**report, "stage": "editor_save"}
+        audits.append({
+            "shape_id": updated["id"],
+            "label": updated["label"],
+            **report,
+        })
+        repaired_shapes.append(updated)
+    return repaired_shapes, audits
+
+
 class ProjectStore:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        for database in self.root.glob('*/project.sqlite3'):
+            if database.parent.is_symlink() or database.is_symlink() or database.resolve().parent.parent != self.root:
+                continue
+            with closing(sqlite3.connect(database)) as db:
+                migrate(db)
         # Finish removals that Windows previously postponed because another
         # process briefly held an image or SQLite file open.
         for folder in self.root.glob(".deleting-*"):
@@ -165,24 +204,78 @@ class ProjectStore:
         db = sqlite3.connect(folder / "project.sqlite3")
         try:
             db.execute("PRAGMA journal_mode=WAL")
-            db.executescript("""
-                CREATE TABLE project(id TEXT PRIMARY KEY,name TEXT NOT NULL,revision INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,updated_at TEXT NOT NULL,classes TEXT NOT NULL);
-                CREATE TABLE assets(id TEXT PRIMARY KEY,name TEXT NOT NULL,width INTEGER NOT NULL,
-                    height INTEGER NOT NULL,sha256 TEXT NOT NULL UNIQUE,image_file TEXT NOT NULL,
-                    batch_id TEXT NOT NULL,split TEXT NOT NULL,source TEXT NOT NULL,
-                    revision INTEGER NOT NULL,review_state TEXT NOT NULL,shapes TEXT NOT NULL,
-                    created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-                CREATE TABLE history(id INTEGER PRIMARY KEY,asset_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL,action TEXT NOT NULL,created_at TEXT NOT NULL,data TEXT NOT NULL);
-                CREATE TABLE exports(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,data TEXT NOT NULL);
-            """)
+            migrate(db)
             now = timestamp()
             db.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", (pid, name, 1, now, now, "[]"))
             db.commit()
+            migrate(db)
         finally:
             db.close()
         return self.get_project(pid)
+
+    @staticmethod
+    def _catalog_relative_path(value):
+        if not isinstance(value, str) or not value or "\\" in value:
+            raise ValueError("資產索引必須使用專案內的相對 POSIX 路徑")
+        path = Path(value)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise ValueError("資產索引路徑超出專案資料夾")
+        return value
+
+    def replace_artifact_catalog(self, project_id, catalog):
+        """Atomically mirror validated on-disk manifests into relational rows."""
+        required = {"datasets", "runs", "models", "model_exports", "predictions"}
+        if not isinstance(catalog, dict) or not required.issubset(catalog):
+            raise ValueError("專案資產索引無效")
+        datasets = {row["id"]: row for row in catalog["datasets"]}
+        runs = {row["id"]: row for row in catalog["runs"]}
+        models = {row["id"]: row for row in catalog["models"]}
+        for row in runs.values():
+            if row["dataset_version_id"] not in datasets:
+                raise ValueError(f"訓練 {row['id']} 指向不存在的資料版本")
+        for row in models.values():
+            if row["run_id"] not in runs or row["dataset_version_id"] not in datasets:
+                raise ValueError(f"模型 {row['id']} 的來源關聯不存在")
+        for collection in (catalog["model_exports"], catalog["predictions"]):
+            for row in collection:
+                if row["model_version_id"] not in models or row["run_id"] not in runs:
+                    raise ValueError(f"資產 {row['id']} 的模型或訓練來源不存在")
+
+        mapping = [('dataset_versions', 'datasets'), ('training_runs', 'runs'),
+                   ('model_versions', 'models'), ('model_exports', 'model_exports'),
+                   ('prediction_candidates', 'predictions')]
+        with self.connection(project_id, write=True) as db:
+            for table, key in reversed(mapping):
+                wanted = {row['id'] for row in catalog[key]}
+                for existing in db.execute(f'SELECT id FROM {table}').fetchall():
+                    if existing[0] not in wanted:
+                        db.execute(f'DELETE FROM {table} WHERE id=?', (existing[0],))
+            for table, key in mapping:
+                columns = [row[1] for row in db.execute(f'PRAGMA table_info({table})')]
+                fields = ','.join(columns)
+                updates = ','.join(f'{column}=excluded.{column}' for column in columns if column != 'id')
+                for row in catalog[key]:
+                    values = {column: row.get(column) for column in columns}
+                    values['relative_path'] = self._catalog_relative_path(values['relative_path'])
+                    existing = db.execute(f'SELECT * FROM {table} WHERE id=?', (row['id'],)).fetchone()
+                    if existing and dict(existing) == values:
+                        continue
+                    db.execute(f'INSERT INTO {table} ({fields}) VALUES ({",".join("?" for _ in columns)}) '
+                               f'ON CONFLICT(id) DO UPDATE SET {updates}', [values[column] for column in columns])
+
+    def artifact_catalog(self, project_id):
+        with self.connection(project_id) as db:
+            return {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+                    for table in ("dataset_versions", "training_runs", "model_versions",
+                                  "model_exports", "prediction_candidates")}
+
+    def database_integrity(self, project_id):
+        with self.connection(project_id) as db:
+            integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_keys = [dict(row) for row in db.execute("PRAGMA foreign_key_check")]
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        return {"ok": integrity == "ok" and not foreign_keys, "integrity": integrity,
+                "foreign_key_errors": foreign_keys, "schema_version": version}
 
     @staticmethod
     def _name(value):
@@ -203,7 +296,6 @@ class ProjectStore:
                 with closing(sqlite3.connect(folder / "project.sqlite3")) as db:
                     row = db.execute("SELECT id,name FROM project").fetchone()
                 if not row or not re.fullmatch(r"[a-f0-9]{32}", row[0]): continue
-                if folder.name != self._folder_name(row[1], row[0]): self._rename_folder(row[0], row[1])
                 project = self.get_project(row[0], include_assets=False)
                 rows.append(project)
             except (sqlite3.Error, ValueError, FileNotFoundError):
@@ -214,14 +306,56 @@ class ProjectStore:
     def _touch(db):
         db.execute("UPDATE project SET revision=revision+1,updated_at=?", (timestamp(),))
 
-    def _asset(self, row, pid, *, detail=False, internal=False):
+    @staticmethod
+    def _independence_fingerprint(db):
+        """Fingerprint review-relevant approved content, excluding split assignment."""
+        rows = []
+        for row in db.execute("""SELECT id,sha256,batch_id,review_state,source,shapes
+                                  FROM assets WHERE review_state='approved' ORDER BY id"""):
+            source = json.loads(row['source'])
+            rows.append({'id': row['id'], 'sha256': row['sha256'], 'batch_id': row['batch_id'],
+                         'review_state': row['review_state'], 'source': source,
+                         'annotation_sha256': hashlib.sha256(row['shapes'].encode('utf-8')).hexdigest()})
+        return hashlib.sha256(dump(rows).encode('utf-8')).hexdigest(), len(rows)
+
+    def _independence_review(self, db):
+        row = db.execute("SELECT data FROM independence_reviews WHERE id=1").fetchone()
+        project = db.execute('SELECT id,revision FROM project').fetchone()
+        key = (project['id'], project['revision'])
+        cache = getattr(self, '_fingerprint_cache', {})
+        result = cache.get(key)
+        if result is None:
+            result = self._independence_fingerprint(db)
+            self._fingerprint_cache = {**{k: v for k, v in cache.items() if k[0] != project['id']}, key: result}
+        fingerprint, count = result
+        if not row:
+            return {'current': False, 'scope': 'approved_assets', 'asset_count': count,
+                    'reason': '尚未確認目前已核准圖片彼此獨立'}
+        record = json.loads(row['data'])
+        record['current'] = record.get('asset_fingerprint') == fingerprint and record.get('asset_count') == count
+        if not record['current']:
+            record['reason'] = '圖片、標註、來源資訊或審核狀態已變動，請重新確認'
+        return record
+
+    def _asset(self, row, pid, *, detail=False, internal=False, db=None):
         asset = dict(row)
         shapes = json.loads(asset.pop("shapes"))
         asset["source"] = json.loads(asset["source"])
+        if db is not None:
+            for table, key in [('asset_review', 'review'), ('asset_quality', 'quality')]:
+                metadata = db.execute(f'SELECT data FROM {table} WHERE asset_id=?', (asset['id'],)).fetchone()
+                if metadata:
+                    asset['source'][key] = json.loads(metadata[0])
+            version = db.execute('SELECT revision FROM annotation_revisions WHERE asset_id=?', (asset['id'],)).fetchone()
+            asset['annotation_revision'] = version[0] if version else asset['revision']
         asset["shape_count"] = len(shapes)
         asset["class_counts"] = dict(Counter(
             str(shape.get("label")) for shape in shapes if shape.get("label")
         ))
+        if not detail and db is not None:
+            summary = db.execute('SELECT shape_count,class_counts FROM asset_summaries WHERE asset_id=?', (asset['id'],)).fetchone()
+            if summary:
+                asset['shape_count'], asset['class_counts'] = summary[0], json.loads(summary[1])
         asset["url"] = f"/api/projects/{pid}/assets/{asset['id']}/image"
         image_file = asset.pop("image_file")
         if detail:
@@ -230,10 +364,12 @@ class ProjectStore:
             asset["image_path"] = str(self.directory(pid) / "images" / image_file)
         return asset
 
-    def get_project(self, project_id, *, include_assets=True, internal=False):
+    def get_project(self, project_id, *, include_assets=True, internal=False, delta_base=None, changed_ids=None):
         with self.connection(project_id) as db:
             project = dict(db.execute("SELECT * FROM project").fetchone())
+            delta = type(delta_base) is int and project['revision'] == delta_base + 1 and changed_ids is not None
             project["classes"] = json.loads(project["classes"])
+            project['independence_review'] = self._independence_review(db)
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='split_plans'").fetchone():
                 plan = db.execute("SELECT data FROM split_plans WHERE id=1").fetchone()
                 if plan:
@@ -246,8 +382,13 @@ class ProjectStore:
             project["stats"] = stats
             project.update(stats)
             if include_assets:
-                project["assets"] = [self._asset(row, project_id, detail=internal, internal=internal)
-                                     for row in db.execute("SELECT * FROM assets ORDER BY created_at,rowid")]
+                fields = '*' if internal else "id,name,width,height,sha256,image_file,batch_id,split,source,revision,review_state,created_at,updated_at,'[]' AS shapes"
+                ids = list(dict.fromkeys(changed_ids)) if delta else []
+                where = f" WHERE id IN ({','.join('?' for _ in ids)})" if delta and ids else ' WHERE 0' if delta else ''
+                project["assets"] = [self._asset(row, project_id, detail=internal, internal=internal, db=db)
+                                     for row in db.execute(f"SELECT {fields} FROM assets{where} ORDER BY created_at,rowid", ids)]
+                if delta:
+                    project['delta'] = {'base_revision': delta_base, 'changed_ids': ids}
             project["exports"] = [dict(json.loads(row["data"]), id=row["id"], created_at=row["created_at"])
                                   for row in db.execute("SELECT * FROM exports ORDER BY created_at DESC")]
             if internal:
@@ -257,6 +398,26 @@ class ProjectStore:
 
     def snapshot(self, project_id):
         return self.get_project(project_id, internal=True)
+
+    def confirm_independence(self, project_id, confirmed, revision):
+        if type(confirmed) is not bool or type(revision) is not int:
+            raise ValueError('獨立樣本確認資料無效')
+        with self.connection(project_id, write=True) as db:
+            project = db.execute('SELECT revision FROM project').fetchone()
+            if project['revision'] != revision:
+                raise ConflictError('資料已變動，請重新檢查後再確認')
+            if confirmed:
+                fingerprint, count = self._independence_fingerprint(db)
+                if not count:
+                    raise ValueError('沒有已核准圖片可供確認')
+                record = {'schema_version': 1, 'scope': 'approved_assets', 'confirmed_at': timestamp(),
+                          'project_revision': revision + 1, 'asset_count': count,
+                          'asset_fingerprint': fingerprint}
+                db.execute('INSERT OR REPLACE INTO independence_reviews VALUES(1,?)', (dump(record),))
+            else:
+                db.execute('DELETE FROM independence_reviews WHERE id=1')
+            self._touch(db)
+        return self.get_project(project_id)
 
     def update_project(self, project_id, *, name=None, classes=None):
         with self.connection(project_id, write=True) as db:
@@ -412,7 +573,23 @@ class ProjectStore:
             row = db.execute("SELECT * FROM assets WHERE id=?", (identifier(asset_id),)).fetchone()
             if row is None:
                 raise FileNotFoundError("找不到圖片")
-            return self._asset(row, project_id, detail=True, internal=internal)
+            return self._asset(row, project_id, detail=True, internal=internal, db=db)
+
+    def trash_assets(self, pid, ids, revisions, restore=False):
+        from .review_repository import ReviewRepository
+        return ReviewRepository(self).trash(pid, ids, revisions, restore)
+
+    def list_trash(self, pid):
+        from .review_repository import ReviewRepository
+        return ReviewRepository(self).list_trash(pid)
+
+    def save_quality(self, pid, results):
+        with self.connection(pid, write=True) as db:
+            for aid, quality in results.items():
+                if db.execute('SELECT 1 FROM assets WHERE id=?', (aid,)).fetchone():
+                    db.execute('INSERT OR REPLACE INTO asset_quality VALUES(?,?)', (aid, dump(quality)))
+            self._touch(db)
+        return self.get_project(pid)
 
     def image_path(self, project_id, asset_id):
         return Path(self.get_asset(project_id, asset_id, internal=True)["image_path"])
@@ -420,6 +597,7 @@ class ProjectStore:
     def delete_asset(self, project_id, asset_id, revision):
         return self.delete_assets(project_id, [asset_id], {asset_id: revision})
 
+    @serialized_images
     def delete_assets(self, project_id, asset_ids, revisions):
         """Atomically remove project assets, then unlink their private copies."""
         if not isinstance(asset_ids, list) or not asset_ids or len(asset_ids) > 10000:
@@ -439,19 +617,23 @@ class ProjectStore:
             placeholders = ",".join("?" for _ in ids)
             db.execute(f"DELETE FROM history WHERE asset_id IN ({placeholders})", ids)
             db.execute(f"DELETE FROM assets WHERE id IN ({placeholders})", ids)
+            # The image-admission lock spans commit and file cleanup. Never
+            # delete bytes before commit: a rollback must retain its images.
+            retained = {r[0] for r in db.execute('SELECT image_file FROM assets')}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='review_trash'").fetchone():
+                retained.update(json.loads(r[0])['image_file'] for r in db.execute('SELECT data FROM review_trash'))
             self._touch(db)
-        images = (self.directory(project_id) / "images").resolve()
-        for image_file in image_files:
-            image = (images / image_file).resolve()
-            if image.parent == images and not image.is_symlink():
+        images = (self.directory(project_id) / 'images').resolve()
+        for image_file in set(image_files) - retained:
+            image = images / image_file
+            if image.resolve().parent == images and not image.is_symlink():
                 try:
                     image.unlink(missing_ok=True)
                 except OSError:
-                    # The database no longer references this immutable file. It
-                    # may remain orphaned until a later cleanup if Windows holds it.
                     pass
         return dict(deleted=len(ids), asset_ids=ids, project=self.get_project(project_id))
 
+    @serialized_images
     def add_assets(self, project_id, records, *, progress=None):
         """Validate every record before one transaction publishes the batch.
 
@@ -507,6 +689,8 @@ class ProjectStore:
         with self.connection(project_id, write=True) as db:
             names = json.loads(db.execute("SELECT classes FROM project").fetchone()[0])
             for asset in prepared:
+                if not (folder / 'images' / asset['image_file']).is_file():
+                    raise ConflictError('匯入期間圖片已被其他操作移除，請重新匯入')
                 existing = db.execute("SELECT id,name,shapes FROM assets WHERE sha256=?", (asset["sha256"],)).fetchone()
                 if existing:
                     duplicates.append(existing["id"])
@@ -517,6 +701,11 @@ class ProjectStore:
                         conflicts.append(f"{asset['name']}：原圖已存在且標註不同，保留已存版本")
                     continue
                 now = timestamp()
+                source = json.loads(asset['source'])
+                for table, key in [('asset_review', 'review'), ('asset_quality', 'quality')]:
+                    if key in source:
+                        db.execute(f'INSERT OR REPLACE INTO {table} VALUES(?,?)', (asset['id'], dump(source.pop(key))))
+                asset['source'] = dump(source)
                 db.execute("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (asset["id"], asset["name"], asset["width"], asset["height"], asset["sha256"],
                             asset["image_file"], asset["batch_id"], asset["split"], asset["source"],
@@ -533,31 +722,26 @@ class ProjectStore:
 
     @staticmethod
     def _history(db, asset_id, revision, action, data):
-        db.execute("INSERT INTO history(asset_id,revision,action,created_at,data) VALUES(?,?,?,?,?)",
-                   (asset_id, revision, action, timestamp(), dump(data)))
+        from .history_repository import HistoryRepository
+        HistoryRepository.append(db, asset_id, revision, action, data)
 
     def save_asset(self, project_id, asset_id, shapes, revision):
-        with self.connection(project_id, write=True) as db:
-            asset = db.execute("SELECT * FROM assets WHERE id=?", (identifier(asset_id),)).fetchone()
-            if not asset:
-                raise FileNotFoundError("找不到圖片")
-            if type(revision) is not int or revision != asset["revision"]:
-                raise ConflictError("圖片已有新版本；保留目前編輯，請重新載入後整合修改")
-            cleaned = clean_shapes(shapes, asset["width"], asset["height"])
-            names = json.loads(db.execute("SELECT classes FROM project").fetchone()[0])
-            unknown = list(dict.fromkeys(shape["label"] for shape in cleaned if shape["label"] not in names))
-            if unknown:
-                raise ValueError(f"類別「{'、'.join(unknown[:5])}」尚未由使用者建立；請先到類別管理新增")
-            serialized = dump(cleaned)
-            if serialized != asset["shapes"]:
-                next_revision = revision+1
-                db.execute("UPDATE assets SET shapes=?,revision=?,review_state='pending',updated_at=? WHERE id=?",
-                           (serialized, next_revision, timestamp(), asset_id))
-                self._history(db, asset_id, next_revision, "edit", {"shapes":cleaned,"review_state":"pending"})
-                self._touch(db)
-        return self.get_asset(project_id, asset_id)
+        from .annotations import AnnotationService
+        committed = AnnotationService(self).commit(project_id, [({'id': asset_id, 'revision': revision}, shapes)])
+        mask_repairs = committed['repairs']
+        result = self.get_asset(project_id, asset_id)
+        if mask_repairs:
+            result["mask_cleanup"] = {
+                "shapes_repaired": len(mask_repairs),
+                "holes_filled": sum(item["holes_filled"] for item in mask_repairs),
+                "pixels_filled": sum(item["pixels_filled"] for item in mask_repairs),
+                "repairs": mask_repairs,
+            }
+        return result
 
-    def review(self, project_id, asset_ids, state, revisions=None):
+    def review(self, project_id, asset_ids, state, revisions=None, reason='', note='', *, delta_base=None):
+        if not isinstance(reason, str) or not isinstance(note, str) or len(reason) > 100 or len(note) > 2000:
+            raise ValueError('審核原因或備註無效')
         if state not in {"pending", "approved", "rejected"} or not isinstance(asset_ids, list) or not asset_ids:
             raise ValueError("請選擇圖片及有效的審核狀態")
         with self.connection(project_id, write=True) as db:
@@ -574,16 +758,20 @@ class ProjectStore:
                         validate_shape(shape, row["width"], row["height"])
                 # Review is itself a revision; a concurrent stale edit cannot undo it.
                 next_revision = row["revision"]+1
+                source = json.loads(row['source'])
+                source['review'] = {'reason': reason if state != 'approved' else '', 'note': note,
+                                    'needs_correction': state == 'pending' and reason == '待修正'}
+                db.execute('INSERT OR REPLACE INTO asset_review VALUES(?,?)', (aid, dump(source['review'])))
                 db.execute("UPDATE assets SET review_state=?,revision=?,updated_at=? WHERE id=?",
                            (state, next_revision, timestamp(), aid))
-                self._history(db, aid, next_revision, "review", {"review_state":state,"shapes":json.loads(row["shapes"])})
+                self._history(db, aid, next_revision, "review", {"review_state":state,"shapes":json.loads(row["shapes"]), 'review': source['review']})
             self._touch(db)
-        return self.get_project(project_id)
+        return self.get_project(project_id, delta_base=delta_base, changed_ids=asset_ids)
 
     def history(self, project_id, asset_id):
+        from .history_repository import HistoryRepository
         with self.connection(project_id) as db:
-            return [dict(row, data=json.loads(row["data"])) for row in db.execute(
-                "SELECT * FROM history WHERE asset_id=? ORDER BY id", (identifier(asset_id),))]
+            return HistoryRepository.list(db, identifier(asset_id))
 
     def restore(self, project_id, asset_id, history_id, revision):
         history = self.history(project_id, asset_id)
@@ -600,7 +788,7 @@ class ProjectStore:
             self._touch(db)
         return dict(data, id=eid)
 
-    def assign(self, project_id, asset_ids, *, batch_id=None, split=None):
+    def assign(self, project_id, asset_ids, *, batch_id=None, split=None, delta_base=None):
         if not isinstance(asset_ids, list) or not asset_ids:
             raise ValueError("請先選擇圖片")
         if batch_id is not None and (not isinstance(batch_id, str) or not batch_id.strip() or len(batch_id)>200):
@@ -619,7 +807,7 @@ class ProjectStore:
                 self._history(db, aid, row["revision"]+1, "assign", {"shapes":json.loads(row["shapes"]),
                               "review_state":row["review_state"],"batch_id":batch,"split":group})
             self._touch(db)
-        return self.get_project(project_id)
+        return self.get_project(project_id, delta_base=delta_base, changed_ids=asset_ids)
 
     def split_info(self, project_id):
         from .smart_splitting import source_groups
@@ -628,6 +816,7 @@ class ProjectStore:
         ids = {a["id"] for a in assets}
         overrides = {k:v for k,v in project.get("split_plan",{}).get("options",{}).get("group_overrides",{}).items() if k in ids}
         return {"project_revision":project["revision"], "groups":source_groups(assets,overrides),
+                'independence_review': project['independence_review'],
                 "assets":[{k:a[k] for k in ("id","name","batch_id","url")} for a in assets],
                 "previous":project.get("split_plan")}
 
@@ -635,7 +824,10 @@ class ProjectStore:
         from .smart_splitting import smart_split
         project = self.snapshot(project_id)
         assets = [a for a in project["assets"] if a["review_state"] == "approved"]
+        options = dict(options or {})
+        options['independence_confirmed'] = bool(project['independence_review'].get('current'))
         plan = smart_split(assets, options)
+        plan['independence_review'] = project['independence_review']
         plan["project_revision"] = project["revision"]
         plan["fingerprint"] = hashlib.sha256(dump(plan).encode()).hexdigest()
         plan["assets"] = [{k: a[k] for k in ("id", "name", "batch_id", "url")} for a in assets]
@@ -645,6 +837,8 @@ class ProjectStore:
         plan = self.preview_split(project_id, options)
         if type(revision) is not int or revision != plan["project_revision"] or fingerprint != plan["fingerprint"]:
             raise ConflictError("資料或分割設定已變動，請重新預覽")
+        if plan.get("blockers"):
+            raise ValueError("；".join(item["message"] for item in plan["blockers"]))
         with self.connection(project_id, write=True) as db:
             current = db.execute("SELECT revision FROM project").fetchone()["revision"]
             if current != revision:
@@ -660,7 +854,6 @@ class ProjectStore:
             plan["project_revision"] = revision + 1
             plan["applied_at"] = timestamp()
             plan.pop("assets", None)
-            db.execute("CREATE TABLE IF NOT EXISTS split_plans(id INTEGER PRIMARY KEY,data TEXT NOT NULL)")
             db.execute("INSERT OR REPLACE INTO split_plans VALUES(1,?)", (dump(plan),))
         return {"project":self.get_project(project_id), "report":plan}
 

@@ -51,7 +51,7 @@ def main():
                     "shapes":[{"label":"工件","shape_type":"rectangle","points":[[125+number*20,90],[510,390]]}]}),encoding="utf-8")
         service=WorkbenchService(root/"data").start()
         view=QWebEngineView();page=Page(view);view.setPage(page);view.resize(1440,900);view.show()
-        view.setUrl(QUrl(service.url));page.setVisible(True)
+        view.setUrl(QUrl(service.entry_url));page.setVisible(True)
         def js(script):
             result=[];loop=QEventLoop()
             page.runJavaScript(script,lambda value:(result.append(value),loop.quit()))
@@ -88,6 +88,8 @@ def main():
             click("[data-source='files']")
             click("#showManualImport")
             fill("#importPaths","\n".join(inputs));click("#importFiles")
+            wait("document.querySelector('#formDialog').open && document.querySelectorAll('#dialogBody input[type=checkbox]').length===4")
+            js("document.querySelector('#confirmDialog').click()")
             wait("document.querySelector('#importReport').innerText.includes('4')",seconds=60)
             wait("!document.querySelector('#importFiles').disabled")
             project=service.store.list_projects()[0];pid=project['id']
@@ -109,9 +111,9 @@ def main():
             wait("!document.querySelector('#formDialog').open && ![...document.querySelectorAll('#classQuickList .class-choice')].some(e=>e.innerText==='暫存類別')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件']
             click("#classQuickList [data-class-name='已修正工件']")
-            wait("document.querySelector('#classSelectionHint').innerText.includes('僅下一個新物件使用：已修正工件')")
+            wait("document.querySelector('#classSelectionHint').innerText.includes('目前標註類別：已修正工件')")
             click("#selectAllShapes")
-            assert js("document.querySelector('#classSelectionHint').innerText.includes('僅下一個新物件使用：已修正工件')")
+            assert js("document.querySelector('#classSelectionHint').innerText.includes('目前標註類別：已修正工件')")
             fill("#shapeList .shape-class-select","已修正工件")
             wait("window.workbenchState().dirty")
             click("#saveNow")
@@ -162,7 +164,7 @@ def main():
             assert service.store.get_asset(pid,changed_id)['shape_count']==2,"AI silently committed its candidate"
             click("#acceptAI");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==3
-            assert js("document.querySelector('#shapeLabel').value===''"),"New-object class was not consumed after creation"
+            assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Default class must persist after creation"
             js("document.querySelector('.ai-section').open=false")
             # Native Qt pointer events draw a rectangle on the actual SVG canvas.
             click("#classQuickList [data-class-name='已修正工件']")
@@ -185,8 +187,10 @@ def main():
             click("[data-stage='review']");wait("!document.querySelector('#review').hidden")
             click("#reviewSelectAll");click("#reviewApprove")
             wait("document.querySelector('#reviewStats').innerText.includes('4')")
-            wait("!document.querySelector('#reviewApprove').disabled")
+            wait("!window.workbenchState().busy")
             assert service.store.get_project(pid)['stats']['approved']==4
+            click('#confirmIndependentAssets');wait("document.querySelector('#formDialog').open")
+            click('#confirmDialog');wait("!document.querySelector('#formDialog').open && document.querySelector('#confirmIndependentAssets').checked")
             capture("04-review-approved")
             # Build and run a real immutable training version from the same UI.
             click("#prepareTraining")
@@ -197,7 +201,8 @@ def main():
             wait("document.querySelector('#smartSplitDialog').open")
             # This fixture contains independent imported drawings, so use the
             # explicit class-balanced option rather than splitting camera footage.
-            fill("#splitStrategy","class_balanced")
+            fill("#splitPurpose","reviewed_independent")
+            fill("#splitStrategy","hybrid")
             click("#previewSmartSplit")
             wait("!document.querySelector('#applySmartSplit').disabled")
             click("#applySmartSplit")
@@ -217,18 +222,18 @@ def main():
             wait("document.querySelector('#trainingDatasetCurrent').innerText==='D001'")
             fill("#trainingEngine","pixel_prototype_v1");fill("#trainingEpochs","4");click("#startTraining")
             wait("document.querySelector('#trainingRunDetail').innerText.includes('已完成')",seconds=60)
-            wait("document.querySelectorAll('#trainingPlots circle[data-run-id]').length===8")
-            assert js("document.querySelectorAll('#trainingPlots svg').length===2")
+            click('[data-chart-group="all"]')
+            wait("document.querySelectorAll('#trainingPlots circle[data-run-id]').length>=8")
+            assert len(service.training.run_metrics(pid,'R001')['metrics'])==4
             assert js("!!document.querySelector('#trainingPlots [data-metric-key=threshold]')")
             assert js("document.querySelector('#trainingRunDetail .metric-chart-note').innerText.includes('X 軸涵蓋完整 Run')")
-            assert js("document.querySelector('#trainingRunDetail .metric-chart-note').innerText.includes('取消勾選模型不改變座標')")
             assert js("[...document.querySelectorAll('#trainingPlots svg')].every(svg=>svg.dataset.xMax==='4')")
             assert js("new Set([...document.querySelectorAll('#trainingPlots circle[data-epoch]')].map(e=>e.dataset.epoch)).size===4")
-            assert (root/'data'/'datasets'/pid/'D001'/'manifest.json').is_file()
-            assert (root/'data'/'models'/pid/'M001'/'model.json').is_file()
+            assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').is_file()
+            assert (service.training.models_dir(pid)/'M001'/'model.json').is_file()
             capture("05-training-completed")
             js("document.querySelector('#trainingRunDetail').scrollIntoView({block:'start'})");QTest.qWait(150);capture("05b-training-plot")
-            training_manifest=json.loads((root/'data'/'datasets'/pid/'D001'/'manifest.json').read_text(encoding='utf-8'))
+            training_manifest=json.loads((service.training.datasets_dir(pid)/'D001'/'manifest.json').read_text(encoding='utf-8'))
             training_asset=next(asset['asset_id'] for asset in training_manifest['assets'] if asset['split']=='train')
             click("[data-stage='annotate']")
             click(f"#assetList [data-asset-id='{training_asset}']")
@@ -249,7 +254,7 @@ def main():
             if service.store.get_project(pid)['stats']['pending']:
                 click("[data-stage='review']");click("#reviewSelectAll");click("#reviewApprove")
                 wait("[...document.querySelectorAll('#reviewStats .stat-chip')].some(x=>x.querySelector('span').textContent==='已核准' && x.querySelector('b').textContent==='4')")
-                wait("!document.querySelector('#reviewApprove').disabled")
+                wait("!window.workbenchState().busy")
             assert service.store.get_project(pid)['stats']['approved']==4
             click("[data-stage='models']");click("#openExchange");click("#validateProject")
             wait("document.querySelector('#validationReport').innerText.includes('4')")

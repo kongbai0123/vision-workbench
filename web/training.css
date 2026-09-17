@@ -1,21 +1,54 @@
 /* Training setup stays aligned; the monitor uses the full available width. */
-.training-layout {align-items:stretch}
+.training-layout {grid-template-columns:minmax(210px,.72fr) minmax(480px,1.7fr) minmax(240px,.78fr);align-items:stretch}
+.training-layout > .training-data-panel {grid-column:auto;display:flex!important}
 #prepareAutoSplit {margin-bottom:10px}
 .training-schedule{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px}
 .training-schedule summary{cursor:pointer;color:var(--accent);margin-bottom:14px}
+#learningRatePreview svg{max-height:190px}
+.training-architecture{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0 16px}
+.training-architecture>div{padding:11px 12px;border:1px solid var(--line);border-radius:5px;background:#101c24}
+.training-architecture span,.training-architecture b{display:block}.training-architecture span{color:var(--muted);margin-bottom:5px}.training-architecture b{font-size:12px}
+.training-config-tabs{display:flex;gap:7px;margin:4px 0 18px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.training-config-tabs button{padding:8px 12px;border:1px solid transparent;background:transparent;color:var(--muted)}
+.training-config-tabs button[aria-selected=true]{color:#8ce0d0;border-color:#438d82;background:#173b39}
+.augmentation-panel{margin-top:18px}
+.augmentation-layout{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(0,1.2fr);gap:24px}
+.augmentation-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:14px}
+.augmentation-fields label{display:flex;flex-direction:column;gap:6px;color:var(--muted)}
+.augmentation-summary{margin-top:14px;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;line-height:1.6}
+.augmentation-preview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.augmentation-preview>div{align-self:start;min-width:0;padding:10px;border:1px solid var(--line);border-radius:5px;background:#0d1820;overflow:hidden}
+.augmentation-preview span{display:block;margin-bottom:8px;color:var(--muted)}
+.augmentation-preview-stage{position:relative;width:100%;height:180px;background:#071015;overflow:hidden}
+.augmentation-preview img{display:block;width:100%;height:100%;object-fit:contain;background:#071015}
+.augmentation-annotation-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .yolo-compatibility{margin:2px 0 18px;padding:16px;border:1px solid #3d5965;border-radius:6px;background:#101e27}
+.review-compatibility{margin-top:18px}
 .yolo-compatibility-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
 .yolo-compatibility-heading p{margin:5px 0 0;color:var(--muted);font-size:12px}
 .yolo-compatibility .badge{white-space:nowrap}
 .yolo-compatibility .badge.approved{color:#84e4cf;border-color:#3d8c7e}
 .yolo-compatibility .badge.error{color:#ff9c99;border-color:#a95353}
+.yolo-compatibility .badge.warning{color:#f0c778;border-color:#9c7b3f}
 .yolo-compatibility-summary{margin:12px 0 0;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;font-size:12px;line-height:1.6}
 .yolo-compatibility-summary.error{border-color:#e36c68;background:#302020}
+.yolo-compatibility-summary.warning{border-color:#d8a94c;background:#2c281d;color:#e9d7ad}
+.yolo-compatibility-summary.warning .primary,.yolo-compatibility-summary.warning .secondary{margin-top:10px}
 .yolo-issue-list{display:grid;gap:8px;max-height:260px;overflow:auto;margin-top:10px}
 .yolo-issue{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#13232d;font-size:12px}
 .yolo-issue p{grid-column:1/-1;margin:0;color:var(--muted)}
 .yolo-location-canvas{display:block;width:100%;max-height:430px;margin:12px 0;background:#080d11;image-rendering:pixelated;border:1px solid var(--line)}
 .yolo-coordinate-list{max-height:160px;overflow:auto;font:12px/1.7 Consolas,monospace}
+.diagnostic-dialog{width:min(900px,94vw)}
+.yolo-diagnostic .yolo-location-canvas{aspect-ratio:760/420;margin-bottom:8px}
+.yolo-preview-status{min-height:24px;color:#c8d6dc;font:12px/1.6 Consolas,monospace}
+.yolo-hole-controls{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;margin:10px 0}
+.yolo-hole-controls .yolo-hole-counter{text-align:center;color:var(--accent)}
+.yolo-hole-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:190px;overflow:auto;margin:10px 0 14px}
+.yolo-hole-card{min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#13232d;text-align:left}
+.yolo-hole-card b,.yolo-hole-card span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.yolo-hole-card span{margin-top:3px;color:var(--muted);font:12px Consolas,monospace}
+.yolo-hole-card.active{border-color:var(--accent);background:#193b3a}
 .training-layout > .panel {display:flex;flex-direction:column;min-width:0;margin:0}
 .training-layout .panel-title {min-height:49px;margin-bottom:18px}
 .training-layout input,.training-layout select,.training-readonly {min-height:42px;width:100%}
@@ -30,13 +63,18 @@
 .training-data-panel #trainingDataset {margin-top:0}
 .run-workspace {display:block}
 .run-detail {min-width:0}
+.training-monitor-workspace {min-width:0}
+.training-monitor-workspace.expanded {position:fixed;inset:0;z-index:1000;overflow:auto;padding:20px 28px 30px;background:#0d1820}
+.training-monitor-workspace.expanded .training-monitor-heading {position:sticky;top:-20px;z-index:8;margin:-20px -28px 18px;padding:18px 28px 14px;background:#0d1820ef;border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
+.training-monitor-workspace.expanded .run-detail {max-width:1800px;margin:0 auto}
+body.training-monitor-expanded {overflow:hidden}
 .training-monitor-heading {display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 .training-monitor-actions {display:flex;gap:8px;flex-wrap:wrap}
 .training-monitor-actions [aria-pressed=true] {border-color:#438d82;background:#173b39;color:#8ce0d0}
 .run-progress-head {align-items:center;flex-wrap:wrap}
-.run-config {margin:14px 0 20px}
-.run-config > div {min-width:0}
-.run-config b {overflow-wrap:anywhere}
+.training-summary-cards {grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:20px}
+.training-summary-cards .run-metric {min-width:0}
+.training-summary-cards .run-metric b {overflow-wrap:anywhere}
 .training-comparison-list {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}
 .training-comparison-card {min-width:0;padding:14px 16px;background:#13232d;border:1px solid var(--line);border-radius:6px}
 .training-comparison-heading {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -54,17 +92,37 @@
 .training-model-choice > span {display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
 .training-model-choice > span > span {color:var(--muted)}
 .training-chart-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.training-chart-card {min-width:0;padding:14px 14px 10px;border:1px solid #304955;border-radius:6px;background:#101c24}
+.training-chart-toolbar {display:flex;align-items:end;justify-content:space-between;gap:16px;margin:24px 0 12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.training-chart-toolbar h3 {margin:4px 0 0;font-size:18px}
+.training-chart-tabs {display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.training-chart-tabs button {padding:8px 11px;font-size:12px}
+.training-chart-tabs [aria-selected=true] {border-color:#438d82;background:#173b39;color:#8ce0d0}
+.training-chart-card {display:flex;flex-direction:column;min-width:0;min-height:370px;padding:14px 14px 10px;border:1px solid #304955;border-radius:6px;background:#101c24}
 .training-chart-heading {display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;min-height:40px;margin-bottom:8px}
 .training-chart-heading h3 {font-size:13px;margin:0}
-.training-chart-latest {display:flex;flex-wrap:wrap;gap:4px 12px;font:11px/1.5 Consolas,monospace}
+.training-chart-latest {display:flex;flex-wrap:wrap;gap:4px 12px;font:12px/1.5 Consolas,monospace}
 .training-chart-latest span {color:#c4d9e0;white-space:nowrap}
 .training-chart-latest span:before {content:'';display:inline-block;width:8px;height:3px;background:var(--series-color);vertical-align:middle;margin-right:5px}
 .training-chart-host {width:100%;min-height:248px}
 .training-chart-host svg {display:block;max-width:100%;overflow:visible}
 .training-chart-hover {min-height:45px;white-space:pre-wrap;color:#bfd7dc;font:12px/1.6 Consolas,'Microsoft JhengHei',monospace;margin:8px 0 3px;overflow-wrap:anywhere}
-.training-chart-direction {font-size:11px;color:var(--muted);margin:2px 0}
+.training-chart-direction {font-size:12px;color:var(--muted);margin:2px 0}
 .training-chart-warning {font-size:12px;color:#e8c684;margin:8px 0}
+.training-alert-summary {margin:10px 0 14px;padding:9px 12px;border:1px solid #6f5d35;border-radius:5px;background:#211f18}
+.training-alert-summary summary {cursor:pointer;color:#e8c684;font-size:12px}
+.training-alert-summary .readiness-item {margin:9px 0 0}
+.training-diagnostics,.training-metric-source {margin:18px 0;padding:15px 16px;border:1px solid #304955;border-radius:6px;background:#101c24}
+.training-diagnostics-heading h3,.training-metric-source h3 {margin:5px 0 12px;font-size:16px}
+.training-diagnostics-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.training-diagnostic {min-width:0;padding:12px 13px;border-left:3px solid #62b9d9;background:#13232d}
+.training-diagnostic.warning {border-left-color:#d8a94c}
+.training-diagnostic h4,.training-metric-source h4 {margin:0 0 8px;font-size:13px}
+.training-diagnostic p {margin:6px 0;line-height:1.6}
+.training-diagnostic-evidence {font-family:Consolas,'Microsoft JhengHei',monospace;color:#d5e7ec}
+.training-metric-source-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:10px 0;background:var(--line);border:1px solid var(--line)}
+.training-metric-source-grid>div {min-width:0;padding:11px 12px;background:#13232d}
+.training-metric-source-grid span,.training-metric-source-grid b {display:block;overflow-wrap:anywhere}
+.training-metric-source-grid span {margin-bottom:5px;color:var(--muted)}
 .training-monitor-details {border-top:1px solid var(--line);margin-top:20px;padding-top:12px}
 .training-monitor-details summary {cursor:pointer;font-size:12px;padding:5px 0;color:#c3d6df}
 .training-monitor-details h3 {font-size:14px;margin-top:18px}
@@ -77,6 +135,8 @@
 .training-epoch-scroll {max-height:407px;scrollbar-gutter:stable}
 .training-epoch-scroll th,.training-epoch-scroll td {box-sizing:border-box;height:37px;padding:8px 10px;line-height:20px}
 .training-epoch-scroll thead {position:sticky;top:0;z-index:1;background:#172a34;box-shadow:0 1px 0 var(--line)}
+.training-epoch-scroll th:first-child,.training-epoch-scroll td:first-child {position:sticky;left:0;z-index:2;background:#13232d}
+.training-epoch-scroll thead th:first-child {z-index:3;background:#172a34}
 .training-parameter-list {display:grid;grid-template-columns:minmax(110px,.8fr) minmax(0,1.2fr);gap:0;margin:14px 0;font-size:12px}
 .training-parameter-list dt,.training-parameter-list dd {min-width:0;margin:0;padding:10px 8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 .training-parameter-list dt {color:var(--muted)}
@@ -92,17 +152,23 @@
 .training-history-row .run-row {min-width:0;overflow-wrap:anywhere}
 .training-history-row > .secondary {font-size:12px;padding:9px}
 @media(max-width:1100px){
+  .training-summary-cards,.training-metric-source-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
   .training-layout > .training-action-panel {display:grid;grid-template-columns:minmax(0,1fr) auto}
   .training-action-panel .training-summary {margin-bottom:0}
   .training-action-panel #startTraining,.training-action-panel #stopTraining {margin-top:0}
   .training-action-panel .field-note {min-height:0}
 }
 @media(max-width:760px){
+  .augmentation-layout,.augmentation-preview,.augmentation-fields,.training-architecture,.training-summary-cards,.training-diagnostics-grid,.training-metric-source-grid{grid-template-columns:1fr}
   .training-chart-grid,.training-comparison-list,.training-detail-columns {grid-template-columns:1fr}
   .training-layout > .training-action-panel {display:flex}
   .training-action-panel #startTraining,.training-action-panel #stopTraining {margin-top:16px}
   .training-config-panel .training-details {margin-top:0}
   .training-monitor-actions button {padding:8px 10px;font-size:12px}
+  .training-monitor-workspace.expanded {padding:14px}
+  .training-monitor-workspace.expanded .training-monitor-heading {top:-14px;margin:-14px -14px 14px;padding:14px}
+  .training-chart-toolbar {align-items:flex-start;flex-direction:column}
+  .training-chart-tabs {justify-content:flex-start}
   .training-history-dialog {padding:18px}
   .training-history-row {grid-template-columns:1fr}
 }

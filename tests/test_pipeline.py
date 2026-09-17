@@ -167,12 +167,40 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['records'], [])
         self.assertEqual(result['issues'][0]['level'], 'error')
 
-    def test_protected_working_folder_and_individual_image_rejected(self):
-        self.write_json(self.images / 'manifest.json', {'dataset_type': 'sam2_training_pseudo_labels'})
-        for path in (self.images, self.images/'0.png', self.images.parent):
+    def test_working_sam2_content_imports_as_pending_without_auxiliary_images(self):
+        mask_path = self.images / 'label' / 'masks' / '0.png'
+        overlay_path = self.images / 'algorithm_output' / '0.png'
+        self.write_image(mask_path, self.mask)
+        self.write_image(overlay_path, np.zeros((20, 24, 3), np.uint8))
+        samples = []
+        images = []
+        annotations = []
+        for index in range(3):
+            image_path = self.images / f'{index}.png'
+            samples.append({'id': f'sample-{index}', 'image': f'{index}.png',
+                            'mask': 'label/masks/0.png' if index == 0 else f'label/masks/{index}.png',
+                            'qa_overlay': 'algorithm_output/0.png' if index == 0 else f'algorithm_output/{index}.png',
+                            'review_status': 'pending'})
+            images.append({'id': index + 1, 'file_name': f'{index}.png', 'width': 24, 'height': 20})
+            annotations.append({'id': index + 1, 'image_id': index + 1, 'category_id': 1,
+                                'segmentation': {'size': [20, 24], 'counts': encode_rle(self.mask)}})
+        self.write_json(self.images / 'manifest.json', {
+            'dataset_type': 'sam2_training_pseudo_labels', 'session_id': 'capture-session',
+            'review_status': 'pending', 'samples': samples})
+        self.write_json(self.images / 'label' / 'instances.json', {
+            'images': images, 'annotations': annotations,
+            'categories': [{'id': 1, 'name': 'workpiece'}]})
+
+        for path, expected in ((self.images, 3), (self.images / '0.png', 1),
+                               (mask_path, 1), (self.images.parent, 3)):
             result = import_sources([path])
-            self.assertEqual(result['records'], [])
-            self.assertEqual(result['issues'][0]['level'], 'error')
+            self.assertEqual(result['issues'], [])
+            self.assertEqual(len(result['records']), expected)
+            self.assertTrue(all(record['review_state'] == 'pending' for record in result['records']))
+            self.assertTrue(all(record['batch_id'] == 'capture-session' for record in result['records']))
+            self.assertTrue(all(record['shapes'][0]['type'] == 'mask' for record in result['records']))
+            self.assertTrue(all('algorithm_output' not in record['path'] and 'label\\masks' not in record['path']
+                                for record in result['records']))
 
     def test_graph_verified_hash_and_no_auxiliary_scan(self):
         package = self.root / 'verified'

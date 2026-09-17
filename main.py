@@ -20,7 +20,7 @@ def main():
     if args.serve:
         from workbench.server import WorkbenchService
         service = WorkbenchService(root,args.port).start()
-        print(service.url,flush=True)
+        print(service.entry_url,flush=True)
         try:
             while True:
                 time.sleep(.5)

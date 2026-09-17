@@ -34,7 +34,7 @@ def main():
             else:
                 workspace.stop_run(pid,run['run_id']);raise TimeoutError(engine)
             assert result['status']=='completed',result
-            directory=workspace.runs/pid/run['run_id']
+            directory=workspace.runs_dir(pid)/run['run_id']
             rows=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines()]
             rates=[r['train/learning_rate'] for r in rows]
             assert abs(rates[0]-.0005)<1e-12 and abs(rates[-1]-.000005)<1e-12,rates

@@ -25,7 +25,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="vision-settings-") as folder:
         service = WorkbenchService(Path(folder) / "data").start()
         service.store.create_project("模型目錄互動測試")
-        view = QWebEngineView(); view.resize(1440, 900); view.setUrl(QUrl(service.url)); view.show()
+        view = QWebEngineView(); view.resize(1440, 900); view.setUrl(QUrl(service.entry_url)); view.show()
         page = view.page()
 
         def js(script):

@@ -13,7 +13,7 @@ class ModelRegistryTests(unittest.TestCase):
             catalog = registry.snapshot()
         models = {model["key"]: model for model in catalog["models"]}
         for key in ("fasterrcnn_mobilenet_v3_large_fpn", "deeplabv3_mobilenet_v3_large",
-                    "efficientad", "rt_detr_r50", "yolo26n_seg"):
+                    "efficientad", "rt_detr_r50", "yolo26n_seg", "yolo26n_detect", "yolo26s_detect"):
             self.assertIn(key, models)
         self.assertEqual(models["efficientad"]["integration"], "planned")
         self.assertFalse(models["efficientad"]["train"])
@@ -21,6 +21,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertFalse(models["mobilenet_v3_large_classification"]["predict"])
         self.assertEqual(models["rt_detr_r50"]["integration"], "ready")
         self.assertEqual(models["rt_detr_r50"]["component"], "ultralytics")
+        self.assertEqual(models['yolo26n_detect']['task'], 'object_detection')
         self.assertTrue(next(component for component in catalog["components"]
                              if component["id"] == "ultralytics")["installable"])
         self.assertEqual(models["pixel_prototype_v1"]["runtime_state"], "ready")

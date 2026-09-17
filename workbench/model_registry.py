@@ -40,7 +40,7 @@ COMPONENTS = {
     },
     "ultralytics": {
         "name": "Ultralytics 偵測與分割環境", "installable": True,
-        "description": "RT-DETR 與 YOLO26 Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
+        "description": "RT-DETR 與 YOLO26 Detect／Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
         "requirements": "requirements-ultralytics.txt",
     },
 }
@@ -58,15 +58,15 @@ MODELS = (
     {"key": "fasterrcnn_mobilenet_v3_large_fpn", "name": "Faster R-CNN · MobileNet V3 FPN", "family": "Faster R-CNN",
      "task": "object_detection", "component": "torchvision", "integration": "ready",
      "description": "較省資源的物件偵測，從現有遮罩自動取得緊密框。", "annotation": "矩形框或實例遮罩",
-     "metrics": ["Box IoU", "Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
+     "metrics": ["Box mAP50", "Precision／Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
     {"key": "fasterrcnn_mobilenet_v3_large_320_fpn", "name": "Faster R-CNN · MobileNet V3 320 FPN", "family": "Faster R-CNN",
      "task": "object_detection", "component": "torchvision", "integration": "ready",
      "description": "低解析度快速偵測變體，適合先測試 CPU 或小型 GPU。", "annotation": "矩形框或實例遮罩",
-     "metrics": ["Box IoU", "Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
+     "metrics": ["Box mAP50", "Precision／Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
     {"key": "fasterrcnn_resnet50_fpn_v2", "name": "Faster R-CNN · ResNet50 FPN V2", "family": "Faster R-CNN",
      "task": "object_detection", "component": "torchvision", "integration": "ready",
      "description": "較高容量的物件偵測模型，適合精度比較。", "annotation": "矩形框或實例遮罩",
-     "metrics": ["Box IoU", "Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
+     "metrics": ["Box mAP50", "Precision／Recall@0.5"], "license": "TorchVision；權重條件另依來源"},
     {"key": "deeplabv3_mobilenet_v3_large", "name": "DeepLabV3 · MobileNet V3", "family": "DeepLabV3",
      "task": "semantic_segmentation", "component": "torchvision", "integration": "ready",
      "description": "將同類實例合併為像素類別圖，兼顧訓練速度與分割能力。", "annotation": "面積標註",
@@ -102,6 +102,12 @@ MODELS = (
     {"key": "yolo26s_seg", "name": "YOLO26s Seg", "family": "YOLO26 Seg", "task": "instance_segmentation",
      "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 實例分割；可嚴格檢查，或只在 Run 副本修補通過門檻的微小封閉孔洞。",
      "annotation": "實例遮罩／多邊形", "metrics": ["Mask mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
+    {"key": "yolo26n_detect", "name": "YOLO26n Detect", "family": "YOLO26 Detect", "task": "object_detection",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 nano 物件偵測；由矩形框或面積標註自動取得緊密框。",
+     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
+    {"key": "yolo26s_detect", "name": "YOLO26s Detect", "family": "YOLO26 Detect", "task": "object_detection",
+     "component": "ultralytics", "integration": "ready", "description": "YOLO26 small 物件偵測；容量較高，適合與 nano 比較精度。",
+     "annotation": "矩形框或實例遮罩", "metrics": ["Box mAP50–95"], "license": "Ultralytics · AGPL-3.0 或 Enterprise"},
 )
 
 
@@ -112,6 +118,7 @@ class ModelRegistry:
         self._lock = threading.RLock()
         self._probe_cache = None
         self._probe_time = 0.0
+        self._probe_refreshing = False
 
     @property
     def training_python(self) -> Path:
@@ -153,7 +160,8 @@ class ModelRegistry:
         if not python.is_file():
             return {"state": "not_installed", "message": f"尚未安裝 {COMPONENTS[component_id]['name']}",
                     "python": str(python)}
-        code = f"import json,{','.join(imports)}; print(json.dumps({{'versions': {{{','.join(repr(name)+':getattr('+name+',\'__version__\',\'unknown\')' for name in imports)}}}}}))"
+        versions = ",".join(repr(name) + ":getattr(" + name + ",'__version__','unknown')" for name in imports)
+        code = "import json," + ",".join(imports) + "; print(json.dumps({'versions': {" + versions + "}}))"
         try:
             result = subprocess.run([str(python), "-c", code], capture_output=True, text=True, timeout=30,
                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -169,17 +177,28 @@ class ModelRegistry:
 
     def component_status(self, refresh=False):
         with self._lock:
-            if self._probe_cache is not None and not refresh and time.monotonic() - self._probe_time < 20:
+            if self._probe_cache is not None and not refresh:
+                if time.monotonic() - self._probe_time > 300 and not self._probe_refreshing:
+                    self._probe_refreshing = True
+                    threading.Thread(target=self._background_probe, name='runtime-probe', daemon=True).start()
                 return self._probe_cache
-            torchvision = self._probe_torchvision()
-            states = {
+        torchvision = self._probe_torchvision()
+        states = {
                 "builtin": {"state": "ready", "message": "隨工作台提供", "python": sys.executable},
                 "torchvision": torchvision,
                 "anomalib": {"state": "planned", "message": "資料 adapter 與獨立 runtime 尚在開發"},
                 "ultralytics": self._probe_python_component("ultralytics", ("torch", "ultralytics")),
-            }
+        }
+        with self._lock:
             self._probe_cache, self._probe_time = states, time.monotonic()
             return states
+
+    def _background_probe(self):
+        try:
+            self.component_status(refresh=True)
+        finally:
+            with self._lock:
+                self._probe_refreshing = False
 
     def snapshot(self, refresh=False):
         states = self.component_status(refresh)
@@ -202,6 +221,7 @@ class ModelRegistry:
         return next((item for item in self.snapshot(refresh)["models"] if item["key"] == key), None)
 
     def install(self, component_id, progress):
+        from .process_control import run_controlled
         if component_id not in COMPONENTS:
             raise FileNotFoundError("找不到模型元件")
         component = COMPONENTS[component_id]
@@ -215,25 +235,10 @@ class ModelRegistry:
             target = self.component_python(component_id).parent.parent
             target.parent.mkdir(parents=True, exist_ok=True)
             if not self.component_python(component_id).is_file():
-                create = subprocess.run([sys.executable, "-m", "venv", str(target)], cwd=str(self.app_root),
-                                        capture_output=True, text=True,
-                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-                if create.returncode:
-                    raise RuntimeError((create.stderr.strip().splitlines() or ["建立獨立環境失敗"])[-1])
+                run_controlled([sys.executable, '-m', 'venv', str(target)], progress, cwd=self.app_root)
             command = [str(self.component_python(component_id)), "-m", "pip", "install", "-r",
                        str(self.app_root / component["requirements"])]
-        process = subprocess.Popen(command, cwd=str(self.app_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, encoding="utf-8", errors="replace",
-                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        tail = []
-        assert process.stdout is not None
-        for line in process.stdout:
-            text = line.strip()
-            if text:
-                tail.append(text); tail = tail[-12:]
-                progress(text, None)
-        if process.wait():
-            raise RuntimeError(tail[-1] if tail else "TorchVision 安裝失敗")
+        run_controlled(command, progress, cwd=self.app_root)
         self._probe_cache = None
         status = self.component_status(refresh=True)[component_id]
         if status["state"] != "ready":

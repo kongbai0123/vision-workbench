@@ -10,7 +10,7 @@ from typing import Callable, Optional, Protocol
 
 import numpy as np
 
-from classical_segmentation import SegmentationPrompts
+from classical_segmentation import SegmentationPrompts, extract_contour_hierarchy
 
 from .models import (
     Sam2Config,
@@ -378,6 +378,21 @@ class Sam2Segmenter:
                 smart_boundary_smoothing=self.config.smart_boundary_smoothing,
                 boundary_smoothing_radius=self.config.boundary_smoothing_radius,
             )
+            cleanup = {"holes_detected": 0, "holes_filled": 0, "pixels_filled": 0}
+            if self.config.repair_tiny_holes:
+                from composer_core.mask_cleanup import repair_tiny_holes
+                mask, cleanup = repair_tiny_holes(
+                    mask,
+                    protected_background_points=encoding.background_pixels,
+                    max_hole_pixels=self.config.tiny_hole_max_pixels,
+                    max_total_pixels=self.config.tiny_hole_total_pixels,
+                    max_ratio=self.config.tiny_hole_max_ratio,
+                    max_dimension=self.config.tiny_hole_max_dimension,
+                )
+                if cleanup["pixels_filled"]:
+                    # The reusable contour now describes exactly the canonical
+                    # mask that the dataset writer will persist.
+                    hierarchy = extract_contour_hierarchy(mask)
             diagnostics = Sam2Diagnostics(
                 source_size=source_size,
                 model_id=self.config.model_id,
@@ -393,6 +408,9 @@ class Sam2Segmenter:
                 background_point_count=len(encoding.background_pixels),
                 processing_time_ms=(time.perf_counter() - started_at) * 1000.0,
                 model_load_time_ms=self._runtime.model_load_time_ms,
+                holes_detected=cleanup["holes_detected"],
+                holes_filled=cleanup["holes_filled"],
+                hole_pixels_filled=cleanup["pixels_filled"],
             )
         return Sam2SegmentationResult(
             mask=mask,

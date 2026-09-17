@@ -1,82 +1,47 @@
-"""Classical, calibration-based prompted object segmentation.
+"""Lazy compatibility exports; optional legacy tools load only on demand."""
+from importlib import import_module
 
-This package intentionally has no GUI dependency. It can therefore be used by
-the Tk application, offline capture processing, or focused unit tests.
-"""
+_EXPORTS = {
+    "BackgroundCalibrator": "background",
+    "as_binary_mask": "contours",
+    "clean_prompted_mask": "contours",
+    "extract_contour_hierarchy": "contours",
+    "fill_small_holes": "contours",
+    "keep_prompt_components": "contours",
+    "remove_small_components": "contours",
+    "BackgroundSampleRecord": "dataset",
+    "SceneRecord": "dataset",
+    "SegmentationDatasetSession": "dataset",
+    "AggregateSegmentationMetrics": "evaluation",
+    "AlgorithmRecommendation": "evaluation",
+    "EvaluationBatch": "evaluation",
+    "EvaluationConfig": "evaluation",
+    "RecommendationConfig": "evaluation",
+    "RecommendationReport": "evaluation",
+    "SegmentationMetrics": "evaluation",
+    "aggregate_segmentation_metrics": "evaluation",
+    "count_odd_depth_holes": "evaluation",
+    "evaluate_mask_pairs": "evaluation",
+    "evaluate_segmentation": "evaluation",
+    "recommend_follow_up_algorithms": "evaluation",
+    "BackgroundModel": "models",
+    "ContourHierarchy": "models",
+    "NormalizedPoint": "models",
+    "NormalizedRect": "models",
+    "SegmentationConfig": "models",
+    "SegmentationDiagnostics": "models",
+    "SegmentationPrompts": "models",
+    "SegmentationResult": "models",
+    "ClassicalSegmenter": "segmenter",
+    "SegmentationWorker": "worker",
+    "SegmentationWorkerResult": "worker",
+}
+__all__ = list(_EXPORTS)
 
-from .background import BackgroundCalibrator
-from .contours import (
-    as_binary_mask,
-    clean_prompted_mask,
-    extract_contour_hierarchy,
-    fill_small_holes,
-    keep_prompt_components,
-    remove_small_components,
-)
-from .dataset import (
-    BackgroundSampleRecord,
-    SceneRecord,
-    SegmentationDatasetSession,
-)
-from .evaluation import (
-    AggregateSegmentationMetrics,
-    AlgorithmRecommendation,
-    EvaluationBatch,
-    EvaluationConfig,
-    RecommendationConfig,
-    RecommendationReport,
-    SegmentationMetrics,
-    aggregate_segmentation_metrics,
-    count_odd_depth_holes,
-    evaluate_mask_pairs,
-    evaluate_segmentation,
-    recommend_follow_up_algorithms,
-)
-from .models import (
-    BackgroundModel,
-    ContourHierarchy,
-    NormalizedPoint,
-    NormalizedRect,
-    SegmentationConfig,
-    SegmentationDiagnostics,
-    SegmentationPrompts,
-    SegmentationResult,
-)
-from .segmenter import ClassicalSegmenter
-from .worker import SegmentationWorker, SegmentationWorkerResult
 
-__all__ = [
-    "BackgroundCalibrator",
-    "BackgroundSampleRecord",
-    "BackgroundModel",
-    "ClassicalSegmenter",
-    "ContourHierarchy",
-    "AggregateSegmentationMetrics",
-    "AlgorithmRecommendation",
-    "EvaluationBatch",
-    "EvaluationConfig",
-    "NormalizedPoint",
-    "NormalizedRect",
-    "RecommendationConfig",
-    "RecommendationReport",
-    "SegmentationConfig",
-    "SegmentationDatasetSession",
-    "SegmentationDiagnostics",
-    "SegmentationPrompts",
-    "SegmentationResult",
-    "SegmentationMetrics",
-    "SceneRecord",
-    "SegmentationWorker",
-    "SegmentationWorkerResult",
-    "as_binary_mask",
-    "aggregate_segmentation_metrics",
-    "clean_prompted_mask",
-    "count_odd_depth_holes",
-    "evaluate_mask_pairs",
-    "evaluate_segmentation",
-    "extract_contour_hierarchy",
-    "fill_small_holes",
-    "keep_prompt_components",
-    "remove_small_components",
-    "recommend_follow_up_algorithms",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(f".{_EXPORTS[name]}", __name__), name)
+    globals()[name] = value
+    return value

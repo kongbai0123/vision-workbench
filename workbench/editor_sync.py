@@ -1,6 +1,6 @@
 """One transactional commit path for annotations returned by external editors."""
 from copy import deepcopy
-from .store import ConflictError, clean_shapes, dump, identifier, timestamp
+from .store import dump
 
 
 def geometry_key(shape):
@@ -28,26 +28,5 @@ def retain_identity(shapes, originals):
 
 
 def commit_updates(store, pid, updates, *, source):
-    """All-or-nothing revision validation, class additions, history and review reset."""
-    updated=0
-    with store.connection(pid,write=True) as db:
-        classes=__import__('json').loads(db.execute('SELECT classes FROM project').fetchone()[0])
-        prepared=[]
-        for original,shapes in updates:
-            row=db.execute('SELECT * FROM assets WHERE id=?',(identifier(original['id']),)).fetchone()
-            if row is None or row['revision']!=original['revision']:
-                raise ConflictError('專案已有其他修改；已保留編輯內容，請先整合版本再同步。')
-            cleaned=clean_shapes(shapes,row['width'],row['height'])
-            for shape in cleaned:
-                if shape['label'] not in classes: classes.append(shape['label'])
-            if dump(cleaned)!=row['shapes']: prepared.append((row,cleaned))
-        for row,shapes in prepared:
-            revision=row['revision']+1
-            db.execute("UPDATE assets SET shapes=?,revision=?,review_state='pending',updated_at=? WHERE id=?",
-                (dump(shapes),revision,timestamp(),row['id']))
-            store._history(db,row['id'],revision,'edit',{'shapes':shapes,'review_state':'pending','editor':source})
-            updated+=1
-        if updated:
-            db.execute('UPDATE project SET classes=?',(dump(classes),))
-            store._touch(db)
-    return updated
+    from .annotations import AnnotationService
+    return AnnotationService(store).commit(pid, updates, source=source)['updated']

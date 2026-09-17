@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.cvat_toolbar)
         self.cvat_toolbar.hide()
         self.view.loadFinished.connect(self.loaded)
-        self.view.setUrl(QUrl(service.url))
+        self.view.setUrl(QUrl(service.entry_url))
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor("#172531"))
         painter = QPainter(pixmap)
@@ -204,7 +204,8 @@ class MainWindow(QMainWindow):
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(10000)
         self.update_timer.timeout.connect(self.check_update_indicator)
-        self.update_timer.start()
+        if __import__('os').environ.get('VISION_WORKBENCH_DEVELOPMENT') == '1':
+            self.update_timer.start()
 
     def toggle_fullscreen(self):
         """Switch the native workbench between full-screen and windowed mode."""

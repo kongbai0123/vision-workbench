@@ -1,0 +1,4 @@
+CREATE TABLE asset_summaries(asset_id TEXT PRIMARY KEY, shape_count INTEGER NOT NULL, class_counts TEXT NOT NULL);
+INSERT INTO asset_summaries SELECT id,json_array_length(shapes),(SELECT json_group_object(label,n) FROM (SELECT json_extract(value,'$.label') label,count(*) n FROM json_each(assets.shapes) GROUP BY label)) FROM assets;
+CREATE TRIGGER asset_summary_insert AFTER INSERT ON assets BEGIN INSERT OR REPLACE INTO asset_summaries VALUES(NEW.id,json_array_length(NEW.shapes),(SELECT json_group_object(label,n) FROM (SELECT json_extract(value,'$.label') label,count(*) n FROM json_each(NEW.shapes) GROUP BY label))); END;
+CREATE TRIGGER asset_summary_update AFTER UPDATE OF shapes ON assets BEGIN INSERT OR REPLACE INTO asset_summaries VALUES(NEW.id,json_array_length(NEW.shapes),(SELECT json_group_object(label,n) FROM (SELECT json_extract(value,'$.label') label,count(*) n FROM json_each(NEW.shapes) GROUP BY label))); END;

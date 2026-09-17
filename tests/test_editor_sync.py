@@ -59,6 +59,7 @@ class EditorSyncTests(unittest.TestCase):
         self.assertEqual(len(self.editor._canvas_widgets.canvas.shapes),1)
         self.assertTrue(self.editor.flush());self.assertEqual(self.asset(),before)
         shape=self.editor._canvas_widgets.canvas.shapes[0]
+        self.store.update_project(self.pid, classes=['part', 'new-label'])
         shape.points[0,0]=6;shape.label='new-label';self.editor.mark_dirty()
         self.assertTrue(self.editor.flush(),self.editor.last_sync_error)
         changed=self.asset();self.assertEqual(changed['shapes'][0]['x'],6)
@@ -86,14 +87,14 @@ class EditorSyncTests(unittest.TestCase):
         self.editor._canvas_widgets.canvas.shapes[0].label='local';self.editor.mark_dirty()
         self.assertFalse(self.editor.flush());self.assertTrue(self.editor._is_changed)
         self.assertEqual(self.asset()['shapes'],[])
-        self.assertTrue(list((self.root/'labelme'/self.pid).glob('*.json')))
+        self.assertTrue(list((self.store.directory(self.pid)/'integrations'/'labelme').glob('*.json')))
 
     def test_atomic_import_rolls_back_earlier_images_and_classes_on_conflict(self):
         second=self.root/'second.png';Image.new('RGB',(80,60),'red').save(second)
         bid=self.store.add_assets(self.pid,[dict(path=second,shapes=[self.shape])])['asset_ids'][0]
         a=self.asset();b=self.store.get_asset(self.pid,bid)
         self.store.save_asset(self.pid,bid,[],b['revision'])
-        shapes=[dict(self.shape,label='new')]
+        shapes=[dict(self.shape,x=11)]
         with self.assertRaises(ConflictError):commit_updates(self.store,self.pid,[(a,shapes),(b,shapes)],source='cvat')
         self.assertEqual(self.asset(),a);self.assertNotIn('new',self.store.get_project(self.pid)['classes'])
 

@@ -276,6 +276,42 @@ class AcquisitionTests(unittest.TestCase):
         decoded = decode_coco_uncompressed_rle({"size": [100, 140], "counts": result["shape"]["counts"]})
         np.testing.assert_array_equal(decoded != 0, mask)
 
+    def test_sam2_candidate_repairs_tiny_hole_but_preserves_background_prompt(self):
+        path, _ = self.image()
+        model = self.root / "模型-cleanup"
+        model.mkdir()
+        (model / "config.json").write_text("{}")
+        mask = np.zeros((100, 140), bool)
+        mask[1:99, 1:139] = True
+        mask[30, 30] = False
+        mask[50, 50] = False
+
+        class Runtime:
+            device_name, dtype_name = "cpu", "float32"
+            def __init__(self, config):
+                pass
+            def infer(self, frame, **kwargs):
+                return Sam2RawOutput(mask[None], np.array([.98]))
+            def close(self):
+                pass
+
+        with patch("sam2_segmentation.HuggingFaceSam2Runtime", Runtime):
+            result = a.segment_image(
+                path,
+                "sam2",
+                points=[[20, 20]],
+                negative_points=[[50, 50]],
+                model_dir=model,
+            )
+        decoded = decode_coco_uncompressed_rle({
+            "size": [100, 140], "counts": result["shape"]["counts"],
+        })
+        self.assertTrue(decoded[30, 30])
+        self.assertFalse(decoded[50, 50])
+        cleanup = result["diagnostics"]["mask_cleanup"]
+        self.assertEqual(cleanup["pixels_filled"], 1)
+        self.assertIn("自動填補", result["diagnostics"]["message"])
+
     def test_sam2_missing_model_never_falls_back_to_grabcut(self):
         path, _ = self.image()
         with patch.object(a, "_grabcut", side_effect=AssertionError("silent fallback")):

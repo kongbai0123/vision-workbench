@@ -341,19 +341,8 @@ def encode_coco_uncompressed_rle(mask: np.ndarray) -> dict[str, Any]:
     if not np.all((array == 0) | (array == 1) | (array == 255)):
         raise ValueError("mask must contain only binary values (0, 1, or 255)")
     binary = np.asarray(array != 0, dtype=np.uint8)
-    flattened = binary.reshape(-1, order="F")
-    counts: list[int] = []
-    current_value = 0
-    run_length = 0
-    for raw_value in flattened:
-        value = int(raw_value)
-        if value == current_value:
-            run_length += 1
-        else:
-            counts.append(run_length)
-            run_length = 1
-            current_value = value
-    counts.append(run_length)
+    from composer_core.geometry import encode_rle
+    counts = encode_rle(binary)
     return {
         "size": [int(binary.shape[0]), int(binary.shape[1])],
         "counts": counts,
@@ -386,14 +375,8 @@ def decode_coco_uncompressed_rle(rle: Mapping[str, Any]) -> np.ndarray:
     height, width = int(size[0]), int(size[1])
     if sum(counts) != height * width:
         raise ValueError("rle counts do not cover the declared mask size")
-    flattened = np.empty(height * width, dtype=np.uint8)
-    offset = 0
-    value = 0
-    for count in counts:
-        flattened[offset : offset + count] = value
-        offset += count
-        value = 1 - value
-    return flattened.reshape((height, width), order="F") * 255
+    from composer_core.geometry import decode_rle
+    return decode_rle(counts, width, height)
 
 
 def _mask_area_and_bbox(mask: np.ndarray) -> tuple[int, list[int]]:

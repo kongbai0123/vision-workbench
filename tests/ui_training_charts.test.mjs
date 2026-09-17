@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finiteMetric, normalizedMetricRows, metricDescriptors, defaultMetricKeys,
-  runAppearance, comparisonWarnings, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
+  runAppearance, comparisonWarnings, trainingMetricDiagnostics, buildChartModel, valuesAtEpoch, formatMetric} from '../web/training-charts.mjs';
+import {buildLearningRateChartModel, buildChartModels} from '../web/training-charts.mjs';
+import {chartGroupForMetric, runAuditSections} from '../web/training-monitor.mjs';
 
 const run = (id, options = {}) => ({run_id: id, engine: 'maskrcnn_resnet50_fpn',
   dataset_version_id: 'D001', config: {epochs: 10, image_size: 640}, ...options});
@@ -201,4 +203,156 @@ test('actual LR plots use a useful small scale and keep it when hiding runs',()=
   const full=buildChartModel(options,'train/learning_rate');assert.ok(full.yMax>=.002&&full.yMax<.01);
   const hidden=buildChartModel({...options,visibleRunIds:new Set(['R1'])},'train/learning_rate');
   assert.equal(hidden.yMax,full.yMax);assert.equal(hidden.series.length,1);
+});
+
+test('diagnostics explain early precision recall volatility using recorded evidence', () => {
+  const item=run('R5',{engine:'yolo26n_detect',config:{epochs:150},evaluation:{validation:{images:11}}});
+  const rows=[
+    {epoch:7,'val/box_precision':.42,'val/box_recall':.56,'val/box_map50_95':.36},
+    {epoch:8,'val/box_precision':.01,'val/box_recall':.65,'val/box_map50_95':.36},
+    {epoch:9,'val/box_precision':1,'val/box_recall':.18,'val/box_map50_95':.38},
+    ...Array.from({length:10},(_,index)=>({epoch:120+index,'val/box_precision':.85,'val/box_recall':.49,'val/box_map50_95':.45+index*.001})),
+  ];
+  const findings=trainingMetricDiagnostics([item],reportsFor([item,rows]));
+  const early=findings.find(item=>item.kind==='early_volatility');
+  assert.match(early.evidence,/Epoch 8→9/);
+  assert.match(early.interpretation,/後段 mAP 波動已收斂/);
+  assert.match(early.interpretation,/Validation 只有 11 張/);
+});
+
+test('diagnostics identify a sustained precision recall gap as conservative missed detections', () => {
+  const item=run('R1',{engine:'yolo26n_detect'}),rows=Array.from({length:5},(_,index)=>({epoch:index+1,
+    'val/box_precision':.86,'val/box_recall':.48,'val/box_map50_95':.45}));
+  const finding=trainingMetricDiagnostics([item],reportsFor([item,rows])).find(item=>item.kind==='precision_recall_gap');
+  assert.match(finding.evidence,/Precision 0.860、Recall 0.480/);
+  assert.match(finding.interpretation,/偏保守/);
+  assert.match(finding.interpretation,/漏檢較多/);
+});
+
+test('stable balanced detection metrics do not create false diagnostics', () => {
+  const item=run('R1',{engine:'yolo26n_detect'}),rows=Array.from({length:8},(_,index)=>({epoch:index+1,
+    'val/box_precision':.72+index*.005,'val/box_recall':.69+index*.005,'val/box_map50_95':.6}));
+  assert.deepEqual(trainingMetricDiagnostics([item],reportsFor([item,rows])),[]);
+});
+
+test('monitor groups outcome, loss, and learning-rate charts without dropping metrics', () => {
+  assert.equal(chartGroupForMetric('val/box_map50_95'), 'performance');
+  assert.equal(chartGroupForMetric('train/box_loss'), 'loss');
+  assert.equal(chartGroupForMetric('lr/pg0'), 'learning');
+  assert.equal(chartGroupForMetric('train/learning_rate'), 'learning');
+});
+
+test('small valid mAP values use a disclosed zoomed axis instead of looking like zero',()=>{
+  const item=run('R1',{engine:'yolo26n_detect'}),domains=new Map();
+  const zero=buildChartModel({runs:[item],domains,reports:reportsFor([item,[
+    {epoch:1,'val/box_map50_95':0}]])},'val/box_map50_95');
+  assert.equal(zero.yMax,1);
+  const reports=reportsFor([item,[
+    {epoch:1,'val/box_map50_95':0},{epoch:2,'val/box_map50_95':.00637}]]);
+  const model=buildChartModel({runs:[item],reports,domains},'val/box_map50_95');
+  assert.ok(model.yMax>=.00637&&model.yMax<.1);
+  assert.match(model.notes[0],/Y 軸已自動放大/);
+});
+
+test('missing actual LR explains zero successful updates without claiming LR was zero',()=>{
+  const item=run('R1',{engine:'yolo26n_detect'}),reports=reportsFor([item,[
+    {epoch:26,'train/learning_rate':.00025,'train/optimizer_steps_epoch':3},
+    {epoch:27,'train/optimizer_steps_epoch':0},
+    {epoch:28,'train/learning_rate':.00022,'train/optimizer_steps_epoch':3}]]);
+  const model=buildChartModel({runs:[item],reports},'train/learning_rate');
+  assert.match(model.warnings.join(' '),/成功權重更新為 0 次/);
+  assert.match(model.warnings.join(' '),/無法事後確定/);
+  const diagnosed=buildChartModel({runs:[item],reports:reportsFor([item,[
+    {epoch:1,'train/learning_rate':.001,'train/optimizer_steps_epoch':2},
+    {epoch:2,'train/optimizer_steps_epoch':0,'train/optimizer_attempts_epoch':3,'train/optimizer_skipped_epoch':3},
+    {epoch:3,'train/learning_rate':.0008,'train/optimizer_steps_epoch':2}]])},'train/learning_rate');
+  assert.match(diagnosed.warnings.join(' '),/嘗試 3 次、AMP 跳過 3 次/);
+  assert.match(diagnosed.warnings.join(' '),/非有限梯度拒絕了全部更新/);
+});
+
+test('identical learning-rate groups share one panel and one curve per Run without removing other metrics',()=>{
+  const first=run('R1'),second=run('R2');
+  const rows=rate=>[1,2].map(epoch=>({epoch,'train/loss':1/epoch,'val/mean_iou':.7,
+    'train/learning_rate':rate/epoch,'lr/group_0':rate/epoch,'lr/group_1':rate/epoch,'lr/group_2':rate/epoch}));
+  const reports=reportsFor([first,rows(.001)],[second,rows(.002)]),options={runs:[first,second],reports};
+  const keys=metricDescriptors(options.runs,reports).map(metric=>metric.key);
+  const models=buildChartModels(options,keys),lr=models.find(model=>model.key==='train/learning_rate');
+  assert.deepEqual(models.map(model=>model.key).sort(),['train/learning_rate','train/loss','val/mean_iou']);
+  assert.equal(lr.series.length,2);
+  assert.deepEqual(lr.metricGroups,[['train/learning_rate','lr/group_0','lr/group_1','lr/group_2']]);
+  assert.deepEqual(valuesAtEpoch(lr,2).map(item=>item.value),[.0005,.001]);
+  assert.match(lr.series[0].label,/R1.*參數組 0.*參數組 1.*參數組 2/);
+  assert.equal(models.find(model=>model.key==='train/loss').series.length,2);
+});
+
+test('a group differing in any selected Run remains visible with its own label and style',()=>{
+  const first=run('R1'),second=run('R2');
+  const reports=reportsFor([first,[{epoch:1,'train/learning_rate':.001,'lr/group_0':.001,'lr/group_1':.001}]],
+    [second,[{epoch:1,'train/learning_rate':.002,'lr/group_0':.002,'lr/group_1':.003}]]);
+  const model=buildLearningRateChartModel({runs:[first,second],reports});
+  assert.deepEqual(model.metricGroups,[['train/learning_rate','lr/group_0'],['lr/group_1']]);
+  assert.equal(model.series.length,4);
+  const a=model.series.filter(series=>series.run.run_id==='R1');
+  assert.equal(a[0].color,a[1].color);assert.notEqual(a[0].dash,a[1].dash);
+  assert.match(a[1].label,/參數組 1/);
+  assert.deepEqual(valuesAtEpoch(model,1).map(item=>item.value),[.001,.002,.001,.003]);
+});
+
+test('learning-rate grouping compares complete Epoch series including missing observations',()=>{
+  const item=run('R1'),reports=reportsFor([item,[
+    {epoch:1,'train/learning_rate':.002,'lr/group_0':.002,'lr/group_1':.003},
+    {epoch:2,'train/learning_rate':.001,'lr/group_0':null,'lr/group_1':.001}]]);
+  const model=buildLearningRateChartModel({runs:[item],reports});
+  assert.equal(model.metricGroups.length,3);
+  assert.deepEqual(valuesAtEpoch(model,2).map(item=>item.value),[.001,null,.001]);
+});
+
+test('removing a comparison Run may merge LR aliases but cannot shrink shared axes or hide future Epochs',()=>{
+  const first=run('R1',{appearanceIndex:0}),second=run('R2',{appearanceIndex:1});
+  const reports=reportsFor([first,[{epoch:1,'train/learning_rate':.001,'lr/group_1':.001}]],
+    [second,[{epoch:51,'train/learning_rate':.02,'lr/group_1':.03}]]);
+  const options={runs:[first,second],domainRuns:[first,second],reports,domains:new Map()};
+  const full=buildLearningRateChartModel(options),remaining=buildLearningRateChartModel({...options,runs:[first]});
+  assert.equal(full.metricGroups.length,2);assert.equal(remaining.metricGroups.length,1);
+  assert.equal(full.xMax,51);assert.equal(remaining.xMax,51);
+  assert.equal(full.yMax,remaining.yMax);assert.ok(full.yMax>=.03);
+  assert.equal(full.series[0].color,remaining.series[0].color);
+});
+
+test('new LR group divergence is exposed during refresh and axes never follow falling rates',()=>{
+  const item=run('R1'),domains=new Map();
+  const options={runs:[item],domains,reports:reportsFor([item,[{epoch:1,'train/learning_rate':.003,'lr/group_0':.003}]])};
+  const initial=buildLearningRateChartModel(options);
+  const changed=buildLearningRateChartModel({...options,reports:reportsFor([item,[{epoch:1,'train/learning_rate':.003,'lr/group_0':.003},
+    {epoch:2,'train/learning_rate':.001,'lr/group_0':.0005}]])});
+  assert.equal(initial.metricGroups.length,1);assert.equal(changed.metricGroups.length,2);
+  assert.equal(initial.yMax,changed.yMax);
+});
+
+test('optimizer update counters are details rather than metric chart panels',()=>{
+  const item=run('R1'),reports=reportsFor([item,[{epoch:1,'train/loss':.4,
+    'train/optimizer_steps':12,'train/optimizer_steps_epoch':12}]]);
+  assert.deepEqual(metricDescriptors([item],reports).map(metric=>metric.key),['train/loss']);
+  assert.equal(normalizedMetricRows(reports.get('R1').metrics)[0]['train/optimizer_steps'],12);
+});
+
+test('run details expose recorded initialization and actual batching without inventing absent values',()=>{
+  const item=run('R1');
+  assert.deepEqual(runAuditSections(item),[]);
+  const recorded={...item,initialization:{mode:'pretrained',source:'local.pt',weights_sha256:'abc'},
+    execution:{batch_size:1,gradient_accumulation:8,effective_batch_size:8,optimizer_steps:0}};
+  const sections=runAuditSections(item,{run:recorded});
+  assert.equal(sections.length,2);
+  assert.deepEqual(sections[0].rows[0],['初始化方式','預訓練權重']);
+  assert.ok(sections[1].rows.some(([label,value])=>label==='有效批次大小'&&value===8));
+  assert.ok(sections[1].rows.some(([label,value])=>label==='最佳化器累計成功更新'&&value===0));
+  assert.deepEqual(runAuditSections(item,{run:{...recorded,run_id:'R2'}}),[]);
+});
+
+test('run details disclose overlapping Test source groups',()=>{
+  const item=run('R1',{evaluation_protocol:{selection_checkpoint:'best_validation',test_present:true,
+    test_independent_sources:false,test_source_overlap_groups:['session-a','session-b']}});
+  const section=runAuditSections(item)[0];
+  assert.ok(section.rows.some(([label,value])=>label==='Test 來源獨立'&&value==='否（僅流程驗證）'));
+  assert.ok(section.rows.some(([label,value])=>label==='跨集合來源群組'&&value==='session-a、session-b'));
 });

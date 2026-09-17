@@ -348,35 +348,23 @@ WebSocket 中斷後，UI 以 REST 重新查詢真實狀態，不把最後一次�
 
 ## 12. 儲存配置
 
-正式使用者資料不放在 Git 儲存庫內：
+正式使用者資料不放在 Git 儲存庫內。每個專案是一個可搬移容器：
 
 ```text
-%LOCALAPPDATA%\VisionWorkbench\
-├─ database\workbench.sqlite3
-├─ projects\
-│  └─ {project_id}\
-│     ├─ assets\               # 內容雜湊的原圖
-│     ├─ editor-recovery\      # Labelme / CVAT 復原資料
-│     └─ snapshots\            # DatasetVersion manifests
+data\projects\{project_name}__{project_id_prefix}\
+├─ project.sqlite3             # 標註與模型生命週期 catalog
+├─ images\                     # 內容雜湊的不可變原圖
 ├─ datasets\{dataset_version_id}\
-│  ├─ manifest.json
-│  ├─ images\                  # 受保護的 hardlink/copy/content refs
-│  └─ annotations\             # native annotations
 ├─ runs\{run_id}\
-│  ├─ config.json
-│  ├─ dataset_snapshot.json
-│  ├─ status.json
-│  ├─ metrics.jsonl
-│  ├─ checkpoints\
-│  ├─ logs\
-│  └─ artifacts\manifest.json
 ├─ models\{model_version_id}\
-├─ cache\
-├─ logs\
-└─ runtimes\training\{engine_version}\
+├─ predictions\
+├─ model-exports\{export_id}\
+└─ integrations\
+   ├─ labelme\
+   └─ cvat\                    # 專案連結、同步基準與備份
 ```
 
-開發環境可用環境變數覆蓋資料根目錄。正式版由 AppData 管理，不能把 `D:\software\...` 或 `C:\workspace\...` 硬編碼進使用者資料。
+CVAT 容器、模型 runtime、快取與一般交換格式匯出是應用程式層資源，不放入專案容器。資料根目錄可由啟動參數覆蓋，程式不得硬編碼工作站路徑。
 
 ## 13. Training 程式移植策略
 

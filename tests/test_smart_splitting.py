@@ -16,13 +16,35 @@ def samples():
 
 
 class SmartSplitTests(unittest.TestCase):
+    def test_reviewed_independent_same_batch_supports_every_balance_mode(self):
+        assets = [{'id': str(i), 'sha256': str(i), 'batch_id': 'one-reviewed-batch',
+                   'source': {}, 'shapes': [{'label': 'common'}, {'label': 'rare'}] if i % 5 == 0 else [{'label': 'common'}]}
+                  for i in range(57)]
+        for mode in ('hybrid', 'presence', 'instances', 'cooccurrence'):
+            with self.subTest(mode=mode):
+                plan = smart_split(assets, {'purpose': 'reviewed_independent',
+                                            'independence_confirmed': True,
+                                            'strategy': 'multilabel', 'balance_mode': mode})
+                self.assertTrue(plan['ready'])
+                self.assertEqual(plan['image_counts'], {'train': 40, 'val': 11, 'test': 6})
+                self.assertFalse(plan['source_isolation'])
+                self.assertEqual(plan['purpose'], 'reviewed_independent')
+
+    def test_reviewed_independent_requires_attestation_and_keeps_duplicates_together(self):
+        assets = [{'id': str(i), 'sha256': 'duplicate' if i < 2 else str(i),
+                   'batch_id': 'same', 'source': {}, 'shapes': [{'label': 'part'}]} for i in range(12)]
+        with self.assertRaisesRegex(ValueError, '樣本彼此獨立'):
+            smart_split(assets, {'purpose': 'reviewed_independent'})
+        plan = smart_split(assets, {'purpose': 'reviewed_independent', 'independence_confirmed': True})
+        self.assertEqual(plan['assignments']['0'], plan['assignments']['1'])
     def test_groups_never_split_and_training_keeps_rare_class(self):
         assets=samples();plan=smart_split(assets)
+        self.assertFalse(plan['ready'])
+        self.assertTrue(any(b['code']=='validation_class_missing' and b['label']=='rare' for b in plan['blockers']))
         for batch in 'ABCD':
             self.assertEqual(len({plan['assignments'][a['id']] for a in assets if a['batch_id']==batch}),1)
         self.assertTrue(all(plan['image_counts'].values()))
         self.assertGreater(plan['class_counts']['train']['rare'],0)
-        self.assertTrue(any('rare' in w for w in plan['warnings']))
         self.assertEqual(plan,smart_split(list(reversed(assets))))
 
     def test_source_video_and_duplicates_form_transitive_groups(self):
@@ -62,6 +84,62 @@ class SmartSplitTests(unittest.TestCase):
                         {'seed':True},{'seed':-1},{'strategy':'random'},{'locks':{'missing':'test'}}):
             with self.subTest(options=options),self.assertRaises(ValueError):smart_split(samples(),options)
 
+    def test_one_source_per_class_returns_blocked_preview(self):
+        assets = [{"id": str(i), "batch_id": f"capture-{i}", "shapes": [{"label": f"class-{i}"}]}
+                  for i in range(4)]
+        plan = smart_split(assets)
+        self.assertFalse(plan['ready'])
+        self.assertEqual(set(plan['assignments']), {a['id'] for a in assets})
+        self.assertTrue(all(plan['image_counts'].values()))
+        self.assertTrue(plan['blockers'])
+        self.assertTrue(all(b['code'] in {'train_class_missing','validation_class_missing'} for b in plan['blockers']))
+        self.assertTrue(all(b['source_group_count'] == 1 for b in plan['blockers']))
+        self.assertTrue(all('一個來源群組' in b['action'] for b in plan['blockers']))
+
+    def test_train_coverage_is_hard_even_with_tiny_train_target(self):
+        assets = [{"id": str(i), "batch_id": f"capture-{i}",
+                   "shapes": [{"label": f"class-{i}"}] if i < 4 else []}
+                  for i in range(6)]
+        plan = smart_split(assets, {'ratios': [1, 49, 50]})
+        self.assertFalse(plan['ready'])
+        self.assertTrue(all(plan['assignments'][str(i)] == 'train' for i in range(4)))
+        self.assertEqual(plan['image_counts'], {'train': 4, 'val': 1, 'test': 1})
+        self.assertTrue(any(b['code']=='validation_class_missing' for b in plan['blockers']))
+
+    def test_two_evaluation_reservations_do_not_remove_last_class_carriers(self):
+        # Rare has two independent carriers, so Train and Validation can both
+        # cover it even while Test remains nonempty.
+        labels = {'A': ['rare', 'common'], 'B': ['rare'], 'C': ['common'], 'D': ['common']}
+        assets = [{'id': group, 'batch_id': group, 'shapes': [{'label': label} for label in members]}
+                  for group, members in labels.items()]
+        for seed in range(6):
+            with self.subTest(seed=seed):
+                plan = smart_split(assets, {'seed': seed, 'ratios': [10, 45, 45]})
+                self.assertTrue(plan['ready'])
+                self.assertTrue(all(plan['image_counts'].values()))
+                self.assertGreater(plan['class_counts']['train']['rare'], 0)
+                self.assertGreater(plan['class_counts']['train']['common'], 0)
+                self.assertGreater(plan['class_counts']['val']['rare'], 0)
+                self.assertGreater(plan['class_counts']['val']['common'], 0)
+
+    def test_locked_evaluation_only_class_blocks_but_preserves_lock(self):
+        assets = samples()
+        group = next(g for g in source_groups(assets) if g['sources'] == ['D'])
+        plan = smart_split(assets, {'locks': {group['id']: 'test'}})
+        self.assertFalse(plan['ready'])
+        self.assertTrue(all(plan['assignments'][aid] == 'test' for aid in group['asset_ids']))
+        blocked = next(b for b in plan['blockers'] if b['label'] == 'rare')
+        self.assertIn('鎖定', blocked['action'])
+
+    def test_preserve_test_cannot_hide_missing_training_class(self):
+        assets = samples()
+        for a in assets:
+            a['split'] = 'test' if a['batch_id'] == 'D' else 'train'
+        plan = smart_split(assets, {'preserve_test': True})
+        self.assertFalse(plan['ready'])
+        self.assertIn('rare', plan['coverage']['missing_train_classes'])
+        self.assertTrue(all(plan['assignments'][a['id']] == 'test' for a in assets if a['batch_id'] == 'D'))
+
 
 class SmartSplitStoreTests(unittest.TestCase):
     def setUp(self):
@@ -77,7 +155,7 @@ class SmartSplitStoreTests(unittest.TestCase):
     def test_preview_is_read_only_apply_is_atomic_and_versions_are_immutable(self):
         workspace=TrainingWorkspace(self.root,self.store)
         old=workspace.create_dataset_version(self.pid)
-        path=workspace.datasets/self.pid/old['id']/'manifest.json';before=path.read_bytes()
+        path=workspace.datasets_dir(self.pid)/old['id']/'manifest.json';before=path.read_bytes()
         snapshot=self.store.snapshot(self.pid);plan=self.store.preview_split(self.pid,{})
         unchanged=self.store.snapshot(self.pid)
         self.assertEqual({k:v for k,v in snapshot.items() if k!='snapshot_at'}, {k:v for k,v in unchanged.items() if k!='snapshot_at'})
@@ -86,7 +164,7 @@ class SmartSplitStoreTests(unittest.TestCase):
         for a,b in zip(snapshot['assets'],after['assets']):
             self.assertEqual(a['shapes'],b['shapes']);self.assertEqual(a['batch_id'],b['batch_id']);self.assertEqual(b['review_state'],'approved')
         new=workspace.create_dataset_version(self.pid)
-        manifest=json.loads((workspace.datasets/self.pid/new['id']/'manifest.json').read_text(encoding='utf-8'))
+        manifest=json.loads((workspace.datasets_dir(self.pid)/new['id']/'manifest.json').read_text(encoding='utf-8'))
         self.assertTrue(manifest['split_plan']['current']);self.assertEqual(path.read_bytes(),before)
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
         workspace.close()
@@ -95,3 +173,15 @@ class SmartSplitStoreTests(unittest.TestCase):
         asset=self.store.snapshot(self.pid)['assets'][0]
         self.store.assign(self.pid,[asset['id']],split='test')
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
+
+    def test_independence_confirmation_persists_and_content_change_invalidates_it(self):
+        project = self.store.get_project(self.pid)
+        confirmed = self.store.confirm_independence(self.pid, True, project['revision'])
+        self.assertTrue(confirmed['independence_review']['current'])
+        plan = self.store.preview_split(self.pid, {'purpose': 'reviewed_independent', 'balance_mode': 'presence'})
+        self.assertTrue(plan['ready'])
+        asset = confirmed['assets'][0]
+        changed = self.store.review(self.pid, [asset['id']], 'pending', {asset['id']: asset['revision']})
+        self.assertFalse(changed['independence_review']['current'])
+        with self.assertRaisesRegex(ValueError, '確認'):
+            self.store.preview_split(self.pid, {'purpose': 'reviewed_independent'})

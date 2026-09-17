@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 import secrets
 import threading
+import hashlib
+from collections import OrderedDict
+from http.cookies import SimpleCookie
+from .routes import validate_method, MethodNotAllowed
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__
@@ -25,6 +29,8 @@ class WorkbenchService:
         self.data_root = Path(data_root or APP_ROOT / "data").resolve()
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.store = ProjectStore(self.data_root / "projects")
+        from .review_workflow import ReviewWorkflow
+        self.review_workflow = ReviewWorkflow(self.store)
         self.exports = self.data_root / "exports"
         self.exports.mkdir(exist_ok=True)
         self.incoming = self.data_root / "incoming"
@@ -44,6 +50,10 @@ class WorkbenchService:
         self.httpd.daemon_threads = True
         self.httpd.service = self
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.api_token = secrets.token_urlsafe(32)
+        self.image_cache = OrderedDict()
+        self.image_cache_lock = threading.Lock()
+        self.entry_url = self.url + '/?session=' + self.api_token
         self.thread = threading.Thread(target=self.httpd.serve_forever, name="workbench-http", daemon=True)
         self.started = False
 
@@ -148,11 +158,16 @@ class WorkbenchService:
             raise ConflictError("圖片已修改，請先儲存最新內容再執行 AI")
         def run(progress):
             from .acquisition import segment_image
+            from .resources import accelerator_lease
             progress("載入本機模型並執行分割")
-            with self._ai_lock:
-                result = segment_image(asset["image_path"], engine=payload.get("engine", "sam2"),
-                    points=payload.get("points"), negative_points=payload.get("negative_points"),
-                    box=payload.get("box"), label=label, model_dir=APP_ROOT/"models"/"sam2.1-hiera-tiny")
+            with self._ai_lock, accelerator_lease(self.data_root, device='cpu' if payload.get('engine') == 'grabcut' else 'auto', checkpoint=lambda: progress('等待運算資源')):
+                from .acquisition import close_ai
+                try:
+                    result = segment_image(asset["image_path"], engine=payload.get("engine", "sam2"),
+                        points=payload.get("points"), negative_points=payload.get("negative_points"),
+                        box=payload.get("box"), label=label, model_dir=APP_ROOT/"models"/"sam2.1-hiera-tiny")
+                finally:
+                    close_ai()
             result.update(asset_id=asset["id"], revision=asset["revision"])
             return result
         return self.jobs.submit("ai", run)
@@ -174,7 +189,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.service
 
     def log_message(self, fmt, *args):
-        logging.debug("HTTP %s", fmt % args)
+        if 'session=' not in self.path:
+            logging.debug("HTTP %s", fmt % args)
+
+    def authorized(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get('Cookie', ''))
+        except Exception:
+            return False
+        value = self.headers.get('X-Workbench-Token') or (cookie['workbench_session'].value if 'workbench_session' in cookie else '')
+        return secrets.compare_digest(value, self.app.api_token)
 
     def host_valid(self):
         expected = urlsplit(self.app.url).netloc
@@ -182,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         origin = self.headers.get("Origin")
-        if not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
+        if not self.authorized() or not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
             # Drain a bounded small body so Windows does not replace the 403
             # with a TCP reset when the connection closes with unread input.
             try:
@@ -206,16 +231,26 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("請求內容必須為物件")
         return payload
 
-    def send_bytes(self, body, content_type, status=200):
+    def send_bytes(self, body, content_type, status=200, *, etag=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable" if etag else "no-store")
+        if etag:
+            self.send_header('ETag', etag)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
+
+    def image_response(self, key, body, kind):
+        with self.app.image_cache_lock:
+            if len(body) <= 2 * 1024 * 1024:
+                self.app.image_cache[key] = (body, kind)
+                while len(self.app.image_cache) > 32:
+                    self.app.image_cache.popitem(last=False)
+        return self.send_bytes(body, kind, etag=key)
 
     def json(self, value, status=200):
         self.send_bytes(dump(value).encode("utf-8"), "application/json; charset=utf-8", status)
@@ -223,7 +258,9 @@ class Handler(BaseHTTPRequestHandler):
     def handle_error(self, exc):
         if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
             return
-        status = 409 if isinstance(exc, ConflictError) else 403 if isinstance(exc, PermissionError) else 404 if isinstance(exc, FileNotFoundError) else 400 if isinstance(exc, (ValueError, TypeError, KeyError)) else 500
+        status = 409 if isinstance(exc, ConflictError) else 403 if isinstance(exc, PermissionError) else 404 if isinstance(exc, FileNotFoundError) else 400 if isinstance(exc, ValueError) else 500
+        if isinstance(exc, MethodNotAllowed):
+            status = 405
         if status == 500:
             logging.exception("Application API failure")
         self.close_connection = True
@@ -237,6 +274,19 @@ class Handler(BaseHTTPRequestHandler):
             if not self.host_valid():
                 raise PermissionError("本機 Host 無效")
             path = unquote(urlsplit(self.path).path)
+            if path == '/' and 'session' in parse_qs(urlsplit(self.path).query):
+                supplied = parse_qs(urlsplit(self.path).query)['session'][0]
+                if not secrets.compare_digest(supplied, self.app.api_token):
+                    raise PermissionError('啟動憑證無效')
+                self.send_response(303)
+                self.send_header('Set-Cookie', f'workbench_session={self.app.api_token}; HttpOnly; SameSite=Strict; Path=/')
+                self.send_header('Location', '/')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            if path.startswith('/api/') and not self.authorized():
+                raise PermissionError('需要本機工作階段憑證')
             parts = path.strip("/").split("/")
             if path == "/api/system":
                 return self.json({"name":"Vision Workbench", "version":__version__, "default_export_path":str(self.app.exports),
@@ -272,20 +322,48 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) == 4 and parts[3] == "training":
                     self.app.store.get_project(pid, include_assets=False)
                     return self.json(self.app.training.overview(pid))
+                if len(parts) == 5 and parts[3:] == ['training', 'status']:
+                    return self.json(self.app.training.status(pid))
                 if len(parts) == 6 and parts[3] == "training-runs":
                     self.app.store.get_project(pid, include_assets=False)
                     if parts[5] == "metrics":
-                        run = self.app.training.run(pid, parts[4])
-                        metrics = self.app.training._run_path(pid, parts[4]).parent / "metrics.jsonl"
-                        rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines() if line.strip()] if metrics.is_file() else []
-                        return self.json({"run":run, "metrics":rows})
+                        return self.json(self.app.training.run_metrics(pid, parts[4]))
                 if len(parts) >= 5 and parts[3] == "assets":
                     aid = parts[4]
                     if len(parts) == 5:
                         return self.json(self.app.store.get_asset(pid, aid))
                     if len(parts) == 6 and parts[5] == "image":
                         image = self.app.store.image_path(pid, aid)
-                        if parse_qs(urlsplit(self.path).query).get("thumbnail", ["0"])[0] == "1":
+                        image_query = parse_qs(urlsplit(self.path).query)
+                        key = '"' + hashlib.sha256((str(image) + str(image.stat().st_mtime_ns) + urlsplit(self.path).query).encode()).hexdigest() + '"'
+                        if self.headers.get('If-None-Match') == key:
+                            return self.send_bytes(b'', 'image/jpeg', 304, etag=key)
+                        with self.app.image_cache_lock:
+                            cached = self.app.image_cache.get(key)
+                        if cached:
+                            return self.send_bytes(*cached, etag=key)
+                        crop_value = image_query.get("crop", [""])[0]
+                        if crop_value:
+                            from PIL import Image
+                            import io
+                            try:
+                                x, y, width, height = [int(value) for value in crop_value.split(",")]
+                                max_width, max_height = [int(value) for value in image_query.get("max", ["760,420"])[0].split(",")]
+                            except (TypeError, ValueError):
+                                raise ValueError("圖片裁切參數無效")
+                            if width < 1 or height < 1 or not (64 <= max_width <= 1200 and 64 <= max_height <= 900):
+                                raise ValueError("圖片裁切範圍無效")
+                            with Image.open(image) as source:
+                                left, top = max(0, x), max(0, y)
+                                right, bottom = min(source.width, x + width), min(source.height, y + height)
+                                if right <= left or bottom <= top:
+                                    raise ValueError("圖片裁切位置超出範圍")
+                                preview = source.convert("RGB").crop((left, top, right, bottom))
+                                preview.thumbnail((max_width, max_height))
+                                buffer = io.BytesIO()
+                                preview.save(buffer, "JPEG", quality=88, optimize=True)
+                            return self.image_response(key, buffer.getvalue(), "image/jpeg")
+                        if image_query.get("thumbnail", ["0"])[0] == "1":
                             from PIL import Image
                             import io
                             with Image.open(image) as source:
@@ -293,10 +371,10 @@ class Handler(BaseHTTPRequestHandler):
                                 thumbnail = source.convert("RGB")
                                 buffer = io.BytesIO()
                                 thumbnail.save(buffer, "JPEG", quality=80)
-                            return self.send_bytes(buffer.getvalue(), "image/jpeg")
+                            return self.image_response(key, buffer.getvalue(), "image/jpeg")
                         from .acquisition import preview_image
                         content, kind = preview_image(image)
-                        return self.send_bytes(content, kind)
+                        return self.image_response(key, content, kind)
                     if len(parts) == 6 and parts[5] == "history":
                         return self.json({"history":self.app.store.history(pid, aid)})
             if path.startswith("/api/"):
@@ -327,6 +405,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.body()
             path = urlsplit(self.path).path
+            validate_method(path, method)
+            from vision_workbench.contracts import validate_request
+            validate_request(path, method, payload)
             parts = path.strip("/").split("/")
             if path == "/api/projects" and method == "POST":
                 return self.json(self.app.store.create_project(payload.get("name")))
@@ -356,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.app.cvat.launch()
                     self.app._cvat_session = list(result.get("auth_cookies", []))
                     from .cvat_bridge import CvatProjectBridge
-                    linked = CvatProjectBridge(self.app.data_root).ensure_project(
+                    linked = CvatProjectBridge(self.app.data_root, self.app.store).ensure_project(
                         snapshot, result.get("auth_cookies", []), progress, store=self.app.store)
                     self.app._cvat_baseline = self.app.store.snapshot(pid)
                     asset_ids=linked.get('asset_ids',[])
@@ -377,7 +458,7 @@ class Handler(BaseHTTPRequestHandler):
                     from .cvat_bridge import CvatProjectBridge
                     from .editor_sync import commit_updates
                     progress("讀取 CVAT 已儲存標註",20)
-                    bridge=CvatProjectBridge(self.app.data_root)
+                    bridge=CvatProjectBridge(self.app.data_root, self.app.store)
                     updates = bridge.read_annotations(snapshot,self.app._cvat_session)
                     updated=commit_updates(self.app.store,pid,updates,source='cvat')
                     self.app._cvat_baseline=self.app.store.snapshot(pid)
@@ -388,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get("model_export_id"):
                     pid, export_id = payload.get("project_id"), payload["model_export_id"]
                     self.app.training.model_export(pid, export_id)
-                    folder = (self.app.training.model_exports / pid / export_id).resolve()
+                    folder = self.app.training.model_exports_dir(pid) / export_id
                 elif payload.get("export_id"):
                     project = self.app.store.get_project(payload.get("project_id"))
                     item = next((e for e in project["exports"] if e["id"] == payload["export_id"]), None)
@@ -443,69 +524,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.training.stop_run(pid, parts[4]))
             if len(parts) != 4:
                 raise FileNotFoundError("找不到 API")
-            action = parts[3]
-            if action == "import":
-                return self.json(self.app.import_paths(pid,payload.get("paths")))
-            if action == "review":
-                return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions")))
-            if action == "assign":
-                return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split")))
-            if action == "auto-split":
-                return self.json(self.app.store.auto_split(pid,payload.get("ratios") or {"train":70,"val":20,"test":10}))
-            if action == "split-preview":
-                return self.json(self.app.store.preview_split(pid,payload.get("options")))
-            if action == "split-info":
-                return self.json(self.app.store.split_info(pid))
-            if action == "split-apply":
-                return self.json(self.app.store.apply_split(pid,payload.get("options"),payload.get("revision"),payload.get("fingerprint")))
-            if action == "merge":
-                return self.json(self.app.jobs.submit("merge",lambda progress:self.app.store.merge(pid,payload.get("project_ids"))))
-            if action in {"validate", "export"}:
-                return self.json(self.app.pipeline_job(pid,action,payload))
-            if action == "dataset-versions":
-                return self.json(self.app.training.create_dataset_version(pid))
-            if action == "training-runs":
-                return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
-            if action == "training-compatibility":
-                return self.json(self.app.training.yolo_compatibility(pid,payload.get("dataset_version_id"),payload.get("config") or {}))
-            if action == "model-exports":
-                model_id = payload.get("model_version_id")
-                return self.json(self.app.jobs.submit("model-export", lambda progress:
-                    self.app.training.export_model(pid, model_id, progress)))
-            if action == "predictions":
-                model_id = payload.get("model_version_id")
-                return self.json(self.app.jobs.submit("prediction", lambda progress: (
-                    progress("使用模型產生候選標註", 20),
-                    self.app.training.create_predictions(pid, model_id, payload.get("asset_ids"))
-                )[1]))
-            if action == "ai":
-                return self.json(self.app.ai_job(pid,payload))
-            if action in {"capture", "screen"}:
-                from .acquisition import capture_screen
-                self.app.store.get_project(pid, include_assets=False)
-                record = self.app.camera.snapshot() if action == "capture" else capture_screen(self.app.incoming)
-                if action == "capture" and payload.get("target_shape") is not None:
-                    self.app.store.require_class(pid,payload["target_shape"].get("label"))
-                    record["shapes"] = [payload["target_shape"]]
-                if payload.get("batch_id"):
-                    record["batch_id"] = payload["batch_id"]
-                result = self.app.store.add_assets(pid,[record])
-                if result["asset_ids"]:
-                    return self.json(self.app.store.get_asset(pid,result["asset_ids"][0]))
-                return self.json(dict(result,message="相同原圖已存在，未重複加入"))
-            if action == "video":
-                self.app.store.get_project(pid, include_assets=False)
-                def run(progress):
-                    from .acquisition import extract_video
-                    progress("從影片擷取影格")
-                    records = extract_video(payload.get("path"),self.app.incoming,payload.get("interval_seconds",1),
-                                            progress=lambda percent:progress("從影片擷取影格",round(float(percent)*.8)))
-                    if payload.get("target_shape") is not None:
-                        self.app.store.require_class(pid,payload["target_shape"].get("label"))
-                        for record in records:
-                            record["shapes"] = [payload["target_shape"]]
-                    return self.app.store.add_assets(pid,records,progress=lambda n,total:progress(f"保存影格 {n} / {total}",round(n/total*95)))
-                return self.json(self.app.jobs.submit("video",run))
-            raise FileNotFoundError("找不到 API")
+            from .api_actions import dispatch_project_action
+            return dispatch_project_action(self, pid, parts[3], payload)
         except Exception as exc:
             self.handle_error(exc)

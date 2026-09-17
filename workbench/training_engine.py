@@ -6,7 +6,6 @@ in a separate Python process or in contract tests.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from hashlib import sha256
 import json
 import math
@@ -20,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from composer_core.geometry import decode_rle, encode_rle
+from .evaluation_metrics import PixelMetrics, evaluation_protocol
 
 
 ENGINE_KEY = "pixel_prototype_v1"
@@ -29,6 +29,9 @@ ENGINE_NAME = "像素原型分割（內建基準）"
 def atomic_json(path: Path, value) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == 'run.json' and 'status' in value:
+        from .run_events import append_state
+        append_state(path, value)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -113,6 +116,9 @@ def predict_class_masks(rgb: np.ndarray, model: dict) -> dict[str, np.ndarray]:
     background = _distance(rgb, model["background"])
     output = {}
     for label in model["classes"]:
+        if model['class_stats'].get(label) is None:
+            output[label] = np.zeros(rgb.shape[:2], dtype=bool)
+            continue
         foreground = _distance(rgb, model["class_stats"][label])
         threshold = float(model["thresholds"][label])
         output[label] = (foreground <= threshold) & (foreground < background)
@@ -121,11 +127,11 @@ def predict_class_masks(rgb: np.ndarray, model: dict) -> dict[str, np.ndarray]:
 
 def _iou(predicted: np.ndarray, expected: np.ndarray) -> float:
     union = int(np.count_nonzero(predicted | expected))
-    return int(np.count_nonzero(predicted & expected)) / union if union else 1.0
+    return int(np.count_nonzero(predicted & expected)) / union if union else float("nan")
 
 
 def _evaluate(manifest: dict, dataset_dir: Path, model: dict, split: str) -> dict:
-    per_class = defaultdict(list)
+    metrics = PixelMetrics(manifest["classes"])
     images = 0
     for asset in manifest["assets"]:
         if asset["split"] != split:
@@ -135,10 +141,8 @@ def _evaluate(manifest: dict, dataset_dir: Path, model: dict, split: str) -> dic
         expected = class_masks(asset, manifest["classes"])
         predicted = predict_class_masks(rgb, model)
         for label in manifest["classes"]:
-            per_class[label].append(_iou(predicted[label], expected[label]))
-    values = {label: round(sum(rows) / max(1, len(rows)), 6) for label, rows in per_class.items()}
-    return {"split": split, "images": images, "mean_iou": round(sum(values.values()) / max(1, len(values)), 6),
-            "per_class_iou": values}
+            metrics.update(label, predicted[label], expected[label])
+    return metrics.summary(split, images)
 
 
 def _status(run_dir: Path, run: dict, **changes) -> dict:
@@ -148,13 +152,18 @@ def _status(run_dir: Path, run: dict, **changes) -> dict:
 
 
 def _stopping(run_dir: Path) -> bool:
-    return (run_dir / "stop.requested").exists()
+    return (run_dir / 'control' / 'stop.requested').exists() or (run_dir / 'stop.requested').exists()
+
+
+stop_requested = _stopping
 
 
 def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
     """Train and evaluate an RGB foreground/background prototype model."""
     dataset_manifest, run_dir, model_dir = map(Path, (dataset_manifest, run_dir, model_dir))
     manifest = read_json(dataset_manifest)
+    from .split_quality import loose_split_applies
+    loose = loose_split_applies(manifest.get('split_plan'), manifest.get('assets', []))
     dataset_dir = dataset_manifest.parent
     run = read_json(run_dir / "run.json")
     epochs = max(1, min(200, int(run["config"].get("epochs", 24))))
@@ -183,19 +192,22 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
             _status(run_dir, run, status="preparing", message=f"讀取訓練圖片 {index + 1} / {len(train_assets)}",
                     progress=2 + round((index + 1) / len(train_assets) * 20))
         empty = [label for label, rows in samples.items() if not rows]
-        if empty:
+        if empty and not loose:
             raise ValueError(f"Train 缺少類別標註：{'、'.join(empty)}")
         if not backgrounds:
             raise ValueError("Train 圖片沒有可學習的背景像素")
         model = {"schema_version": 1, "engine": ENGINE_KEY, "engine_name": ENGINE_NAME,
                  "classes": classes, "background": _stats(np.concatenate(backgrounds)),
-                 "class_stats": {label: _stats(np.concatenate(rows)) for label, rows in samples.items()},
+                 "class_stats": {label: _stats(np.concatenate(rows)) if rows else None for label, rows in samples.items()},
+                 "unlearned_classes": empty,
                  "thresholds": {label: 1.0 for label in classes}, "dataset_version_id": manifest["dataset_version_id"]}
-        validation_split = "val" if any(a["split"] == "val" for a in manifest["assets"]) else "test"
+        validation_split = "val"
+        if not any(a["split"] == "val" for a in manifest["assets"]):
+            raise ValueError("Validation 沒有圖片；Test 不可用於調整模型門檻")
         candidates = np.linspace(float(run["config"].get("threshold_min", .35)),
                                  float(run["config"].get("threshold_max", 4.0)), epochs)
         metrics_path = run_dir / "metrics.jsonl"
-        best = {label: (0.0, -1.0) for label in classes}
+        best = {label: (1.0, -1.0) for label in classes}
         metrics_path.write_text("", encoding="utf-8")
         for epoch, threshold in enumerate(candidates, 1):
             if _stopping(run_dir):
@@ -204,20 +216,30 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
                 model["thresholds"][label] = float(threshold)
             evaluation = _evaluate(manifest, dataset_dir, model, validation_split)
             for label, value in evaluation["per_class_iou"].items():
-                if value > best[label][1]:
+                if loose and not evaluation['per_class'][label]['ground_truth_pixels']:
+                    continue
+                if value is not None and value > best[label][1]:
                     best[label] = (float(threshold), float(value))
             row = {"epoch": epoch, "threshold": float(threshold), "val/mean_iou": evaluation["mean_iou"]}
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"調整像素分類門檻 {epoch} / {epochs}", epoch=epoch,
                     progress=22 + round(epoch / epochs * 65), metrics=row)
+        missing_validation = [label for label, (_threshold, score) in best.items() if score < 0]
+        if missing_validation and not loose:
+            raise ValueError(f"Validation 缺少可評估像素的類別：{'、'.join(missing_validation)}")
         model["thresholds"] = {label: float(best[label][0]) for label in classes}
+        model['uncalibrated_classes'] = missing_validation
         validation = _evaluate(manifest, dataset_dir, model, validation_split)
-        test = _evaluate(manifest, dataset_dir, model, "test") if any(a["split"] == "test" for a in manifest["assets"]) else validation
-        model.update(validation=validation, test=test, created_at=time.time(), model_version_id=run["model_version_id"],
-                     run_id=run["run_id"])
+        has_test = any(a["split"] == "test" for a in manifest["assets"])
+        test = _evaluate(manifest, dataset_dir, model, "test") if has_test else None
+        protocol = evaluation_protocol(checkpoint="validation_selected_thresholds", has_test=has_test,
+                                       manifest=manifest)
+        model.update(validation=validation, test=test, evaluation_protocol=protocol, created_at=time.time(), model_version_id=run["model_version_id"],
+                      run_id=run["run_id"])
         atomic_json(model_dir / "model.json", model)
-        atomic_json(run_dir / "evaluation.json", {"validation": validation, "test": test})
+        atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
+                                                   "validation": validation, "test": test})
         artifact_files = [run_dir / "run.json", run_dir / "metrics.jsonl", run_dir / "evaluation.json", model_dir / "model.json"]
         artifacts = []
         for path in artifact_files[1:]:
@@ -229,7 +251,8 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
                     "dataset_version_id": manifest["dataset_version_id"], "model_version_id": run["model_version_id"],
                     "artifacts": artifacts})
         return _status(run_dir, run, status="completed", message="訓練與評估完成", progress=100,
-                       completed_at=time.time(), evaluation={"validation": validation, "test": test})
+                       completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
+                                                              "validation": validation, "test": test})
     except Exception as exc:
         _status(run_dir, run, status="failed", message=str(exc), error=str(exc), progress=None, completed_at=time.time())
         raise

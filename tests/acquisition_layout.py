@@ -85,7 +85,7 @@ def main():
         view.setPage(page)
         view.resize(1440, 900)
         view.show()
-        view.setUrl(QUrl(service.url))
+        view.setUrl(QUrl(service.entry_url))
         page.setVisible(True)
 
         def js(script):

@@ -29,7 +29,7 @@ class ApiWorkflowTests(unittest.TestCase):
         self.service.close();self.tmp.cleanup()
 
     def call(self,path,data=None,method=None,headers=None):
-        hdr={"Content-Type":"application/json","X-Workbench":"1","Origin":self.service.url}
+        hdr={"Content-Type":"application/json","X-Workbench":"1","Origin":self.service.url,'X-Workbench-Token':self.service.api_token}
         if headers: hdr.update(headers)
         request=Request(self.service.url+path,data=json.dumps(data).encode() if data is not None else None,
                         method=method or ("POST" if data is not None else "GET"),headers=hdr)
@@ -52,6 +52,34 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(result['added'],1)
         asset=self.call(f'/api/projects/{pid}/assets/'+result['asset_ids'][0])
         return pid,asset
+
+    def test_session_authentication_and_method_contracts(self):
+        with self.assertRaises(HTTPError) as error:
+            self.call('/api/projects', headers={'X-Workbench-Token': 'incorrect'})
+        self.assertEqual(error.exception.code, 403)
+        project = self.call('/api/projects', {'name': 'verbs'})
+        with self.assertRaises(HTTPError) as error:
+            self.call(f"/api/projects/{project['id']}/review", {}, method='DELETE')
+        self.assertEqual(error.exception.code, 405)
+        with self.assertRaises(HTTPError) as error:
+            self.call('/api/projects', {'name': []})
+        self.assertEqual(error.exception.code, 400)
+
+    def test_image_conditional_cache_and_project_delta(self):
+        pid, asset = self.imported()
+        url = f"{self.service.url}/api/projects/{pid}/assets/{asset['id']}/image?thumbnail=1"
+        headers = {'X-Workbench-Token': self.service.api_token}
+        with urlopen(Request(url, headers=headers)) as response:
+            etag = response.headers['ETag']
+            self.assertIn('immutable', response.headers['Cache-Control'])
+            self.assertTrue(response.read())
+        with self.assertRaises(HTTPError) as error:
+            urlopen(Request(url, headers={**headers, 'If-None-Match': etag}))
+        self.assertEqual(error.exception.code, 304)
+        project = self.call(f'/api/projects/{pid}')
+        delta = self.call(f'/api/projects/{pid}/review', {'asset_ids': [asset['id']], 'state': 'approved',
+                         'revisions': {asset['id']: asset['revision']}, 'delta_base': project['revision']})
+        self.assertEqual(delta['delta']['base_revision'], project['revision'])
 
     def define(self,pid,*names):
         usage=self.call(f'/api/projects/{pid}/classes')
@@ -212,6 +240,7 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertIn('efficientad',engines)
         self.assertIn('rt_detr_r50',engines)
         self.assertIn('yolo26n_seg',engines)
+        self.assertIn('yolo26n_detect',engines)
         self.assertEqual(engines['efficientad']['integration'],'planned')
         self.assertFalse(engines['efficientad']['train'])
 

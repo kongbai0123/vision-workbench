@@ -48,13 +48,16 @@ def seed_reports(service, folder):
         shape = {"id": f"part-{index}", "type": "rectangle", "label": "工件" if index % 2 else "配件",
                  "x": 8, "y": 6, "width": 25, "height": 24}
         if index == 0:
-            mask = np.zeros((36, 48), np.uint8); mask[6:30, 8:33] = 1; mask[15, 20] = 0
+            mask = np.zeros((36, 48), np.uint8); mask[6:30, 8:33] = 1
+            mask[15, 20] = 0; mask[18, 22:25] = 0
             shape = {"id": f"part-{index}", "type": "mask", "label": "配件", "x": 0, "y": 0,
                      "width": 48, "height": 36, "counts": encode_rle(mask)}
         assets.append({"path": str(source), "name": source.name, "split": split,
                        "batch_id": f"{split}-{index}", "review_state": "approved",
                        "source": {"kind": "test"}, "shapes": [shape]})
     service.store.add_assets(pid, assets)
+    current = service.store.get_project(pid)
+    service.store.confirm_independence(pid, True, current["revision"])
     snapshot = service.training.create_dataset_version(pid)
     assert snapshot["splits"] == {"train": 2, "val": 2, "test": 2}, snapshot
     saved = {}
@@ -128,7 +131,7 @@ def main():
         view.setPage(page)
         view.resize(1440, 1300)
         view.show()
-        view.setUrl(QUrl(service.url))
+        view.setUrl(QUrl(service.entry_url))
         page.setVisible(True)
 
         def js(script):
@@ -211,14 +214,14 @@ def main():
             click(".project-card-open")
             wait("!document.querySelector('[data-stage=train]').disabled")
             click("[data-stage=split]")
-            wait("document.querySelector('#splitFlowStats').innerText.includes('獨立來源群組')")
+            wait("document.querySelector('#splitFlowStats').innerText.includes('可分配圖片')")
             capture("29-data-split-stage", target="#split")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
-            wait("document.querySelectorAll('#trainingPlots svg').length===2")
+            wait("document.querySelectorAll('#trainingPlots svg').length===1")
             assert js("document.querySelector('#trainingRunDetail').innerText.includes('R002')")
             # The split manager stays accessible even when readiness is already true.
-            old_manifest = service.training.datasets / pid / "D001" / "manifest.json"
+            old_manifest = service.training.datasets_dir(pid) / "D001" / "manifest.json"
             old_bytes = old_manifest.read_bytes()
             click("#prepareAutoSplit")
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
@@ -236,6 +239,28 @@ def main():
             wait("document.querySelector('#trainingDataset').value==='D002'")
             assert old_manifest.read_bytes() == old_bytes
             assert service.store.get_project(pid)['split_plan']['current']
+            # YOLO Seg compatibility is visible during review and checks current annotations.
+            click("[data-stage=review]")
+            wait("window.workbenchState().stage==='review'&&!window.workbenchState().transitioning")
+            wait("document.querySelector('#yoloCompatibilityBadge').textContent==='需要處理'")
+            capture("32-yolo-compatibility-review", target="#yoloCompatibilityPanel")
+            click("#yoloCompatibilityReport .yolo-issue .text-button")
+            wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
+            assert js("document.querySelectorAll('.yolo-hole-card').length") == 2
+            click(".yolo-hole-card:nth-child(2)")
+            wait("document.querySelector('.yolo-hole-counter').textContent==='2 / 2'&&document.querySelector('.yolo-location-canvas').dataset.ready==='true'")
+            capture("33-yolo-hole-location", target="#formDialog")
+            click("#cancelDialog")
+            click("[data-stage=split]")
+            wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
+            wait("document.querySelectorAll('.augmentation-annotation-overlay > *').length>0")
+            assert js("document.querySelector('.augmentation-panel').nextElementSibling.id==='splitFlowStats'")
+            fill("#augmentationExpansion", 2)
+            wait("document.querySelector('#augmentationSummary').textContent.includes('每輪共 6 個訓練事件')")
+            assert js("document.querySelector('#augmentationSummary').textContent.includes('Validation／Test 保持原始資料')")
+            alignment = json.loads(js("JSON.stringify(['augmentationOriginalPreview','augmentationResultPreview'].map(id=>{const image=document.querySelector('#'+id).getBoundingClientRect(),overlay=document.querySelector('#'+id).parentElement.querySelector('svg').getBoundingClientRect();return {top:Math.abs(image.top-overlay.top),left:Math.abs(image.left-overlay.left),width:Math.abs(image.width-overlay.width),height:Math.abs(image.height-overlay.height)}}))"))
+            assert all(max(item.values()) < 1 for item in alignment), alignment
+            capture("34-augmentation-overlay-alignment", target=".augmentation-panel")
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             # Parameter forms expose the selected engine's actual supported schema.
@@ -243,38 +268,38 @@ def main():
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             values = {"image_size": "256", "batch_size": "2", "learning_rate": "0.003",
                       "weight_decay": "0.0002", "optimizer": "SGD"}
-            assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == sorted([*values,"scheduler","min_learning_rate","warmup_epochs","lr_patience","lr_factor"])
+            keys = structured("[...document.querySelectorAll('[data-training-param]')].map(e=>e.dataset.trainingParam).sort()")
+            assert all(key in keys for key in [*values,"seed","scheduler","min_learning_rate","warmup_epochs","lr_patience","lr_factor"]), keys
             for key, value in values.items():
-                fill(f'#trainingAdvancedFields [data-training-param="{key}"]', value)
+                fill(f'[data-training-param="{key}"]', value)
             fill("#trainingEngine", "pixel_prototype_v1")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=threshold_min]')")
             assert structured("[...document.querySelectorAll('#trainingAdvancedFields [data-training-param]')].map(e=>e.dataset.trainingParam).sort()") == ["threshold_max", "threshold_min"]
-            assert js("document.querySelector('#trainingSeed').getClientRects().length===0&&document.querySelector('#trainingDevice').getClientRects().length===0")
+            assert js("!document.querySelector('[data-training-param=seed]')&&document.querySelector('#trainingDevice').getClientRects().length===0")
             fill('#trainingAdvancedFields [data-training-param="threshold_min"]', "1")
             fill('#trainingAdvancedFields [data-training-param="threshold_max"]', "2")
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
             for key, value in values.items():
-                assert js(f"document.querySelector('#trainingAdvancedFields [data-training-param={key}]').value") == value
-            # YOLO Seg exposes an explicit full-dataset compatibility preflight.
+                assert js(f"document.querySelector('[data-training-param={key}]').value") == value
+            # YOLO Seg keeps conversion policy controls; the fixed version is rechecked at Run start.
             fill("#trainingEngine", "yolo26n_seg")
-            wait("!document.querySelector('#yoloCompatibilityPanel').hidden")
             assert js("document.querySelector('#trainingParam-yolo_mask_policy').value") == "repair_tiny_holes"
             click("#trainingCompatibilitySettings summary")
             fill("#trainingParam-yolo_mask_policy", "strict")
             assert js("document.querySelector('#trainingParam-tiny_hole_max_pixels').getClientRects().length===0")
             fill("#trainingParam-yolo_mask_policy", "repair_tiny_holes")
             fill("#trainingParam-tiny_hole_max_ratio", "0.01")
-            click("#checkYoloCompatibility")
-            wait("document.querySelector('#yoloCompatibilityBadge').textContent==='檢查通過'")
-            capture("32-yolo-compatibility-preflight", target="#yoloCompatibilityPanel")
-            click("#yoloCompatibilityReport .yolo-issue .text-button")
-            wait("document.querySelector('#formDialog').open&&document.querySelector('.yolo-location-canvas')?.dataset.ready==='true'")
-            capture("33-yolo-hole-location", target="#formDialog")
-            click("#cancelDialog")
+            # YOLO Detect is a separate object-detection path and must not show
+            # segmentation conversion controls.
+            fill("#trainingEngine", "yolo26n_detect")
+            wait("!!document.querySelector('#trainingParam-initialization')")
+            assert js("document.querySelector('#trainingTaskLabel').textContent.includes('物件偵測')")
+            assert not js("!!document.querySelector('#trainingParam-yolo_mask_policy')")
+            assert js("document.querySelector('#trainingParam-initialization').value") == "pretrained"
             fill("#trainingEngine", "maskrcnn_resnet50_fpn")
             wait("!!document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]')")
-            click("#trainingSchedule summary")
+            click("[data-training-tab=schedule]")
             fill("#trainingParam-scheduler","plateau")
             assert js("document.querySelector('#trainingParam-lr_patience').getClientRects().length>0")
             assert js("document.querySelector('#trainingParam-warmup_epochs').getClientRects().length===0")
@@ -300,9 +325,26 @@ def main():
             wait("!document.querySelector('#backgroundTraining').hidden")
             assert js("document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]').value") == "0.003"
 
-            # Completed models are chosen in the monitor; every recorded metric appears.
+            # The monitor starts with outcome metrics and keeps every recorded metric
+            # available through explicit chart groups.
             assert not js("!!document.querySelector('#trainingMetricOptions')")
-            assert set(plotted_metrics()) == {"train/loss", "val/mean_iou"}
+            assert set(plotted_metrics()) == {"val/mean_iou"}
+            assert js("document.querySelectorAll('.training-summary-cards .run-metric').length") == 8
+            assert js("getComputedStyle(document.querySelector('.training-summary-cards')).gridTemplateColumns.split(' ').length") == 4
+            assert js("[...document.querySelectorAll('.training-summary-cards .run-metric > span')].filter(e=>e.textContent==='完成／總 Epoch').length") == 1
+            assert not js("!!document.querySelector('.run-config')")
+            assert js("document.querySelector('[data-chart-group=performance]').getAttribute('aria-selected')==='true'")
+            click("[data-chart-group=loss]")
+            wait("document.querySelectorAll('#trainingPlots svg').length===1")
+            assert set(plotted_metrics()) == {"train/loss"}
+            click("[data-chart-group=all]")
+            wait("document.querySelectorAll('#trainingPlots svg').length===2")
+            click("#toggleTrainingFullscreen")
+            wait("document.querySelector('#trainingMonitorWorkspace').classList.contains('expanded')")
+            assert js("document.body.classList.contains('training-monitor-expanded')")
+            js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait("!document.querySelector('#trainingMonitorWorkspace').classList.contains('expanded')")
+            assert not js("[...document.querySelectorAll('body *')].some(e=>e.getClientRects().length&&parseFloat(getComputedStyle(e).fontSize)<12)")
             click("#trainingViewCompare")
             wait("document.querySelectorAll('#trainingModelPicker input[type=checkbox]').length===3")
             assert not js("!!document.querySelector('#trainingModelPicker [data-model-run=R004]')")

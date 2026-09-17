@@ -1,0 +1,12 @@
+#review > .section-heading, #review > .page-heading { flex-wrap: wrap; }
+#review > .section-heading > .inline, #review > .page-heading > .inline { flex-wrap: wrap; }
+.review-card { cursor: pointer; }
+.review-card.selected { border-color: #70f2d1; background: #203e40; box-shadow: inset 0 0 0 2px #70f2d1; }
+.review-card:focus-visible { outline: 2px solid #70f2d1; outline-offset: 3px; }
+.review-card-media label { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
+.review-card-media input[type=checkbox] { width: 22px; height: 22px; }
+.review-card-footer { flex-wrap: wrap; gap: 8px; }
+#dialogBody .review-grid { grid-template-columns: repeat(auto-fill,minmax(180px,1fr)); }
+#dialogBody .review-card { padding: 10px; margin: 0; }
+#dialogBody .review-card img { display: block; margin: 8px auto; }
+#dialogBody > div > .review-card-media { height: auto; }
