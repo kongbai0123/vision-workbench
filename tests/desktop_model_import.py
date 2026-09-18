@@ -74,6 +74,12 @@ def main():
             assert '尚未評估' in text and '0.000' not in text
             assert list(service.model_uploads.root.iterdir())==[]
             assert js("!document.querySelector('#trialImages').disabled && document.querySelector('#runModelComparison').disabled")
+            # The model in use is named next to the actions, not only in the list.
+            assert js("document.querySelector('.model-row.active').getAttribute('aria-pressed')==='true'")
+            assert js("document.querySelector('.model-row.active .model-row-current').textContent==='使用中'")
+            assert js("document.querySelector('#trialModel').value===document.querySelector('#comparisonModel').value")
+            assert js("document.querySelector('#trialModel').selectedOptions[0].textContent.includes('零件模型')")
+            assert js("document.querySelector('#trialSource').textContent===''")
             assert js("Math.abs(document.querySelector('.model-browser').getBoundingClientRect().bottom-document.querySelector('#modelDetail').getBoundingClientRect().bottom)<2")
             wait("!window.workbenchState().busy && !window.workbenchState().transitioning")
             js("document.querySelector('#toast').textContent=''")

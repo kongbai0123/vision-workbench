@@ -8,6 +8,18 @@ export function filterModelVersions(models,{dataset='',engine='',query=''}={}){
   ));
 }
 
+// Results keep naming the model that produced them, even after the selection moves on.
+export function trialSourceSummary(result,{selectedModel='',models=[]}={}){
+  if(!result)return null;
+  const source=(models||[]).find(model=>model.model_version_id===result.model_version_id);
+  const kind=result.comparison?`${result.comparison.split==='val'?'Validation':'Test'} 標註比對`:'圖片／影片試跑';
+  return {
+    label:`此結果來自 ${result.model_version_id||'未知模型'}${source?` · ${source.engine_name}`:''} · ${kind}`,
+    mismatch:selectedModel&&result.model_version_id&&selectedModel!==result.model_version_id
+      ?`目前選定的是 ${selectedModel}，重新執行才會換成它的結果。`:'',
+  };
+}
+
 export function trialLabelFontSize(renderedWidth){
   const width=Number(renderedWidth);
   return Math.max(12,Math.min(16,Number.isFinite(width)&&width>0?width/80:12));
@@ -50,7 +62,7 @@ const modelParameterDefinitions={
 function parameterText(value){if(value===undefined||value===null||value==='')return '—';if(typeof value==='boolean')return value?'啟用':'停用';if(typeof value==='number')return Number.isInteger(value)?String(value):String(Number(value.toPrecision(7)));return String(value)}
 // Training and model pages share state through an explicit application context.
 export function createTrainingPage(context) {
-  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
+  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 let runTiming=null,runTimingKey=null;
 function invalidateYoloCompatibility(){state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
@@ -247,10 +259,39 @@ function renderModels(){
   const visible=filterModelVersions(models,{dataset:datasetFilter.value,engine:engineFilter.value,query});$('modelFilterCount').textContent=`顯示 ${visible.length}／${models.length} 個模型`;
   if(!visible.some(model=>model.model_version_id===state.selectedModel))state.selectedModel=visible[0]?.model_version_id||null;
   const list=$('modelList');list.replaceChildren();if(!visible.length)list.append(element('p',models.length?'沒有符合目前篩選條件的模型。':'尚無模型版本。','empty-list'));
-  for(const model of visible){const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),row=button('','model-row'+(model.model_version_id===state.selectedModel?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});const top=element('div',undefined,'model-row-top');top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),element('span',definition?.predict?'可預標註':'訓練／匯出','run-status'));row.append(top,element('small',`${model.source?.kind==='external_import'?'外部匯入 · 尚未評估':`${model.dataset_version_id} · ${model.run_id}`} · ${date(model.created_at)}`));list.append(row)}
+  for(const model of visible){
+    const definition=state.training?.capabilities?.engines?.find(item=>item.key===model.engine),current=model.model_version_id===state.selectedModel;
+    const row=button('','model-row'+(current?' active':''),()=>{state.selectedModel=model.model_version_id;renderModels()});
+    row.setAttribute('aria-pressed',String(current));row.title=current?`${model.model_version_id} 目前選定，供試跑、標註比對與匯出使用`:`改用 ${model.model_version_id} 進行試跑、標註比對與匯出`;
+    const top=element('div',undefined,'model-row-top'),marks=element('div',undefined,'model-row-marks');
+    if(current)marks.append(element('span','使用中','model-row-current'));
+    marks.append(element('span',definition?.predict?'可預標註':'訓練／匯出','run-status'));
+    top.append(element('b',`${model.model_version_id} · ${model.engine_name}`),marks);
+    row.append(top,element('small',`${model.source?.kind==='external_import'?'外部匯入 · 尚未評估':`${model.dataset_version_id} · ${model.run_id}`} · ${date(model.created_at)}`));list.append(row);
+  }
   const selected=visible.find(model=>model.model_version_id===state.selectedModel);renderModelDetail(selected);
   const selectedDefinition=state.training?.capabilities?.engines?.find(item=>item.key===selected?.engine);for(const id of ['trialImages','trialVideo','runModelComparison']){$(id).disabled=!selected||!selectedDefinition?.predict;$(id).title=selected&&!selectedDefinition?.predict?'此模型尚未提供推論介面':''}
   if(selected&&!selected.dataset_version_id){$('runModelComparison').disabled=true;$('runModelComparison').title='外部模型未綁定本專案資料版本，請使用圖片／影片試跑。'}
+  renderModelChoosers(visible);renderTrialSource();
+}
+// The list highlight and both action panels are the same selection, so the model
+// in use is visible next to the button that uses it.
+function renderModelChoosers(visible){
+  for(const id of ['trialModel','comparisonModel']){
+    const select=$(id);if(!select)continue;
+    select.replaceChildren();
+    for(const model of visible)select.append(new Option(`${model.model_version_id} · ${model.engine_name}`,model.model_version_id));
+    if(!visible.length)select.append(new Option('尚無可用模型版本',''));
+    select.value=state.selectedModel||'';select.disabled=!visible.length;
+    select.onchange=()=>{state.selectedModel=select.value;renderModels()};
+  }
+}
+function renderTrialSource(){
+  const root=$('trialSource');if(!root)return;
+  const summary=trialSourceSummary(trialResult,{selectedModel:state.selectedModel,models:state.training?.models});
+  root.replaceChildren();if(!summary)return;
+  root.append(element('b',summary.label));
+  if(summary.mismatch)root.append(element('span',summary.mismatch,'trial-source-mismatch'));
 }
 function renderAnnotationModels(){
   const select=$('annotationModel'),root=$('annotationPredictionList');if(!select||!root||!state.training)return;const models=state.training.models||[],predictable=models.filter(model=>state.training.capabilities?.engines?.find(item=>item.key===model.engine)?.predict),previous=select.value;select.replaceChildren();
@@ -289,22 +330,39 @@ function renderModelDetail(model){const root=$('modelDetail');root.replaceChildr
   const actions=element('div',undefined,'model-export-actions'),exportButton=button('匯出模型封裝','primary',()=>safe(()=>exportSelectedModel(model.model_version_id)));actions.append(exportButton);const exports=(state.training?.model_exports||[]).filter(item=>item.model_version_id===model.model_version_id);if(exports.length){const latest=exports[0],open=button('開啟最近匯出資料夾','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:latest.export_id})));actions.append(open);root.append(actions,element('p',`最近匯出：${latest.export_id} · ${date(latest.created_at)} · ${number(latest.bytes)} bytes`,'field-note'))}else root.append(actions,element('p',imported?'封裝包含匯入權重、來源資訊與 SHA-256 manifest；不包含原訓練資料或本機訓練紀錄。':'封裝包含模型、checkpoint、評估、Epoch 指標、來源 Run 與 SHA-256 manifest，不包含訓練圖片。','field-note'))}
 async function importExternalModel(){
   const body=element('div'),fileInput=document.createElement('input'),dropZone=element('label',undefined,'model-import-dropzone'),dropIcon=element('span','⇧','model-import-drop-icon'),dropTitle=element('b','拖曳 .pt 權重至此'),dropHint=element('small','或點擊這裡瀏覽電腦中的檔案'),selection=element('div','尚未選擇檔案','model-import-selection'),nameLabel=element('label','模型名稱（選填）'),name=document.createElement('input'),trustLabel=element('label',undefined,'check-label'),trust=document.createElement('input');
-  let selectedFile=null;
+  let selected=null,importing=false;
   fileInput.id='modelImportFile';fileInput.type='file';fileInput.accept='.pt';fileInput.hidden=true;dropZone.htmlFor=fileInput.id;dropZone.tabIndex=0;dropZone.setAttribute('role','button');dropZone.setAttribute('aria-label','選擇或拖曳 .pt 模型權重');selection.setAttribute('aria-live','polite');name.id='modelImportName';name.maxLength=100;nameLabel.htmlFor=name.id;trust.id='modelImportTrusted';trust.type='checkbox';trustLabel.append(trust,document.createTextNode('我確認權重來自可信任的來源'));
-  const selectFile=file=>{if(!file)return;if(!file.name.toLowerCase().endsWith('.pt'))throw Error('請選擇副檔名為 .pt 的模型權重。');if(!file.size)throw Error('模型檔案是空的。');if(file.size>8*1024*1024*1024)throw Error('模型檔案超過 8 GiB 上限。');selectedFile=file;selection.textContent=`${file.name} · ${file.size<1024*1024?`${Math.max(1,Math.ceil(file.size/1024))} KB`:`${(file.size/1024/1024).toFixed(file.size<10*1024*1024?1:0)} MB`}`;selection.classList.add('selected');dropZone.classList.add('has-file');dropTitle.textContent='已選擇模型權重';dropHint.textContent='點擊或拖入另一個檔案即可更換'};
+  const showSelection=text=>{selection.textContent=text;selection.classList.add('selected');dropZone.classList.add('has-file');dropTitle.textContent='已選擇模型權重';dropHint.textContent='點擊或拖入另一個檔案即可更換'};
+  const checkCheckpointName=value=>{if(!String(value||'').toLowerCase().endsWith('.pt'))throw Error('請選擇副檔名為 .pt 的模型權重。')};
+  const selectFile=file=>{if(!file)return;checkCheckpointName(file.name);if(!file.size)throw Error('模型檔案是空的。');if(file.size>8*1024*1024*1024)throw Error('模型檔案超過 8 GiB 上限。');selected={file};showSelection(`${file.name} · ${file.size<1024*1024?`${Math.max(1,Math.ceil(file.size/1024))} KB`:`${(file.size/1024/1024).toFixed(file.size<10*1024*1024?1:0)} MB`}`)};
+  // Desktop drags are delivered by FileDropBridge with the original path, so the
+  // checkpoint is read from disk instead of streamed through the upload store.
+  const selectPath=value=>{checkCheckpointName(String(value).split(/[\\/]/).pop());selected={path:value};showSelection(value)};
   fileInput.addEventListener('change',()=>{try{selectFile(fileInput.files?.[0])}catch(error){toast(error.message,true);fileInput.value=''}});
   dropZone.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();fileInput.click()}});
   for(const eventName of ['dragenter','dragover'])dropZone.addEventListener(eventName,event=>{event.preventDefault();event.stopPropagation();dropZone.classList.add('drag-active');event.dataTransfer.dropEffect='copy'});
   for(const eventName of ['dragleave','drop'])dropZone.addEventListener(eventName,event=>{event.preventDefault();event.stopPropagation();dropZone.classList.remove('drag-active')});
   dropZone.addEventListener('drop',event=>{try{const files=[...(event.dataTransfer?.files||[])];if(files.length!==1)throw Error('一次只能匯入一個 .pt 權重。');selectFile(files[0])}catch(error){toast(error.message,true)}});
-  dropZone.append(dropIcon,dropTitle,dropHint);body.append(element('p','支援 Ultralytics 相容的 YOLO 偵測／實例分割與 RT-DETR 偵測權重。檔案會先安全上傳至本機暫存區，再複製至專案並驗證架構、類別與 CPU 推論。'),fileInput,dropZone,selection,nameLabel,name,element('p','載入 .pt 可能執行其中的 Python 程式碼。請只選擇自己訓練或信任來源的權重。','field-note'),trustLabel,element('p','模型類別沿用權重中的名稱；預標註前請在專案建立相同類別。匯入不會建立假的訓練紀錄或評估分數。','field-note'));
-  const result=await formDialog({title:'匯入外部模型',body,confirm:'驗證並匯入',eyebrow:'IMPORT MODEL',onSubmit:async()=>{
-    if(!selectedFile)throw Error('請選擇或拖入 .pt 權重檔案。');if(!trust.checked)throw Error('請先確認權重來源可信任。');
-    const catalog=await api('/api/model-catalog?refresh=1'),component=(catalog.components||[]).find(item=>item.id==='ultralytics');
-    if(component?.state!=='ready')throw Error(component?.message||'請先至「設定 → 模型與元件」安裝或修復 Ultralytics 執行環境。');
-    const upload=await api('/api/model-uploads','POST',selectedFile);
-    return pollJob(await api(projectPath('/model-import'),'POST',{upload_token:upload.upload_token,name:name.value.trim(),trusted:trust.checked}));
-  }});
+  const releaseNativeDrop=registerNativeDrop({
+    element:()=>dropZone,
+    ready:()=>!importing,
+    hover:active=>dropZone.classList.toggle('drag-active',active),
+    drop:paths=>{try{if(paths.length!==1)throw Error('一次只能匯入一個 .pt 權重。');selectPath(paths[0]);return true}catch(error){toast(error.message,true);return false}},
+  });
+  dropZone.append(dropIcon,dropTitle,dropHint);body.append(element('p','支援 Ultralytics 相容的 YOLO 偵測／實例分割與 RT-DETR 偵測權重。瀏覽器選取的檔案會先安全上傳至本機暫存區，桌面版拖曳則直接讀取原始路徑；兩者都會複製至專案並驗證架構、類別與 CPU 推論。'),fileInput,dropZone,selection,nameLabel,name,element('p','載入 .pt 可能執行其中的 Python 程式碼。請只選擇自己訓練或信任來源的權重。','field-note'),trustLabel,element('p','模型類別沿用權重中的名稱；預標註前請在專案建立相同類別。匯入不會建立假的訓練紀錄或評估分數。','field-note'));
+  let result=null;
+  try {
+    result=await formDialog({title:'匯入外部模型',body,confirm:'驗證並匯入',eyebrow:'IMPORT MODEL',onSubmit:async()=>{
+      importing=true;
+      try {
+        if(!selected)throw Error('請選擇或拖入 .pt 權重檔案。');if(!trust.checked)throw Error('請先確認權重來源可信任。');
+        const catalog=await api('/api/model-catalog?refresh=1'),component=(catalog.components||[]).find(item=>item.id==='ultralytics');
+        if(component?.state!=='ready')throw Error(component?.message||'請先至「設定 → 模型與元件」安裝或修復 Ultralytics 執行環境。');
+        const source=selected.file?{upload_token:(await api('/api/model-uploads','POST',selected.file)).upload_token}:{path:selected.path};
+        return pollJob(await api(projectPath('/model-import'),'POST',{...source,name:name.value.trim(),trusted:trust.checked}));
+      } finally {importing=false}
+    }});
+  } finally {releaseNativeDrop()}
   if(result){$('modelDatasetFilter').value='';$('modelEngineFilter').value='';$('modelSearch').value='';state.selectedModel=result.model_version_id;await loadTraining();toast(`${result.model_version_id} 已匯入，可開始圖片／影片試跑。`)}
 }
 async function exportSelectedModel(modelId){const job=await api(projectPath('/model-exports'),'POST',{model_version_id:modelId}),result=await pollJob(job);await loadTraining();toast(`${result.model_version_id} 已匯出為 ${result.export_id}。`);await api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:result.export_id})}
@@ -331,8 +389,8 @@ function drawTrial(){
   image.onerror=()=>{$('modelTrialStatus').textContent='無法載入試跑影格，請重新執行模型試跑。'};image.src=`/api/model-trials/${trialResult.session_id}/frames/${trialIndex}`;
 }
 function stopTrialPlayback(){if(trialTimer)clearInterval(trialTimer);trialTimer=null;$('trialPlay').textContent='播放'}
-async function startModelTrial(kind){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');const paths=await nativeChoose(kind==='video'?'video':'images');if(!paths.length)return;stopTrialPlayback();$('modelTrialStatus').textContent='正在執行模型試跑；影片會逐幀處理。';trialResult=await pollJob(await api(projectPath('/model-trials'),'POST',{model_version_id:model.model_version_id,paths}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);$('modelTrialStatus').textContent=`試跑完成 · ${model.model_version_id} · ${trialResult.frames.length} 個影格。外部資料沒有人工標註，因此不計算準確率或 mAP。`;drawTrial()}
-async function runModelComparison(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');stopTrialPlayback();const split=$('comparisonSplit').value;$('comparisonStatus').textContent='正在固定標註資料上重新推論…';trialResult=await pollJob(await api(projectPath('/model-comparisons'),'POST',{model_version_id:model.model_version_id,split}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);const metric=trialResult.comparison;$('comparisonStatus').textContent=`${split} 比對完成 · 調整信心門檻會同步重算 Precision／Recall；藍色虛線為人工標註。`;drawTrial();$('modelTrialViewer').scrollIntoView({block:'nearest'})}
+async function startModelTrial(kind){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');const paths=await nativeChoose(kind==='video'?'video':'images');if(!paths.length)return;stopTrialPlayback();$('modelTrialStatus').textContent=`正在以 ${model.model_version_id} 執行模型試跑；影片會逐幀處理。`;$('comparisonStatus').textContent='檢視器已改為顯示圖片／影片試跑結果。';trialResult=await pollJob(await api(projectPath('/model-trials'),'POST',{model_version_id:model.model_version_id,paths}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);$('modelTrialStatus').textContent=`試跑完成 · ${model.model_version_id} · ${trialResult.frames.length} 個影格。外部資料沒有人工標註，因此不計算準確率或 mAP。`;renderTrialSource();drawTrial()}
+async function runModelComparison(){const model=state.training?.models?.find(item=>item.model_version_id===state.selectedModel)||state.training?.models?.[0];if(!model)throw Error('請先選擇模型。');stopTrialPlayback();const split=$('comparisonSplit').value;$('comparisonStatus').textContent=`正在以 ${model.model_version_id} 於固定標註資料上重新推論…`;$('modelTrialStatus').textContent='檢視器已改為顯示標註比對結果。';trialResult=await pollJob(await api(projectPath('/model-comparisons'),'POST',{model_version_id:model.model_version_id,split}));trialIndex=0;$('modelTrialViewer').hidden=false;$('trialTimeline').max=Math.max(0,trialResult.frames.length-1);$('comparisonStatus').textContent=`${model.model_version_id} · ${split==='val'?'Validation':'Test'} 比對完成 · 調整信心門檻會同步重算 Precision／Recall；藍色虛線為人工標註。`;renderTrialSource();drawTrial();$('modelTrialViewer').scrollIntoView({block:'nearest'})}
 function setTrialFrame(value){trialIndex=Math.max(0,Math.min(trialResult?.frames?.length-1||0,Number(value)));drawTrial()}
 function toggleTrialPlayback(){if(trialTimer){stopTrialPlayback();return}if(!trialResult?.frames?.length)return;$('trialPlay').textContent='暫停';const frames=trialResult.frames,delay=Math.max(16,Math.round(((frames[1]?.time_seconds||1/10)-(frames[0]?.time_seconds||0))*1000));trialTimer=setInterval(()=>{if(trialIndex>=frames.length-1){stopTrialPlayback();return}setTrialFrame(trialIndex+1)},delay)}
 

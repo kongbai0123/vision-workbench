@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {drawTrialLabel,trialLabelFontSize,trialLabelLayout} from '../web/pages/training.mjs';
+import {drawTrialLabel,trialLabelFontSize,trialLabelLayout,trialSourceSummary} from '../web/pages/training.mjs';
+
+test('trial results name the model that produced them',()=>{
+  const models=[{model_version_id:'M001',engine_name:'外部 YOLO · 偵測'},{model_version_id:'M002',engine_name:'YOLO Seg'}];
+  assert.equal(trialSourceSummary(null,{selectedModel:'M001',models}),null);
+
+  const trial=trialSourceSummary({model_version_id:'M001'},{selectedModel:'M001',models});
+  assert.equal(trial.label,'此結果來自 M001 · 外部 YOLO · 偵測 · 圖片／影片試跑');
+  assert.equal(trial.mismatch,'');
+
+  const moved=trialSourceSummary({model_version_id:'M001'},{selectedModel:'M002',models});
+  assert.equal(moved.label,trial.label);
+  assert.match(moved.mismatch,/M002/);
+
+  const comparison=trialSourceSummary({model_version_id:'M002',comparison:{split:'val'}},{selectedModel:'M002',models});
+  assert.equal(comparison.label,'此結果來自 M002 · YOLO Seg · Validation 標註比對');
+
+  const unknown=trialSourceSummary({model_version_id:'M009'},{selectedModel:'',models});
+  assert.equal(unknown.label,'此結果來自 M009 · 圖片／影片試跑');
+  assert.equal(unknown.mismatch,'');
+});
 
 test('model trial labels never render below 12 CSS pixels',()=>{
   assert.equal(trialLabelFontSize(0),12);

@@ -79,6 +79,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -TrainingOnl
 - `tests/desktop_editors.py` 需要已啟動的本機 CVAT，且含特定本機帳號與位址設定；執行前需配合測試環境調整。測試會建立及清除 CVAT 測試專案。
 - `tests/hardware_camera.py --camera-index <索引>` 會操作指定實體相機，須明確指定裝置。
 - `tests/desktop_camera_preview.py` 使用合成相機與硬體參數介面，驗證預覽生命週期、曝光設定、格式連動、設定檔保存／載入與套用重啟，不操作實體相機。
+- `tests/desktop_drop.py` 以真實桌面視窗驗證原生拖放：資料夾與多檔匯入、縮放座標換算、不支援格式回報，以及模型匯入對話框接手拖放並沿用原始路徑。
 - `tests/desktop_model_import.py` 以模擬權重檢查器驗證模型匯入 API、對話框、評估空值及左右面板對齊；`tests/test_model_import.py` 驗證遷移保留關聯、失敗清理、模型封裝與 worker 任務分派。真實 `.pt` 相容性仍需在 Ultralytics 獨立環境驗證。
 - 相機控制單元測試：`python -m unittest tests.test_camera_controls tests.test_camera_modes tests.test_acquisition`；前端純函式測試：`node --test tests/ui_camera_settings.test.mjs`。
 

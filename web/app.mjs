@@ -29,8 +29,17 @@ const formatDescriptions = {
 };
 let toastTimer;
 function toast(message,error=false) {
-  clearTimeout(toastTimer);$('toast').textContent=String(message);$('toast').classList.toggle('error',error);$('toast').hidden=false;
-  toastTimer=setTimeout(()=>$('toast').hidden=true,error?9500:4500);
+  clearTimeout(toastTimer);const element=$('toast');
+  element.textContent=String(message);element.classList.toggle('error',error);element.hidden=false;
+  // A modal dialog renders in the top layer, above any z-index. The toast joins that
+  // layer as a popover, and re-enters it last so it stays above a dialog opened first.
+  if(element.popover){if(element.matches(':popover-open'))element.hidePopover();element.showPopover()}
+  toastTimer=setTimeout(hideToast,error?9500:4500);
+}
+function hideToast() {
+  const element=$('toast');
+  if(element.popover&&element.matches(':popover-open'))element.hidePopover();
+  element.hidden=true;
 }
 function status(message,error=false) {$('statusText').textContent=message;$('connectionDot').classList.toggle('error',error);}
 function setUpdateIndicators(count){
@@ -177,23 +186,47 @@ function clearFileDrag() {
   $('fileDropZone').classList.remove('drop-active');
   $('fileDropTitle').textContent=state.system?.desktop===false?'匯入圖片與標註':'將圖片或資料夾拖曳至此';
 }
-nativeCallbacks.drag=(kind,x,y,paths=[])=>{
-  const zone=$('fileDropZone'),rect=zone.getBoundingClientRect();
-  const ready=kind!=='leave'&&state.stage==='acquire'&&state.acquireSource==='files'
-    &&state.project&&!state.busy&&!state.transitioning&&zone.getClientRects().length
-    &&x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom
-    &&zone.contains(document.elementFromPoint(x,y));
-  if(!ready){clearFileDrag();return false;}
-  if(kind!=='drop'){
-    zone.classList.add('drop-active');$('fileDropTitle').textContent='放開以檢查並匯入';return true;
+// Desktop drops never reach the DOM: FileDropBridge consumes the Qt event so the
+// original paths survive, so every zone that accepts dropped files registers here.
+// The newest registration wins, letting a dialog take the drop from the page below.
+const nativeDropZones=[];
+function registerNativeDrop(zone) {
+  nativeDropZones.push(zone);
+  return ()=>{const index=nativeDropZones.indexOf(zone);if(index>=0)nativeDropZones.splice(index,1)};
+}
+function nativeDropZoneAt(x,y) {
+  for(let index=nativeDropZones.length-1;index>=0;index--) {
+    const zone=nativeDropZones[index],element=zone.element();
+    if(!element||!element.getClientRects().length||!zone.ready())continue;
+    const rect=element.getBoundingClientRect();
+    if(x<rect.left||x>rect.right||y<rect.top||y>rect.bottom)continue;
+    if(element.contains(document.elementFromPoint(x,y)))return zone;
   }
-  clearFileDrag();
+  return null;
+}
+nativeCallbacks.drag=(kind,x,y,paths=[])=>{
+  const zone=kind==='leave'?null:nativeDropZoneAt(x,y);
+  for(const other of nativeDropZones)if(other!==zone)other.hover(false);
+  if(!zone)return false;
+  if(kind!=='drop'){zone.hover(true);return true;}
+  zone.hover(false);
   if(!Array.isArray(paths)||!paths.length||paths.some(path=>typeof path!=='string'||!path.trim()))return false;
-  $('importPaths').value=[...new Set(paths)].join('\n');
-  // Reuse the same serialized, revision-aware import action as the file picker.
-  $('importFiles').click();
-  return true;
+  return zone.drop([...new Set(paths)])!==false;
 };
+registerNativeDrop({
+  element:()=>$('fileDropZone'),
+  ready:()=>state.stage==='acquire'&&state.acquireSource==='files'&&!!state.project&&!state.busy&&!state.transitioning,
+  hover:active=>{
+    if(!active){clearFileDrag();return;}
+    $('fileDropZone').classList.add('drop-active');$('fileDropTitle').textContent='放開以檢查並匯入';
+  },
+  drop:paths=>{
+    $('importPaths').value=paths.join('\n');
+    // Reuse the same serialized, revision-aware import action as the file picker.
+    $('importFiles').click();
+    return true;
+  },
+});
 // Browser drops must never navigate away from the current project. Windows
 // desktop drops are delivered separately by FileDropBridge with original paths.
 document.addEventListener('dragover',event=>{event.preventDefault();event.dataTransfer.dropEffect='none';});
@@ -848,7 +881,7 @@ async function runAI() {
 const {openSplitManager, renderSplitPage, setIndependentAssets, augmentationProfile, renderAugmentationPreparation}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,formDialog,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
-const {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, augmentationProfile, TrainingParameters, TrainingMonitor});
+const {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);

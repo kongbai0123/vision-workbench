@@ -3,6 +3,7 @@
 Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模型訓練。專案資料與模型保存在本機。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
+[![Version: 2.17.5](https://img.shields.io/badge/Version-2.17.5-45c6b1.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4.svg)](#快速開始)
 
@@ -23,7 +24,8 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模
 - **標註編輯**：同視窗切換內建編輯器、Labelme 與本機 CVAT，支援 SAM2／GrabCut 輔助分割。
 - **資料管理**：人工審核、修訂追蹤、依來源分組的資料分割、Train-only 資料增強，以及可隨專案備份的固定資料版本。
 - **模型訓練**：支援物件偵測、實例分割、語意分割與圖片分類，提供訓練曲線及模型比較。
-- **外部模型匯入**：可拖曳或用檔案瀏覽器選擇 Ultralytics 相容的 YOLO／RT-DETR `.pt` 權重；驗證後用於圖片／影片試跑與預標註，並保留來源與類別資訊。
+- **外部模型匯入**：可從檔案總管拖曳或用檔案瀏覽器選擇 Ultralytics 相容的 YOLO／RT-DETR `.pt` 權重；驗證後用於圖片／影片試跑與預標註，並保留來源與類別資訊。
+- **模型試跑與比對**：模型清單、試跑與標註比對共用明確的目前版本；結果保留來源模型提示，預測標籤字體不低於 12px。
 - **資料交換**：COCO、YOLO、LabelMe、JSONL 與原生格式匯入／匯出，以及模型封裝匯出。
 
 ## 相機參數工作流程
