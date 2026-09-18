@@ -23,6 +23,7 @@ import uuid
 
 import cv2
 import numpy as np
+from .camera_controls import CameraControls, validate_values
 
 
 class AcquisitionError(RuntimeError):
@@ -484,7 +485,8 @@ class CameraService:
         from .camera_modes import device_modes
         return device_modes(index)
 
-    def start(self, index=0, width=1280, height=720, fps=30, pixel_format="MJPG") -> dict:
+    def start(self, index=0, width=1280, height=720, fps=30, pixel_format="MJPG", controls=None) -> dict:
+        values = deepcopy(validate_values(controls if controls is not None else {}))
         if not isinstance(pixel_format,str) or len(pixel_format)!=4 or not pixel_format.isascii():
             raise ValueError("相機像素格式必須是 4 字元 FOURCC")
         config = {"index": _integer(index, "相機編號", 0, 128),
@@ -511,7 +513,8 @@ class CameraService:
                                    error=None, frame_count=0, record_frames=0, record_seconds=0,
                                    processing_state="idle", processing_error=None, background_samples=0,
                                    requested=dict(config))
-            self._thread = threading.Thread(target=self._run, args=(config,), name="WorkbenchCamera", daemon=True)
+                self._state.update(controls={}, controls_error=None, backend=None)
+            self._thread = threading.Thread(target=self._run, args=({**config, "controls": values},), name="WorkbenchCamera", daemon=True)
             self._thread.start()
         return self.status()
 
@@ -597,6 +600,8 @@ class CameraService:
             source = {"kind": "camera", "index": self._state["index"],
                       "width": frame.shape[1], "height": frame.shape[0],
                       "fps": self._state["fps"], "captured_at": datetime.now(timezone.utc).isoformat()}
+            source.update(pixel_format=self._state.get("pixel_format"),
+                          controls=deepcopy(self._state.get("controls", {})))
         path = self.storage_root / "incoming" / f"{_identifier('camera')}.png"
         _save_png(path, frame)
         return {"path": str(path), "name": path.name, "batch_id": batch_id, "source": source}
@@ -624,6 +629,14 @@ class CameraService:
             return self.status()
         return self._request("record_stop")
 
+    def set_controls(self, values=None, reset=False):
+        if type(reset) is not bool:
+            raise ValueError("reset 必須為布林值")
+        return self._request("controls", values=deepcopy(validate_values(values if values is not None else {})), reset=reset)
+
+    def _open_controls(self, index):
+        return CameraControls(index)
+
     def _open_capture(self, config: dict):
         backends = (cv2.CAP_DSHOW, cv2.CAP_MSMF) if os.name == "nt" else (cv2.CAP_ANY,)
         for backend in backends:
@@ -635,9 +648,12 @@ class CameraService:
                 continue
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, config["width"])
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config["height"])
-            # Set the selected encoding after dimensions, which may reset it.
-            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*config.get("pixel_format","MJPG")))
             capture.set(cv2.CAP_PROP_FPS, config["fps"])
+            # DirectShow can reset the media subtype when FPS changes, too.
+            # Apply FOURCC last, then report the driver's negotiated output.
+            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*config.get("pixel_format","MJPG")))
+            with self._lock:
+                self._state["backend"] = "DSHOW" if backend == cv2.CAP_DSHOW else "MSMF" if backend == cv2.CAP_MSMF else "ANY"
             return capture
         raise AcquisitionError("無法開啟相機。請檢查連接、Windows 相機存取權及其他程式是否占用裝置。")
 
@@ -709,11 +725,29 @@ class CameraService:
 
     def _run(self, config: dict) -> None:
         capture, record, current_frame = None, None, None
+        controls = None
         error = None
         try:
             capture = self._open_capture(config)
+            # Only the real capture path enables native controls; synthetic devices
+            # and alternate providers must opt in explicitly.
+            if self._state.get("backend") == "DSHOW":
+                controls = self._open_controls(config["index"])
+                control_error = controls.error
+                try:
+                    if config.get("controls"):
+                        controls.apply(config["controls"])
+                except Exception as exc:
+                    control_error = str(exc)
+                with self._lock:
+                    self._state.update(controls=controls.read(), controls_error=control_error)
+            elif config.get("controls"):
+                with self._lock:
+                    self._state["controls_error"] = "目前擷取後端不支援硬體參數，設定檔的影像參數未套用"
             self._processor = _PreviewProcessor(self)
             negotiated_fps = float(capture.get(cv2.CAP_PROP_FPS))
+            with self._lock:
+                self._state['fps_reported'] = math.isfinite(negotiated_fps) and 1 <= negotiated_fps <= 240
             reported_fourcc=capture.get(cv2.CAP_PROP_FOURCC)
             fourcc=int(reported_fourcc) if math.isfinite(reported_fourcc) else 0
             actual_format=''.join(chr((fourcc>>(8*i))&255) for i in range(4))
@@ -721,7 +755,12 @@ class CameraService:
             with self._lock:self._state['pixel_format']=actual_format
             if not math.isfinite(negotiated_fps) or not 1 <= negotiated_fps <= 240:
                 negotiated_fps = config["fps"]
+            elif abs(negotiated_fps - round(negotiated_fps)) < .001:
+                # Match DirectShow mode-list rounding so saved 30.00003 FPS
+                # profiles can be loaded against an advertised 30 FPS mode.
+                negotiated_fps = round(negotiated_fps)
             failures = 0
+            controls_read_at = 0
             while not self._stop_event.is_set():
                 ok, frame = capture.read()
                 if not ok or frame is None or frame.size == 0:
@@ -733,6 +772,11 @@ class CameraService:
                 failures = 0
                 current_frame = np.ascontiguousarray(frame)
                 now = time.monotonic()
+                if controls is not None and now - controls_read_at >= 2:
+                    values = controls.read()
+                    with self._lock:
+                        self._state["controls"] = values
+                    controls_read_at = now
                 jpeg = _preview_jpeg(frame)
                 with self._lock:
                     self._frame = current_frame.copy()
@@ -758,7 +802,24 @@ class CameraService:
                     try:
                         if command.cancelled.is_set():
                             continue
-                        if command.kind == "record_start":
+                        if command.kind == "controls":
+                            if controls is None:
+                                raise AcquisitionError("目前擷取後端不支援硬體影像調整")
+                            try:
+                                if command.payload["reset"]:
+                                    controls.reset()
+                                else:
+                                    controls.apply(command.payload["values"])
+                                with self._lock:
+                                    self._state["controls_error"] = None
+                            except Exception as exc:
+                                with self._lock:
+                                    self._state["controls_error"] = str(exc)
+                                raise
+                            finally:
+                                with self._lock:
+                                    self._state["controls"] = controls.read()
+                        elif command.kind == "record_start":
                             if record is not None:
                                 raise AcquisitionError("錄影已在進行中")
                             record = self._begin_recording(command.payload["project_id"], current_frame)
@@ -794,6 +855,11 @@ class CameraService:
                     error = error or str(exc)
             if capture is not None:
                 capture.release()
+            if controls is not None:
+                try:
+                    controls.close()
+                except Exception as exc:
+                    error = error or str(exc)
             with self._lock:
                 self._state.update(state="error" if error else "stopped", running=False, recording=False, error=error)
                 self._frame = None

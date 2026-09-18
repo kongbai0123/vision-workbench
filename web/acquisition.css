@@ -134,3 +134,20 @@
 .camera-target-section .target-footer-row{display:grid;grid-template-columns:minmax(0,1fr) 88px;align-items:center;gap:7px;min-height:30px}
 #acquire .camera-target-section .target-footer-row p{margin:0;font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #acquire .camera-target-section .target-footer-row button{width:88px;height:30px;min-height:30px;padding:0 8px;font-size:12px}
+
+/* Camera controls scroll above persistent capture actions. */
+#source-camera>.source-inspector:not(.image-tools-inspector){flex-direction:column}
+#source-camera>.source-inspector>.inspector-section{flex-shrink:0}
+.camera-actions-footer{position:sticky;bottom:0;z-index:3;margin-top:auto;padding:10px 15px;background:var(--acq-panel,#22272e);border-top:1px solid var(--acq-line,#3d454e);box-shadow:0 -6px 15px #0002;flex-shrink:0}
+#source-camera .camera-actions-footer .device-actions{margin-top:0}
+.camera-adjustments summary{cursor:pointer;font-weight:600}
+.camera-parameter{margin-top:12px}
+.camera-parameter-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.camera-parameter-heading label{margin:0!important}
+.camera-parameter-heading .check-label{font-size:11px}
+.camera-parameter-fields{display:grid;grid-template-columns:minmax(0,1fr) 82px;align-items:center;gap:10px;margin-top:6px}
+.camera-parameter-fields input[type=range]{padding:0;width:100%;accent-color:var(--accent)}
+.camera-parameter-fields input[type=number]{width:100%;min-width:0}
+.camera-warning,#cameraNegotiation{color:#e8bd7e!important}
+#cameraProfileStatus,#cameraControlsStatus{overflow-wrap:anywhere}
+#cameraReadout{white-space:normal;font-size:11px}

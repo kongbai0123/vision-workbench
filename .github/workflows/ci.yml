@@ -44,5 +44,8 @@ jobs:
       - name: Verify review desktop workflow
         run: python tests/desktop_review.py
 
+      - name: Verify camera settings and preview workflow
+        run: python tests/desktop_camera_preview.py
+
       - name: Verify multilabel split workflow
         run: python tests/desktop_multilabel_split.py

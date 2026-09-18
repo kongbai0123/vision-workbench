@@ -1,5 +1,8 @@
+import {createCameraSettings, modesForFormat} from './camera-settings.mjs';
 export function createCameraPage(context) {
 const {$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits}=context;
+const cameraSettings=createCameraSettings({$,state,api,toast,cameraCommand,cameraConfiguration,updateCameraMode,updateCameraControls});
+let previewTimes=[];
 function cameraTargetDimensions() {
   const details=state.cameraDetails||{};return {width:Number(details.width||0),height:Number(details.height||0)};
 }
@@ -137,13 +140,18 @@ async function loadCameraModes() {
   }catch(error){
     cameraModes=[];$('cameraResolution').replaceChildren(new Option('自訂解析度','custom'));updateCameraMode();
     $('cameraModesInfo').textContent=`無法讀取鏡頭模式：${error.message}。可重新偵測或自訂設定。`;
-  }finally{cameraModesLoading=false;updateCameraControls();}
+  }finally{cameraModesLoading=false;updateCameraControls();await cameraSettings.loadProfiles();}
 }
 function selectedCameraModes() {
-  return cameraModes.filter(m=>`${m.width}x${m.height}`===$('cameraResolution').value);
+  return modesForFormat(cameraModes.filter(m=>`${m.width}x${m.height}`===$('cameraResolution').value),$('cameraPixelFormat').value);
 }
 function updateCameraMode() {
-  const custom=$('cameraResolution').value==='custom',modes=selectedCameraModes();
+  const custom=$('cameraResolution').value==='custom';
+  const formats=custom?['MJPG','YUY2']:[...new Set(cameraModes.filter(m=>`${m.width}x${m.height}`===$('cameraResolution').value).map(m=>m.pixel_format))];
+  const previous=$('cameraPixelFormat').value;
+  $('cameraPixelFormat').replaceChildren(new Option('自動（優先 MJPG）','auto'),...formats.map(f=>new Option(f,f)));
+  $('cameraPixelFormat').value=formats.includes(previous)?previous:'auto';
+  const modes=selectedCameraModes();
   $('cameraCustomSize').hidden=!custom;
   const rates=[...new Set(modes.flatMap(m=>m.fps_options))].sort((a,b)=>a-b);
   $('cameraRates').replaceChildren(...rates.map(value=>new Option(String(value),String(value))));
@@ -151,13 +159,13 @@ function updateCameraMode() {
     const fps=Number($('cameraFPS').value);
     if(!modes.some(m=>fps>=m.min_fps&&fps<=m.max_fps))$('cameraFPS').value=rates.reduce((a,b)=>Math.abs(a-fps)<=Math.abs(b-fps)?a:b);
     $('cameraFPS').min=Math.min(...modes.map(m=>m.min_fps));$('cameraFPS').max=Math.max(...modes.map(m=>m.max_fps));
-    $('cameraModesInfo').textContent=modes.map(m=>`${m.pixel_format}：${m.min_fps===m.max_fps?m.max_fps:`${m.min_fps}–${m.max_fps}`} FPS`).join('；')+'。停止相機後可修改。';
+    $('cameraModesInfo').textContent=modes.map(m=>`${m.pixel_format}：${m.min_fps===m.max_fps?m.max_fps:`${m.min_fps}–${m.max_fps}`} FPS`).join('；')+'。變更後按「套用並重新啟動」。';
   }else{$('cameraFPS').min=1;$('cameraFPS').max=240;$('cameraModesInfo').textContent='自訂設定未經模式清單驗證，啟動後請確認實際解析度與 FPS。';}
 }
 function cameraConfiguration() {
   const fps=Number($('cameraFPS').value),custom=$('cameraResolution').value==='custom';
   if(!$('cameraFPS').value.trim()||!Number.isFinite(fps)||fps<1||fps>240)throw Error('請輸入有效 FPS（1–240）。');
-  let width,height,pixel_format='MJPG';
+  let width,height,pixel_format=$('cameraPixelFormat').value==='auto'?'MJPG':$('cameraPixelFormat').value;
   if(custom){
     width=Number($('cameraWidth').value);height=Number($('cameraHeight').value);
     if(![width,height].every(v=>Number.isInteger(v)&&v>=32&&v<=8192))throw Error('影像寬高必須為 32–8192 的整數。');
@@ -166,7 +174,7 @@ function cameraConfiguration() {
     if(!mode)throw Error('此解析度不支援所填 FPS，請依下方鏡頭模式範圍設定。');
     ({width,height,pixel_format}=mode);
   }
-  return {index:Number($('cameraDevice').value),width,height,fps,pixel_format};
+  return {index:Number($('cameraDevice').value),width,height,fps,pixel_format,controls:cameraSettings.controls};
 }
 let cameraStatusTimer=null,cameraStatusRequest=null,cameraMutation=0;
 function receiveCameraStatus(value) {
@@ -201,7 +209,7 @@ async function cameraCommand(path,payload) {
   finally{clearTimeout(cameraStatusTimer);cameraStatusTimer=setTimeout(cameraStatus,0);}
 }
 function stopPreview() {
-  clearTimeout(state.previewTimer);state.previewRunning=false;state.previewReady=false;state.previewError='';
+  previewTimes=[];state.previewMeasuredFPS=0;clearTimeout(state.previewTimer);state.previewRunning=false;state.previewReady=false;state.previewError='';
   for(const id of ['cameraFrame','cameraRawFrame']){const frame=$(id);frame.onload=null;frame.onerror=null;if(frame.hasAttribute('src'))frame.removeAttribute('src');}
 }
 function updatePreviewLayout(restart=true) {
@@ -235,7 +243,7 @@ function updateCameraControls() {
   document.querySelector('.camera-capture-section').classList.toggle('auto-active',auto);
   $('stopRecording').disabled=!state.recording||state.busy;$('cameraDevice').disabled=engaged||state.busy||cameraModesLoading;
   $('findCameras').disabled=engaged||state.busy||cameraModesLoading;
-  for(const id of ['cameraResolution','cameraFPS','cameraWidth','cameraHeight'])$(id).disabled=engaged||state.busy||cameraModesLoading;
+  for(const id of ['cameraResolution','cameraFPS','cameraWidth','cameraHeight','cameraPixelFormat'])$(id).disabled=starting||stopping||state.recording||auto||state.busy||cameraModesLoading;
   $('extractRecording').disabled=state.busy||!state.project||!recording?.path;
   $('applyProcessing').disabled=!state.camera||state.busy;$('calibrateBackground').disabled=!state.camera||state.busy;
   for(const id of ['cameraTargetTool','cameraTargetLabel','cameraTargetBrushRadius','cameraTargetUseProcessing','cameraTargetAttach'])$(id).disabled=!state.camera||state.busy;
@@ -254,12 +262,17 @@ function updateCameraControls() {
   $('recordedFrameTools').hidden=!recording?.path;
   if(recording?.path)$('recordingSummary').textContent=`${recording.name||'錄影已保存'} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒 · ${recording.frames||0} 幀`;
   const actual=Number(details.measured_fps||0),negotiated=Number(details.fps||0);
-  $('cameraReadout').textContent=starting?'正在啟動裝置':state.camera?`${details.width||'—'} × ${details.height||'—'} · 協商 ${Number(negotiated.toFixed(2))} FPS · 鏡頭實測 ${Number(actual.toFixed(1))} FPS${details.pixel_format&&details.pixel_format!=='unknown'?' · '+details.pixel_format:''}`:'等待連接裝置';
+  $('cameraReadout').textContent=starting?'正在啟動裝置':state.camera?`${details.width||'—'} × ${details.height||'—'} · 回報 ${details.fps_reported===false?'未知':Number(negotiated.toFixed(2))} FPS · 擷取 ${Number(actual.toFixed(1))} FPS · 預覽 ${Number((state.previewMeasuredFPS||0).toFixed(1))} FPS${details.pixel_format&&details.pixel_format!=='unknown'?' · '+details.pixel_format:''}`:'等待連接裝置';
   $('cameraReadout').title=details.requested?`要求 ${details.requested.width} × ${details.requested.height}，${details.requested.fps} FPS；預覽更新頻率與鏡頭擷取頻率分開。`:'';
   const requested=details.requested;
-  const changed=state.camera&&requested&&(details.width!==requested.width||details.height!==requested.height||Math.abs(negotiated-requested.fps)>.1||(details.pixel_format!=='unknown'&&details.pixel_format!==requested.pixel_format));
+  const changed=state.camera&&requested&&(details.fps_reported===false||details.width!==requested.width||details.height!==requested.height||Math.abs(negotiated-requested.fps)>.1||(details.pixel_format!=='unknown'&&details.pixel_format!==requested.pixel_format));
   $('cameraNegotiation').hidden=!changed;
-  if(changed)$('cameraNegotiation').textContent=`鏡頭未完全採用要求設定；目前輸出 ${details.width} × ${details.height}、${Number(negotiated.toFixed(2))} FPS、${details.pixel_format}。`;
+  if(changed)$('cameraNegotiation').textContent=`要求 ${requested.width} × ${requested.height}、${requested.fps} FPS、${requested.pixel_format}；回報 ${details.width} × ${details.height}、${details.fps_reported===false?'未知':Number(negotiated.toFixed(2))} FPS、${details.pixel_format}。`;
+  const slow=state.camera&&details.frame_count>=30&&actual>0&&actual<negotiated*.7;
+  $('cameraPerformance').hidden=!slow;
+  if(slow)$('cameraPerformance').textContent=`擷取約 ${actual.toFixed(1)} FPS，低於要求／回報幀率。請檢查輸出格式、曝光、USB 連線及處理負載。`;
+  cameraSettings.render();
+  if(cameraSettings.busy)for(const id of ['startCamera','stopCamera','takeSnapshot','cameraDevice','findCameras','startRecording','startAutoCapture'])$(id).disabled=true;
   updateAcquisitionControls();
 }
 function startPreview() {
@@ -274,10 +287,11 @@ function startPreview() {
       frame.src=`/api/camera/frame?processed=${compare||!$('showRawFrame').checked?'1':'0'}&t=${Date.now()}`;
       if(compare&&(!rawPending||Date.now()-rawRequestedAt>5000)){rawPending=true;rawRequestedAt=Date.now();raw.src=`/api/camera/frame?processed=0&t=${Date.now()}`;}
     }
-    state.previewTimer=setTimeout(next,150);
+    state.previewTimer=setTimeout(next,pending?5000:1000/Number($('cameraPreviewFPS').value||15));
   };
-  frame.onload=()=>{pending=false;state.previewReady=true;state.previewError='';updateCameraControls();};
-  frame.onerror=()=>{pending=false;state.previewReady=false;state.previewError='暫時讀不到影像，正在重試。';updateCameraControls();};
+  const schedule=()=>{clearTimeout(state.previewTimer);state.previewTimer=setTimeout(next,1000/Number($('cameraPreviewFPS').value||15));};
+  frame.onload=()=>{const now=performance.now();previewTimes.push(now);previewTimes=previewTimes.filter(t=>now-t<3000);state.previewMeasuredFPS=previewTimes.length>1?(previewTimes.length-1)*1000/(now-previewTimes[0]):0;pending=false;state.previewReady=true;state.previewError='';updateCameraControls();schedule();};
+  frame.onerror=()=>{pending=false;state.previewReady=false;state.previewError='暫時讀不到影像，正在重試。';updateCameraControls();schedule();};
   raw.onload=()=>{rawPending=false;};raw.onerror=()=>{rawPending=false;};
   next();
 }

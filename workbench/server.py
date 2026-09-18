@@ -39,6 +39,8 @@ class WorkbenchService:
         self.training = TrainingWorkspace(self.data_root, self.store)
         self.dialog = dialog
         self._camera = None
+        from .camera_profiles import CameraProfiles
+        self.camera_profiles = CameraProfiles(self.data_root)
         self._camera_lock = threading.Lock()
         self._ai_lock = threading.Lock()
         from .interactive_runtime import InteractiveRuntime
@@ -317,6 +319,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"devices":self.app.camera.devices()})
             if path == "/api/camera/status":
                 return self.json(self.app.camera.status())
+            if path == "/api/camera/profiles":
+                device = parse_qs(urlsplit(self.path).query).get("device", [""])[0]
+                return self.json({"profiles": self.app.camera_profiles.list(device)})
             if path == "/api/camera/capabilities":
                 index=int(parse_qs(urlsplit(self.path).query).get("index",["0"])[0])
                 return self.json(self.app.camera.capabilities(index))
@@ -500,7 +505,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/camera/start":
                 return self.json(self.app.camera.start(index=int(payload.get("index", 0)),width=int(payload.get("width",1280)),
                                   height=int(payload.get("height",720)),fps=float(payload.get("fps",30)),
-                                  pixel_format=payload.get("pixel_format","MJPG")))
+                                  pixel_format=payload.get("pixel_format","MJPG"), controls=payload.get("controls")))
+            if path == "/api/camera/controls":
+                return self.json(self.app.camera.set_controls(payload.get("values"), payload.get("reset", False)))
+            if path == "/api/camera/profiles":
+                return self.json({"profiles": self.app.camera_profiles.save(payload.get("device"), payload.get("name"), payload.get("settings"))})
             if path == "/api/camera/stop":
                 return self.json(self.app.camera.stop())
             if path == "/api/camera/processing":

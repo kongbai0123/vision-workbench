@@ -78,6 +78,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -TrainingOnl
 - Ultralytics 環境由「設定 → 模型與元件」安裝，依賴列於 `requirements-ultralytics.txt`。
 - `tests/desktop_editors.py` 需要已啟動的本機 CVAT，且含特定本機帳號與位址設定；執行前需配合測試環境調整。測試會建立及清除 CVAT 測試專案。
 - `tests/hardware_camera.py --camera-index <索引>` 會操作指定實體相機，須明確指定裝置。
+- `tests/desktop_camera_preview.py` 使用合成相機與硬體參數介面，驗證預覽生命週期、曝光設定、格式連動、設定檔保存／載入與套用重啟，不操作實體相機。
+- 相機控制單元測試：`python -m unittest tests.test_camera_controls tests.test_camera_modes tests.test_acquisition`；前端純函式測試：`node --test tests/ui_camera_settings.test.mjs`。
 
 ## 歷史模型回測
 

@@ -17,6 +17,22 @@ from PySide6.QtCore import QEventLoop,QTimer,QUrl
 from PySide6.QtTest import QTest
 from workbench.acquisition import AcquisitionError,AcquisitionCancelled
 from workbench.server import WorkbenchService
+from workbench.camera_controls import CameraControls
+from test_camera_controls import Driver
+
+
+class SyntheticControls(CameraControls):
+    def __init__(self):
+        self.interfaces = {'camera': Driver()}
+        self.error = None
+        self.threads = []
+
+    def read(self):
+        self.threads.append(threading.current_thread().name)
+        return super().read()
+
+    def close(self):
+        self.threads.append(threading.current_thread().name)
 
 
 class SyntheticDevice:
@@ -39,19 +55,23 @@ def main():
     output.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='vision-camera-ui-') as folder:
         service=WorkbenchService(Path(folder)).start()
-        service.store.create_project('鏡頭預覽驗收 · 合成影像')
+        service.store.create_project('相機參數設定 · 合成影像示範')
         camera=service.camera;gate=threading.Event();control={'fail':False,'frame_error':False,'requests':0}
         device=SyntheticDevice()
+        controls=SyntheticControls()
+        camera._open_controls=lambda index:controls
         def open_device(config):
             device.config=dict(config)
             while not gate.wait(.02):
                 if camera._stop_event.is_set():raise AcquisitionCancelled('cancelled')
             if control['fail']:raise AcquisitionError('模擬裝置啟動失敗')
+            camera._state['backend']='DSHOW'
             return device
         camera._open_capture=open_device
         camera.devices=lambda:[{'index':0,'name':'Synthetic delayed camera'}]
         camera.capabilities=lambda index:{'index':index,'modes':[
             {'width':1280,'height':720,'min_fps':15,'max_fps':30,'fps_options':[15,30],'pixel_format':'MJPG'},
+            {'width':640,'height':480,'min_fps':5,'max_fps':5,'fps_options':[5],'pixel_format':'YUY2'},
             {'width':640,'height':480,'min_fps':15,'max_fps':15,'fps_options':[15],'pixel_format':'MJPG'}]}
         original_frame=camera.frame_jpeg
         def get_frame(processed=False):
@@ -78,7 +98,7 @@ def main():
         def running():
             wait("!document.querySelector('#cameraFrame').hidden && document.querySelector('#cameraFrame').naturalWidth===640")
             assert js("document.querySelector('#cameraEmpty').hidden")
-            assert not js("document.querySelector('#takeSnapshot').disabled")
+            wait("!document.querySelector('#takeSnapshot').disabled")
         try:
             wait("typeof window.workbenchState==='function' && document.querySelector('.project-card')!==null")
             click('.project-card');click('#findCameras')
@@ -97,8 +117,40 @@ def main():
             QTest.qWait(800);assert control['requests']==0
             gate.set();running()
             assert device.config['width']==640 and device.config['height']==480 and device.config['fps']==15 and device.config['pixel_format']=='MJPG'
-            assert js("document.querySelector('#cameraResolution').disabled && document.querySelector('#cameraFPS').disabled")
+            assert js("!document.querySelector('#cameraResolution').disabled && !document.querySelector('#cameraFPS').disabled")
             assert '15 FPS' in js("document.querySelector('#cameraReadout').textContent")
+            click('#toggleSourceInspector')
+            wait("document.querySelector('#cameraParam-exposure')!==null")
+            assert js("document.querySelector('#cameraParam-exposure').disabled")
+            js("document.querySelector('[data-parameter=exposure] input[type=checkbox]').click()")
+            wait("!document.querySelector('#cameraParam-exposure').disabled")
+            js("let input=document.querySelector('#cameraParam-exposure');input.value=-8;input.dispatchEvent(new Event('change'))")
+            wait("document.querySelector('#cameraParam-exposure')?.value==='-8' && !document.querySelector('#cameraParam-exposure').disabled")
+            assert controls.interfaces['camera'].value==-8
+            js("document.querySelector('#cameraProfileName').value='固定光源'")
+            click('#saveCameraProfile')
+            wait("document.querySelector('#cameraProfileStatus').textContent.includes('已儲存')")
+            js("document.querySelector('#cameraPixelFormat').value='YUY2';document.querySelector('#cameraPixelFormat').dispatchEvent(new Event('change'))")
+            assert js("document.querySelector('#cameraFPS').value")=='5'
+            js("document.querySelector('#cameraPixelFormat').value='MJPG';document.querySelector('#cameraPixelFormat').dispatchEvent(new Event('change'))")
+            click('#applyCameraSettings');running()
+            wait("document.querySelector('#cameraParam-exposure')?.value==='-8' && !document.querySelector('#cameraParam-exposure').disabled")
+            view.resize(1440,1120)
+            wait("!document.querySelector('#cameraReadout').textContent.includes('預覽 0 FPS')")
+            js("document.querySelector('#toast').textContent=''")
+            QTest.qWait(200)
+            view.grab().save(str(output/'settings.png'))
+            assert js("(()=>{const a=document.querySelector('.camera-actions-footer').getBoundingClientRect(),p=document.querySelector('#cameraSettingsInspector').getBoundingClientRect();return a.bottom<=p.bottom+1&&a.top>=p.top})()")
+            view.resize(1088,650);QTest.qWait(300)
+            assert js("(()=>{const a=document.querySelector('.camera-actions-footer').getBoundingClientRect(),p=document.querySelector('#cameraSettingsInspector').getBoundingClientRect();return a.bottom<=p.bottom+1&&a.top>=p.top})()")
+            view.resize(1440,900);QTest.qWait(200)
+            click('#stopCamera');wait("!document.querySelector('#startCamera').disabled")
+            js("document.querySelector('#cameraFPS').value='5'")
+            click('#loadCameraProfile')
+            wait("document.querySelector('#cameraFPS').value==='15'")
+            click('#startCamera');running()
+            assert set(controls.threads)=={'WorkbenchCamera'}
+            click('#closeSourceInspector')
             first=js("document.querySelector('#cameraFrame').src")
             wait(f"document.querySelector('#cameraFrame').src!=={json.dumps(first)}")
             js("document.querySelector('#processingMode').value='classical';document.querySelector('#processingMode').dispatchEvent(new Event('change'))")
@@ -146,7 +198,9 @@ def main():
                           'async startup error','restart','stop','cancel startup','device modes',
                           'resolution-linked fps','reject unsupported fps','selected settings reach capture worker',
                           'raw fallback while processing needs calibration','raw/processed split comparison','custom interval auto capture','automatic capture limit',
-                          'select visible assets','atomic batch deletion']}
+                          'select visible assets','atomic batch deletion','manual exposure readback',
+                          'pixel format linked fps','apply settings and restart','profile persistence and reload',
+                          'persistent footer at 1440 and 1088 widths','native controls owned by capture worker']}
             (output/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
             print('CAMERA_PREVIEW_LIFECYCLE_OK',flush=True)
         except Exception:
