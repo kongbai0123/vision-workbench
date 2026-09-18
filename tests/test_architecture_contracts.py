@@ -41,7 +41,7 @@ class ArchitectureContractsTests(unittest.TestCase):
         ProjectStore(self.store.root)
         with self.store.connection(self.pid) as db:
             versions = list(db.execute('SELECT version FROM schema_migrations'))
-            self.assertEqual(len(versions), 5)
+            self.assertEqual(len(versions), 6)
         before = (folder / 'project.sqlite3').stat().st_mtime_ns
         self.store.list_projects()
         self.store.get_project(self.pid)

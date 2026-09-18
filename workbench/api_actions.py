@@ -83,6 +83,11 @@ def action_review_compatibility(self, pid, payload, action):
     return self.json(self.app.training.review_yolo_compatibility(pid,payload.get("config") or {}))
 
 
+def action_model_import(self, pid, payload, action):
+    return self.json(self.app.jobs.submit('model-import', lambda progress:
+        self.app.training.import_model(pid, payload.get('path'), payload.get('name', ''), payload.get('trusted', False), progress)))
+
+
 def action_model_exports(self, pid, payload, action):
     model_id = payload.get("model_version_id")
     return self.json(self.app.jobs.submit("model-export", lambda progress:
@@ -162,6 +167,7 @@ PROJECT_ACTIONS = {
     'training-runs': action_training_runs,
     'training-compatibility': action_training_compatibility,
     'review-compatibility': action_review_compatibility,
+    'model-import': action_model_import,
     'model-exports': action_model_exports,
     'predictions': action_predictions,
     'model-trials': action_model_trials,

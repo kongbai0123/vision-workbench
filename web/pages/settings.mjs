@@ -67,11 +67,11 @@ nativeCallbacks.updateProgress=snapshot=>{renderDesktopUpdate(snapshot);if(snaps
 async function loadModelCatalog(refresh=false){
   state.modelCatalog=await api(`/api/model-catalog${refresh?'?refresh=1':''}`);renderModelCatalog();renderSettingsSummary();return state.modelCatalog;
 }
-function catalogState(model){if(model.train)return ['可使用','ready'];if(model.integration!=='ready')return ['整合開發中','warning'];if(model.runtime_state==='broken')return ['需要修復','error'];return ['尚未安裝','warning']}
+function catalogState(model){if(model.train||model.predict)return [model.inference_only?'可匯入／推論':'可使用','ready'];if(model.integration!=='ready')return ['整合開發中','warning'];if(model.runtime_state==='broken')return ['需要修復','error'];return ['尚未安裝','warning']}
 function renderModelCatalog(){
   const catalog=state.modelCatalog;if(!catalog)return;const search=$('modelCatalogSearch').value.trim().toLowerCase(),filter=$('modelCatalogFilter').value;
   const models=(catalog.engines||catalog.models||[]).filter(model=>{
-    if(filter==='ready'&&!model.train)return false;if(filter==='unavailable'&&model.train)return false;
+    if(filter==='ready'&&!model.train&&!model.predict)return false;if(filter==='unavailable'&&(model.train||model.predict))return false;
     return !search||`${model.name} ${model.description} ${model.task_name} ${model.family}`.toLowerCase().includes(search);
   });
   if(!state.selectedCatalogModel||!(catalog.engines||catalog.models||[]).some(model=>model.key===state.selectedCatalogModel))state.selectedCatalogModel=models[0]?.key||(catalog.engines||catalog.models||[])[0]?.key;
@@ -84,7 +84,7 @@ function renderCatalogDetail(model){
   const root=$('settingsModelDetail');root.replaceChildren();if(!model){root.append(element('p','選擇一個模型查看詳情。'));return}
   const [statusLabel,tone]=catalogState(model),head=element('div',undefined,'model-detail-status'),title=element('div');title.append(element('span',model.family||'MODEL','eyebrow'),element('h3',model.name));head.append(title,element('span',statusLabel,'settings-state '+tone));root.append(head,element('p',model.description));
   const component=(state.modelCatalog.components||[]).find(item=>item.id===model.component),stateNames={ready:'可使用',not_installed:'尚未安裝',broken:'需要修復',planned:'整合開發中'};
-  const capability=model.train?`訓練可使用 · ${model.predict?'可產生預標註':'不產生物件預標註'} · 可匯出`:model.unavailable_reason||'尚未準備',facts=element('dl',undefined,'catalog-facts');for(const [label,value]of [['任務',model.task_name||model.task],['所需標註',model.annotation||'依模型說明'],['評估指標',(model.metrics||[]).join('、')||'待定'],['執行元件',component?.name||model.component],['元件狀態',stateNames[model.runtime_state]||model.runtime_state],['模型能力',capability]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',component?.description||'','field-note'),element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
+  const capability=model.inference_only&&model.predict?'可匯入外部權重 · 試跑／預標註／匯出 · 不提供續訓':model.train?`訓練可使用 · ${model.predict?'可產生預標註':'不產生物件預標註'} · 可匯出`:model.unavailable_reason||'尚未準備',facts=element('dl',undefined,'catalog-facts');for(const [label,value]of [['任務',model.task_name||model.task],['所需標註',model.annotation||'依模型說明'],['評估指標',(model.metrics||[]).join('、')||'待定'],['執行元件',component?.name||model.component],['元件狀態',stateNames[model.runtime_state]||model.runtime_state],['模型能力',capability]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',component?.description||'','field-note'),element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
   const actions=element('div',undefined,'catalog-actions');
   if(model.train){const use=button('回到訓練並選用','primary',()=>{if(!state.project){toast('請先開啟專案。',true);return}closeSettings();switchStage('train').then(()=>{$('trainingEngine').value=model.key;renderTraining()})});actions.append(use)}
   else if(model.integration==='ready'&&component?.installable){const install=button(component.state==='broken'?'修復必要元件':'安裝必要元件','primary',()=>safe(()=>installModelComponent(component.id)));actions.append(install)}

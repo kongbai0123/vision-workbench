@@ -47,5 +47,8 @@ jobs:
       - name: Verify camera settings and preview workflow
         run: python tests/desktop_camera_preview.py
 
+      - name: Verify external model import and layout
+        run: python tests/desktop_model_import.py
+
       - name: Verify multilabel split workflow
         run: python tests/desktop_multilabel_split.py

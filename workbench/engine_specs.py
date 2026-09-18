@@ -45,6 +45,7 @@ class EngineSpec:
 
 
 FAMILY_ADAPTERS = {
+    'YOLO External': ('workbench.ultralytics_engine', 'workbench.ultralytics_predict_worker'),
     '內建基準': ('workbench.training_engine', None),
     'Mask R-CNN': ('workbench.maskrcnn_engine', 'workbench.maskrcnn_predict_worker'),
     'Faster R-CNN': ('workbench.torchvision_engines', 'workbench.torchvision_predict_worker'),

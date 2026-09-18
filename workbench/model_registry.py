@@ -111,6 +111,16 @@ MODELS = (
 )
 
 
+MODELS += tuple({"key": key, "name": name, "family": family, "task": task,
+                 "component": "ultralytics", "integration": "ready", "inference_only": True,
+                 "description": "匯入外部 .pt 權重後用於試跑與預標註，不代表已在本專案訓練或評估。",
+                 "annotation": "外部模型類別", "metrics": [], "license": "依來源權重及 Ultralytics 授權"}
+                for key, name, family, task in (
+                    ("external_yolo_detect", "外部 YOLO · 偵測", "YOLO External", "object_detection"),
+                    ("external_yolo_segment", "外部 YOLO · 分割", "YOLO External", "instance_segmentation"),
+                    ("rt_detr_external", "外部 RT-DETR", "RT-DETR", "object_detection")))
+
+
 class ModelRegistry:
     def __init__(self, app_root: Path, python_executable=None):
         self.app_root = Path(app_root).resolve()
@@ -211,7 +221,7 @@ class ModelRegistry:
             train = definition["integration"] == "ready" and component["state"] == "ready"
             reason = "" if train else ("Workbench adapter 尚在開發" if definition["integration"] != "ready" else component["message"])
             models.append({**definition, "task_name": TASK_NAMES[definition["task"]],
-                           "runtime_state": component["state"], "train": train, "evaluate": train,
+                           "runtime_state": component["state"], "train": train and not definition.get("inference_only"), "evaluate": train and not definition.get("inference_only"),
                            "predict": train and definition.get("predict", True), "export": train,
                            "unavailable_reason": reason})
         return {"models": models, "components": components, "tasks": TASK_NAMES,

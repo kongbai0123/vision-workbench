@@ -234,11 +234,14 @@ class ProjectStore:
             if row["dataset_version_id"] not in datasets:
                 raise ValueError(f"訓練 {row['id']} 指向不存在的資料版本")
         for row in models.values():
+            if row['engine'] in {'external_yolo_detect', 'external_yolo_segment', 'rt_detr_external'} and row['run_id'] is None and row['dataset_version_id'] is None:
+                continue
             if row["run_id"] not in runs or row["dataset_version_id"] not in datasets:
                 raise ValueError(f"模型 {row['id']} 的來源關聯不存在")
         for collection in (catalog["model_exports"], catalog["predictions"]):
             for row in collection:
-                if row["model_version_id"] not in models or row["run_id"] not in runs:
+                model = models.get(row['model_version_id'])
+                if model is None or row['run_id'] != model['run_id'] or (row['run_id'] is not None and row['run_id'] not in runs):
                     raise ValueError(f"資產 {row['id']} 的模型或訓練來源不存在")
 
         mapping = [('dataset_versions', 'datasets'), ('training_runs', 'runs'),

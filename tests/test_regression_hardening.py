@@ -60,7 +60,7 @@ class RegressionHardeningTests(unittest.TestCase):
             self.assertEqual(confirmation(db)['migration_audit'][0]['migration'], '0002')
             self.assertEqual(db.execute('SELECT COUNT(*) FROM annotation_blobs').fetchone()[0], 1)
             self.assertIsNotNone(db.execute('SELECT annotation_hash FROM history').fetchone()[0])
-            saved = path.with_suffix('.before-migration-0004.backup')
+            saved = path.with_suffix('.before-migration-0005.backup')
             with closing(sqlite3.connect(saved)) as backup:
                 self.assertEqual(backup.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
                 self.assertEqual(confirmation(backup), original)
@@ -76,14 +76,14 @@ class RegressionHardeningTests(unittest.TestCase):
             self.assertEqual(confirmation(db), original)
             self.assertFalse(valid(confirmation(db), fingerprint(db)))
 
-    def test_0004_adds_a_new_backup_without_replacing_old_backup(self):
+    def test_later_migrations_add_a_new_backup_without_replacing_old_backup(self):
         path, db, _ = self.legacy()
         with closing(db):
             migrations = Path(__file__).parents[1] / 'workbench/migrations'
             original_glob = Path.glob
             def pre_0004(folder, pattern):
                 return (p for p in original_glob(folder, pattern)
-                        if folder != migrations or not p.name.startswith('0004_'))
+                        if folder != migrations or int(p.name.split("_")[0]) < 4)
             with patch('workbench.migrations.Path.glob', pre_0004):
                 migrate(db)
             older = path.with_suffix('.before-migration-0003.backup')
@@ -93,7 +93,7 @@ class RegressionHardeningTests(unittest.TestCase):
             db.commit()
             migrate(db)
             self.assertEqual(older.read_bytes(), original_bytes)
-            self.assertTrue(path.with_suffix('.before-migration-0004.backup').exists())
+            self.assertTrue(path.with_suffix('.before-migration-0005.backup').exists())
             self.assertEqual(db.execute("SELECT COUNT(*) FROM asset_review WHERE asset_id='orphan'").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM annotation_blobs WHERE hash='orphan'").fetchone()[0], 0)
 
@@ -101,7 +101,7 @@ class RegressionHardeningTests(unittest.TestCase):
         path, db, original = self.legacy()
         with closing(db):
             migrate(db)
-            backup = path.with_suffix('.before-migration-0004.backup')
+            backup = path.with_suffix('.before-migration-0005.backup')
             db.execute('UPDATE independence_reviews SET data=?', (dump(original),))
             db.commit()  # Simulate the previously shipped 0002 migration.
         before = path.read_bytes()

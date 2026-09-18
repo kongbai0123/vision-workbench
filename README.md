@@ -23,6 +23,7 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模
 - **標註編輯**：同視窗切換內建編輯器、Labelme 與本機 CVAT，支援 SAM2／GrabCut 輔助分割。
 - **資料管理**：人工審核、修訂追蹤、依來源分組的資料分割、Train-only 資料增強，以及可隨專案備份的固定資料版本。
 - **模型訓練**：支援物件偵測、實例分割、語意分割與圖片分類，提供訓練曲線及模型比較。
+- **外部模型匯入**：匯入 Ultralytics 相容的 YOLO／RT-DETR `.pt` 權重，驗證後使用圖片／影片試跑與預標註，保留來源與類別資訊。
 - **資料交換**：COCO、YOLO、LabelMe、JSONL 與原生格式匯入／匯出，以及模型封裝匯出。
 
 ## 相機參數工作流程
@@ -56,6 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 - [使用指南](docs/usage.md)：選配元件、標註流程、資料分割、模型評估與備份。
 - [相機設定](docs/camera.md)：輸出模式、即時硬體參數、設定檔與 FPS 診斷。
+- [模型匯入與試跑](docs/model-assistance-workflows.md)：外部權重、預標註、資料交換及相容性限制。
 - [開發指南](docs/development.md)：本機開發、程式結構與測試。
 - [版本紀錄](CHANGELOG.md)
 - [問題回報](https://github.com/kongbai0123/vision-workbench/issues)

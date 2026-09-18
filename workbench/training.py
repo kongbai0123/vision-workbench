@@ -730,6 +730,10 @@ class TrainingWorkspace:
         (run_dir / 'control' / 'stop.requested').touch()
         return self.run(project_id, run_id)
 
+    def import_model(self, project_id, path, name='', trusted=False, progress=lambda *_args: None):
+        from .model_import import import_model
+        return import_model(self, project_id, path, name, trusted, progress)
+
     def list_models(self, project_id):
         parent = self.models_dir(project_id)
         rows = [_with_evaluation_reassessment(read_json(item / "model.json"), item, model=True) for item in parent.iterdir()
@@ -747,8 +751,8 @@ class TrainingWorkspace:
         model = self.model(project_id, model_id)
         project = self.store.get_project(project_id, include_assets=False)
         model_dir = self._model_path(project_id, model_id).parent
-        run_id = _safe_id(model.get("run_id"), "R")
-        run_dir = self._run_path(project_id, run_id).parent
+        run_id = _safe_id(model.get("run_id"), "R") if model.get("run_id") else None
+        run_dir = self._run_path(project_id, run_id).parent if run_id else None
         parent = self.model_exports_dir(project_id, create=True)
         with self.lock:
             export_id = _next_id(parent, "E")
@@ -762,6 +766,8 @@ class TrainingWorkspace:
                     if path.is_file() and not path.is_symlink():
                         sources.append((path, f"model/{path.name}"))
                 for name in ("run.json", "metrics.jsonl", "evaluation.json", "evaluation.v2.json", "artifact-manifest.json"):
+                    if run_dir is None:
+                        continue
                     path = run_dir / name
                     if path.is_file() and not path.is_symlink():
                         sources.append((path, f"run/{name}"))
@@ -778,7 +784,7 @@ class TrainingWorkspace:
                             "model_version_id": model_id, "run_id": run_id,
                             "dataset_version_id": model.get("dataset_version_id"),
                             "engine": model.get("engine"), "engine_name": model.get("engine_name"),
-                            "classes": model.get("classes", []), "artifacts": artifacts}
+                            "classes": model.get("classes", []), "source": model.get("source"), "artifacts": artifacts}
                 bundle = temporary / f"{project_id}-{model_id}-model.zip"
                 progress("建立可攜式模型封裝", 55)
                 with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
@@ -819,6 +825,10 @@ class TrainingWorkspace:
                 raise ValueError("影像分類結果不會轉成整張圖片的 Bounding Box；目前僅提供訓練、評估與模型匯出")
             raise RuntimeError(definition.get("unavailable_reason") if definition else "此模型不支援預標註")
         project = self.store.snapshot(project_id)
+        if model.get('source', {}).get('kind') == 'external_import':
+            missing_classes = set(model['classes']) - set(project['classes'])
+            if missing_classes:
+                raise ValueError('請先在專案管理類別中加入模型類別：' + '、'.join(sorted(missing_classes)))
         requested = set(asset_ids or [asset["id"] for asset in project["assets"] if asset["review_state"] != "approved"])
         if not requested:
             raise ValueError("沒有可產生預標註的圖片")
@@ -830,7 +840,7 @@ class TrainingWorkspace:
         from .engine_specs import engine_spec
         external_worker = engine_spec(model["engine"]).predict_module
         if external_worker:
-            if not definition.get("train"):
+            if not definition.get("predict"):
                 raise RuntimeError(definition.get("unavailable_reason") or "模型執行環境不可用")
             token = uuid.uuid4().hex
             prediction_dir = self.predictions_dir(project_id, create=True)
@@ -911,7 +921,9 @@ class TrainingWorkspace:
 
     def create_model_comparison(self, project_id, model_id, split='test', progress=lambda _message, _percent=None, **_meta: None):
         """Run the model on immutable labeled data and report explicit IoU=.5 box outcomes."""
-        model=self.model(project_id,model_id);dataset_id=model.get('dataset_version_id');dataset_dir=self.datasets_dir(project_id)/str(dataset_id)
+        model=self.model(project_id,model_id);dataset_id=model.get('dataset_version_id')
+        if not dataset_id: raise ValueError('外部模型沒有本專案固定資料版本，尚不能執行 Test／Validation 比對；可先使用圖片或影片試跑')
+        dataset_dir=self.datasets_dir(project_id)/str(dataset_id)
         manifest=read_json(dataset_dir/'manifest.json');split=str(split or 'test')
         if split not in {'val','test'}: raise ValueError('標註比對僅支援 Validation 或 Test')
         assets=[asset for asset in manifest.get('assets',[]) if asset.get('split')==split]
@@ -992,6 +1004,7 @@ class TrainingWorkspace:
         issues = []
         datasets, runs, models, exports, predictions = [], [], [], [], []
         dataset_ids, run_ids, model_ids = set(), set(), set()
+        imported_models = set()
 
         for directory in sorted(self.datasets_dir(project_id).glob("D*")):
             path = directory / "manifest.json"
@@ -1053,9 +1066,12 @@ class TrainingWorkspace:
             try:
                 row = read_json(path)
                 model_id = _safe_id(row.get("model_version_id"), "M")
-                run_id = _safe_id(row.get("run_id"), "R")
-                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
-                if model_id != directory.name or run_id not in run_ids or dataset_id not in dataset_ids:
+                external = row.get("source", {}).get("kind") == "external_import"
+                run_id = None if external else _safe_id(row.get("run_id"), "R")
+                dataset_id = None if external else _safe_id(row.get("dataset_version_id"), "D")
+                if external:
+                    imported_models.add(model_id)
+                if model_id != directory.name or (not external and (run_id not in run_ids or dataset_id not in dataset_ids)):
                     raise ValueError("模型 ID 或來源關聯無效")
                 created = row.get("created_at", 0)
                 models.append({
@@ -1075,9 +1091,9 @@ class TrainingWorkspace:
                 row = read_json(path)
                 export_id = _safe_id(row.get("export_id"), "E")
                 model_id = _safe_id(row.get("model_version_id"), "M")
-                run_id = _safe_id(row.get("run_id"), "R")
-                dataset_id = _safe_id(row.get("dataset_version_id"), "D")
-                if export_id != directory.name or model_id not in model_ids or run_id not in run_ids or dataset_id not in dataset_ids:
+                run_id = None if model_id in imported_models else _safe_id(row.get("run_id"), "R")
+                dataset_id = None if model_id in imported_models else _safe_id(row.get("dataset_version_id"), "D")
+                if export_id != directory.name or model_id not in model_ids or (model_id not in imported_models and (run_id not in run_ids or dataset_id not in dataset_ids)):
                     raise ValueError("模型匯出來源關聯無效")
                 exports.append({
                     "id": export_id, "model_version_id": model_id, "run_id": run_id,
@@ -1093,8 +1109,8 @@ class TrainingWorkspace:
                 row = read_json(path)
                 candidate_id = str(row["candidate_id"])
                 model_id = _safe_id(row.get("model_version_id"), "M")
-                run_id = _safe_id(row.get("run_id"), "R")
-                if path.stem != candidate_id or model_id not in model_ids or run_id not in run_ids:
+                run_id = None if model_id in imported_models else _safe_id(row.get("run_id"), "R")
+                if path.stem != candidate_id or model_id not in model_ids or (model_id not in imported_models and run_id not in run_ids):
                     raise ValueError("候選標註 ID 或模型來源關聯無效")
                 assets = row.get("assets", [])
                 predictions.append({

@@ -44,6 +44,9 @@ class DialogBridge(QObject):
             if kind in {"folder", "output"}:
                 value = QFileDialog.getExistingDirectory(self.parent_window, "選擇匯出位置" if kind == "output" else "匯入整份影像資料夾")
                 request["paths"] = [value] if value else []
+            elif kind == "model":
+                value, _ = QFileDialog.getOpenFileName(self.parent_window, "匯入 YOLO／RT-DETR 權重", "", "PyTorch 權重 (*.pt)")
+                request["paths"] = [value] if value else []
             elif kind == "video":
                 value, _ = QFileDialog.getOpenFileName(self.parent_window,"選擇影片", "", "影片 (*.mp4 *.avi *.mov *.mkv *.webm);;所有檔案 (*)")
                 request["paths"] = [value] if value else []

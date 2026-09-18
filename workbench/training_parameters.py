@@ -5,7 +5,7 @@ import math
 
 
 def parameter_schema(definition):
-    if definition.get("integration", "ready") != "ready":
+    if definition.get("integration", "ready") != "ready" or definition.get("inference_only"):
         return []
     baseline = definition["key"] == "pixel_prototype_v1"
     parameters = [{"key": "epochs", "label": "門檻搜尋次數" if baseline else "訓練輪數",

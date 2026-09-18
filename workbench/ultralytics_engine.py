@@ -472,7 +472,8 @@ class Predictor:
     def __init__(self, record, model_dir, requested_device="auto"):
         os.environ.setdefault("YOLO_OFFLINE", "true")
         from ultralytics import RTDETR, YOLO
-        self.record = record; self.definition = ULTRALYTICS_ENGINES[record["engine"]]
+        self.record = record; self.definition = ({"kind": "segment" if record["task"] == "instance_segmentation" else "detect"}
+                                                if record.get("source", {}).get("kind") == "external_import" else ULTRALYTICS_ENGINES[record["engine"]])
         constructor = RTDETR if record['engine'].startswith('rt_detr_') else YOLO
         self.model = constructor(str(Path(model_dir) / record["checkpoint"]))
         self.device = "0" if requested_device == "cuda" else "cpu" if requested_device == "cpu" else None
