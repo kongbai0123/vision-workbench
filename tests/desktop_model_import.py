@@ -26,13 +26,10 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as folder:
         folder = Path(folder)
-        checkpoint = folder / 'external.pt'
-        checkpoint.write_bytes(b'synthetic; never loaded by torch')
         service = WorkbenchService(folder / 'data').start()
         project = service.store.create_project('外部模型匯入示範')
         registry = service.training.registry
         registry.component_status = lambda *args, **kwargs: {key: {'state': 'ready', 'message': 'synthetic runtime'} for key in ('builtin', 'torchvision', 'anomalib', 'ultralytics')}
-        service.dialog = lambda kind: [str(checkpoint)] if kind == 'model' else []
         def inspect(command, *_args, **_kwargs):
             atomic_json(Path(command[command.index('--output')+1]), {'engine': 'external_yolo_detect', 'task': 'object_detection', 'classes': ['part'], 'architecture': 'DetectionModel'})
         view = QWebEngineView();page = Page(view);view.setPage(page)
@@ -61,8 +58,11 @@ def main():
                 view.resize(width,1000);QTest.qWait(200)
                 assert js("Math.abs(document.querySelector('.model-browser').getBoundingClientRect().bottom-document.querySelector('#modelDetail').getBoundingClientRect().bottom)<2")
             settle();view.grab().save(str(output/'aligned-empty.png'))
-            click('#importModel');wait("document.querySelector('#modelImportPath')!==null")
-            js(f"document.querySelector('#modelImportPath').value={json.dumps(str(checkpoint))}")
+            click('#importModel');wait("document.querySelector('#modelImportFile')?.type==='file'")
+            assert js("document.querySelector('#modelImportPath')===null && document.querySelector('#modelImportFile').accept==='.pt'")
+            js("""(()=>{const transfer=new DataTransfer();transfer.items.add(new File([new TextEncoder().encode('synthetic; never loaded by torch')],'external.pt',{type:'application/octet-stream'}));document.querySelector('.model-import-dropzone').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()""")
+            wait("document.querySelector('.model-import-selection').textContent.includes('external.pt')")
+            settle();view.grab().save(str(output/'selected-file.png'))
             click('#confirmDialog')
             wait("document.querySelector('#toast').textContent.includes('可信任')")
             assert not service.training.list_models(project['id'])
@@ -72,6 +72,7 @@ def main():
                 wait("!document.querySelector('#formDialog').open && document.querySelector('#modelDetail').textContent.includes('零件模型')")
             text=js("document.querySelector('#modelDetail').textContent")
             assert '尚未評估' in text and '0.000' not in text
+            assert list(service.model_uploads.root.iterdir())==[]
             assert js("!document.querySelector('#trialImages').disabled && document.querySelector('#runModelComparison').disabled")
             assert js("Math.abs(document.querySelector('.model-browser').getBoundingClientRect().bottom-document.querySelector('#modelDetail').getBoundingClientRect().bottom)<2")
             wait("!window.workbenchState().busy && !window.workbenchState().transitioning")

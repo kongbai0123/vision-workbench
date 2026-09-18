@@ -5,6 +5,7 @@ import time
 import unittest
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.parse import quote
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -36,6 +37,13 @@ class ApiWorkflowTests(unittest.TestCase):
         with urlopen(request,timeout=30) as response:
             return json.loads(response.read())
 
+    def upload_model(self, name, payload):
+        headers={"Content-Type":"application/octet-stream","X-Workbench":"1","Origin":self.service.url,
+                 'X-Workbench-Token':self.service.api_token,'X-Workbench-Filename':quote(name)}
+        request=Request(self.service.url+'/api/model-uploads',data=payload,method='POST',headers=headers)
+        with urlopen(request,timeout=30) as response:
+            return json.loads(response.read())
+
     def job(self,job):
         end=time.monotonic()+40
         while time.monotonic()<end:
@@ -64,6 +72,19 @@ class ApiWorkflowTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:
             self.call('/api/projects', {'name': []})
         self.assertEqual(error.exception.code, 400)
+
+    def test_browser_model_upload_streams_to_single_use_temporary_file(self):
+        payload=b'synthetic model checkpoint'
+        result=self.upload_model('零件 模型.pt',payload)
+        self.assertEqual(result['filename'],'零件 模型.pt')
+        self.assertEqual(result['bytes'],len(payload))
+        path,filename=self.service.model_uploads.claim(result['upload_token'])
+        self.assertEqual(filename,'零件 模型.pt')
+        self.assertEqual(path.read_bytes(),payload)
+        self.service.model_uploads.discard(path)
+        with self.assertRaises(HTTPError) as error:
+            self.upload_model('model.onnx',payload)
+        self.assertEqual(error.exception.code,400)
 
     def test_model_trial_job_and_media_are_ephemeral_and_authenticated(self):
         project=self.call('/api/projects',{'name':'trial'});pid=project['id'];session='a'*32

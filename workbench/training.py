@@ -730,9 +730,9 @@ class TrainingWorkspace:
         (run_dir / 'control' / 'stop.requested').touch()
         return self.run(project_id, run_id)
 
-    def import_model(self, project_id, path, name='', trusted=False, progress=lambda *_args: None):
+    def import_model(self, project_id, path, name='', trusted=False, progress=lambda *_args: None, source_filename=None):
         from .model_import import import_model
-        return import_model(self, project_id, path, name, trusted, progress)
+        return import_model(self, project_id, path, name, trusted, progress, source_filename=source_filename)
 
     def list_models(self, project_id):
         parent = self.models_dir(project_id)

@@ -8,17 +8,20 @@ import uuid
 from .training_engine import atomic_json, read_json
 
 
-def import_model(workspace, project_id, path, name='', trusted=False, progress=lambda *_args: None):
+def import_model(workspace, project_id, path, name='', trusted=False, progress=lambda *_args: None, source_filename=None):
     if trusted is not True:
         raise ValueError('請確認權重來自可信任的來源；.pt 載入可能執行其中的 Python 程式碼')
     workspace.store.get_project(project_id, include_assets=False)
-    if not isinstance(path, str) or not path.strip():
+    if not isinstance(path, (str, Path)) or not str(path).strip():
         raise ValueError('請選擇 .pt 權重檔案')
     source = Path(path).expanduser().resolve()
     if not source.is_file() or source.suffix.lower() != '.pt' or source.stat().st_size == 0:
         raise ValueError('請選擇非空白的本機 .pt 權重檔案')
     if not isinstance(name, str) or len(name.strip()) > 100:
         raise ValueError('模型名稱上限為 100 字元')
+    original_name = Path(str(source_filename or source.name).replace('\\', '/')).name
+    if not original_name or Path(original_name).suffix.lower() != '.pt':
+        raise ValueError('模型來源檔名無效')
     component = workspace.registry.component_status().get('ultralytics', {})
     if component.get('state') != 'ready':
         raise ValueError('請先至「設定 → 模型與元件」安裝或修復 Ultralytics 執行環境')
@@ -51,10 +54,10 @@ def import_model(workspace, project_id, path, name='', trusted=False, progress=l
         with workspace.lock:
             model_id = _next_id(parent, 'M')
             record = {'schema_version': 1, 'model_version_id': model_id, 'run_id': None, 'dataset_version_id': None,
-                      'engine': info['engine'], 'engine_name': name.strip() or f"{definition['name']} · {source.stem}",
+                      'engine': info['engine'], 'engine_name': name.strip() or f"{definition['name']} · {Path(original_name).stem}",
                       'task': info['task'], 'classes': classes, 'checkpoint': 'checkpoint.pt',
                       'image_size': 640, 'score_threshold': .5, 'created_at': time.time(),
-                      'source': {'kind': 'external_import', 'filename': source.name, 'sha256': digest,
+                      'source': {'kind': 'external_import', 'filename': original_name, 'sha256': digest,
                                  'bytes': checkpoint.stat().st_size, 'architecture': info.get('architecture'),
                                  'trusted_by_user': True, 'validation': 'cpu_inference_smoke_test'},
                       'validation': None, 'test': None}

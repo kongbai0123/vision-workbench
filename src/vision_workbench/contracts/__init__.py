@@ -13,8 +13,8 @@ FIELD_TYPES = {
     'name': str, 'state': str, 'reason': str, 'note': str, 'batch_id': str,
     'split': str, 'project_id': str, 'asset_id': str, 'dataset_version_id': str,
     'model_version_id': str, 'request_id': str, 'format': str, 'version': str,
-    'path': str, 'kind': str, 'mode': str, 'engine': str,
-    'confirmed': bool, 'confirm': bool, 'acknowledge_loss': bool, 'quarantine': bool,
+    'path': str, 'kind': str, 'mode': str, 'engine': str, 'upload_token': str,
+    'confirmed': bool, 'confirm': bool, 'acknowledge_loss': bool, 'quarantine': bool, 'trusted': bool,
 }
 
 REQUIRED = (

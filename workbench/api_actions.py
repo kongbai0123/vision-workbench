@@ -84,6 +84,22 @@ def action_review_compatibility(self, pid, payload, action):
 
 
 def action_model_import(self, pid, payload, action):
+    upload_token = payload.get('upload_token')
+    if upload_token:
+        checkpoint, filename = self.app.model_uploads.claim(upload_token)
+        def import_uploaded(progress):
+            try:
+                return self.app.training.import_model(
+                    pid, checkpoint, payload.get('name', ''), payload.get('trusted', False), progress,
+                    source_filename=filename)
+            finally:
+                self.app.model_uploads.discard(checkpoint)
+        try:
+            job = self.app.jobs.submit('model-import', import_uploaded)
+        except Exception:
+            self.app.model_uploads.discard(checkpoint)
+            raise
+        return self.json(job)
     return self.json(self.app.jobs.submit('model-import', lambda progress:
         self.app.training.import_model(pid, payload.get('path'), payload.get('name', ''), payload.get('trusted', False), progress)))
 

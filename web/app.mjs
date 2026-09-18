@@ -48,8 +48,9 @@ nativeCallbacks.updateStatus=count=>{
 };
 async function api(path,method='GET',body) {
   if(method==='POST'&&state.project&&/\/(review|assign)$/.test(path))body={...body,delta_base:state.project.revision};
+  const binary=typeof Blob!=='undefined'&&body instanceof Blob;
   let response;
-  try {response=await fetch(path,{method,cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json','X-Workbench':'1'},...(body===undefined?{}:{body:JSON.stringify(body)})});}
+  try {response=await fetch(path,{method,cache:'no-store',headers:body===undefined?{}:binary?{'Content-Type':'application/octet-stream','X-Workbench':'1','X-Workbench-Filename':encodeURIComponent(body.name||'model.pt')}:{'Content-Type':'application/json','X-Workbench':'1'},...(body===undefined?{}:{body:binary?body:JSON.stringify(body)})});}
   catch {throw Error('無法連線到本機服務。編輯內容仍保留在畫面，請恢復服務後儲存。');}
   let value;try{value=await response.json()}catch{throw Error(`本機服務回應格式無效（${response.status}）。`)}
   if(!response.ok){const e=Error(value.message||value.error||`操作失敗（${response.status}）`);e.status=response.status;e.details=value;throw e;}

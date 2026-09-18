@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__
 from .jobs import JobManager
+from .model_uploads import ModelUploadStore
 from .store import ConflictError, ProjectStore, dump
 from .training import TrainingWorkspace
 
@@ -35,6 +36,7 @@ class WorkbenchService:
         self.exports.mkdir(exist_ok=True)
         self.incoming = self.data_root / "incoming"
         self.incoming.mkdir(exist_ok=True)
+        self.model_uploads = ModelUploadStore(self.data_root)
         self.jobs = JobManager()
         self.training = TrainingWorkspace(self.data_root, self.store)
         self.dialog = dialog
@@ -104,6 +106,7 @@ class WorkbenchService:
             self.httpd.shutdown()
         self.httpd.server_close()
         self.jobs.close()
+        self.model_uploads.close()
         self._ai_runtime.close()
         self.training.close()
         import shutil
@@ -217,18 +220,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.headers.get("Host", "") == expected
 
     def body(self):
-        origin = self.headers.get("Origin")
-        if not self.authorized() or not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
-            # Drain a bounded small body so Windows does not replace the 403
-            # with a TCP reset when the connection closes with unread input.
-            try:
-                size=int(self.headers.get('Content-Length','0'))
-                if 0<size<=65536:
-                    previous=self.connection.gettimeout();self.connection.settimeout(.5)
-                    try:self.rfile.read(size)
-                    finally:self.connection.settimeout(previous)
-            except (ValueError,OSError):pass
-            raise PermissionError("僅接受軟體本機介面的操作")
+        self.require_mutation_access()
         if self.headers.get_content_type() != "application/json":
             raise ValueError("請使用 JSON 請求")
         try:
@@ -241,6 +233,31 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("請求內容必須為物件")
         return payload
+
+    def require_mutation_access(self):
+        origin = self.headers.get("Origin")
+        if not self.authorized() or not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
+            # Drain a bounded small body so Windows does not replace the 403
+            # with a TCP reset when the connection closes with unread input.
+            try:
+                size=int(self.headers.get('Content-Length','0'))
+                if 0<size<=65536:
+                    previous=self.connection.gettimeout();self.connection.settimeout(.5)
+                    try:self.rfile.read(size)
+                    finally:self.connection.settimeout(previous)
+            except (ValueError,OSError):pass
+            raise PermissionError("僅接受軟體本機介面的操作")
+
+    def model_upload(self):
+        self.require_mutation_access()
+        if self.headers.get_content_type() != "application/octet-stream":
+            raise ValueError("模型檔案必須以二進位格式上傳")
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("請求長度無效")
+        filename = unquote(self.headers.get("X-Workbench-Filename", ""))
+        return self.json(self.app.model_uploads.save(self.rfile, size, filename), 201)
 
     def send_bytes(self, body, content_type, status=200, *, etag=None):
         self.send_response(status)
@@ -420,9 +437,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def mutate(self, method):
         try:
-            payload = self.body()
             path = urlsplit(self.path).path
             validate_method(path, method)
+            if path == "/api/model-uploads" and method == "POST":
+                return self.model_upload()
+            payload = self.body()
             from vision_workbench.contracts import validate_request
             validate_request(path, method, payload)
             parts = path.strip("/").split("/")

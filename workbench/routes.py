@@ -13,6 +13,7 @@ MUTATIONS = [
     (r'/api/camera/profiles', {'GET', 'POST'}),
     (r'/api/(dialog|open-folder|camera/(start|stop|controls|processing|record/start|record/stop)|cvat/(setup|reboot|reboot/cancel|launch|import))', {'POST'}),
     (r'/api/model-components/[^/]+/install', {'POST'}),
+    (r'/api/model-uploads', {'POST'}),
     (r'/api/jobs/[^/]+/(pause|resume|cancel)', {'POST'}),
     (r'/api/predictions/[^/]+/accept', {'POST'}),
 ]
