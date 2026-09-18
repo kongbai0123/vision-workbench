@@ -24,6 +24,8 @@ TASK_NAMES = {
     "anomaly_detection": "異常檢測",
 }
 
+COMPONENT_PROBE_TIMEOUT_SECONDS = 90
+
 COMPONENTS = {
     "builtin": {
         "name": "工作台內建引擎", "installable": False,
@@ -151,7 +153,8 @@ class ModelRegistry:
                 "'torch':torch.__version__,'torchvision':torchvision.__version__,"
                 "'cuda':bool(torch.cuda.is_available()),'device':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}))")
         try:
-            result = subprocess.run([str(python), "-c", code], capture_output=True, text=True, timeout=30,
+            result = subprocess.run([str(python), "-c", code], capture_output=True, text=True,
+                                    timeout=COMPONENT_PROBE_TIMEOUT_SECONDS,
                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             if result.returncode:
                 state = "broken" if dedicated else "not_installed"
@@ -173,7 +176,8 @@ class ModelRegistry:
         versions = ",".join(repr(name) + ":getattr(" + name + ",'__version__','unknown')" for name in imports)
         code = "import json," + ",".join(imports) + "; print(json.dumps({'versions': {" + versions + "}}))"
         try:
-            result = subprocess.run([str(python), "-c", code], capture_output=True, text=True, timeout=30,
+            result = subprocess.run([str(python), "-c", code], capture_output=True, text=True,
+                                    timeout=COMPONENT_PROBE_TIMEOUT_SECONDS,
                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             if result.returncode:
                 return {"state": "broken", "message": f"{COMPONENTS[component_id]['name']} 無法載入，請執行修復",

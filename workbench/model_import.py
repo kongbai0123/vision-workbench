@@ -22,7 +22,8 @@ def import_model(workspace, project_id, path, name='', trusted=False, progress=l
     original_name = Path(str(source_filename or source.name).replace('\\', '/')).name
     if not original_name or Path(original_name).suffix.lower() != '.pt':
         raise ValueError('模型來源檔名無效')
-    component = workspace.registry.component_status().get('ultralytics', {})
+    # Always refresh here: an installation can finish after the catalog cache was built.
+    component = workspace.registry.component_status(refresh=True).get('ultralytics', {})
     if component.get('state') != 'ready':
         raise ValueError('請先至「設定 → 模型與元件」安裝或修復 Ultralytics 執行環境')
     parent = workspace.models_dir(project_id, create=True)

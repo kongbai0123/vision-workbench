@@ -286,6 +286,8 @@ async function importExternalModel(){
   dropZone.append(dropIcon,dropTitle,dropHint);body.append(element('p','支援 Ultralytics 相容的 YOLO 偵測／實例分割與 RT-DETR 偵測權重。檔案會先安全上傳至本機暫存區，再複製至專案並驗證架構、類別與 CPU 推論。'),fileInput,dropZone,selection,nameLabel,name,element('p','載入 .pt 可能執行其中的 Python 程式碼。請只選擇自己訓練或信任來源的權重。','field-note'),trustLabel,element('p','模型類別沿用權重中的名稱；預標註前請在專案建立相同類別。匯入不會建立假的訓練紀錄或評估分數。','field-note'));
   const result=await formDialog({title:'匯入外部模型',body,confirm:'驗證並匯入',eyebrow:'IMPORT MODEL',onSubmit:async()=>{
     if(!selectedFile)throw Error('請選擇或拖入 .pt 權重檔案。');if(!trust.checked)throw Error('請先確認權重來源可信任。');
+    const catalog=await api('/api/model-catalog?refresh=1'),component=(catalog.components||[]).find(item=>item.id==='ultralytics');
+    if(component?.state!=='ready')throw Error(component?.message||'請先至「設定 → 模型與元件」安裝或修復 Ultralytics 執行環境。');
     const upload=await api('/api/model-uploads','POST',selectedFile);
     return pollJob(await api(projectPath('/model-import'),'POST',{upload_token:upload.upload_token,name:name.value.trim(),trusted:trust.checked}));
   }});

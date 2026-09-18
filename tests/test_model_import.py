@@ -90,10 +90,18 @@ class ModelImportTests(unittest.TestCase):
         with patch('workbench.process_control.run_controlled') as worker:
             with self.assertRaisesRegex(ValueError, '可信任'):
                 self.workspace.import_model(self.pid, str(self.checkpoint))
-            self.workspace.registry.component_status = lambda: {'ultralytics': {'state': 'not_installed'}}
+            self.workspace.registry.component_status = lambda *args, **kwargs: {'ultralytics': {'state': 'not_installed'}}
             with self.assertRaisesRegex(ValueError, '安裝或修復'):
                 self.workspace.import_model(self.pid, str(self.checkpoint), trusted=True)
             worker.assert_not_called()
+
+    def test_import_refreshes_runtime_state_before_rejecting_cached_status(self):
+        refreshes = []
+        self.workspace.registry.component_status = lambda refresh=False: (
+            refreshes.append(refresh) or {'ultralytics': {'state': 'ready'}})
+        with patch('workbench.process_control.run_controlled', self.inspect):
+            self.workspace.import_model(self.pid, str(self.checkpoint), trusted=True)
+        self.assertEqual(refreshes, [True])
 
     def test_migration_keeps_existing_foreign_keys_and_accepts_external_lineage(self):
         migrations = Path(__file__).parents[1] / 'workbench/migrations'
