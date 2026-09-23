@@ -1,9 +1,23 @@
+export function filterReviewAssets(assets,{query='',status='pending',reason='',annotation='all'}={}) {
+  const search=String(query).trim().toLowerCase();
+  return (assets||[]).filter(asset=>{
+    const matchesStatus=status==='all'||(status==='correction'
+      ?asset.review_state==='pending'&&asset.source?.review?.needs_correction
+      :asset.review_state===status);
+    const matchesReason=!reason||(reason==='疑似模糊'
+      ?asset.source?.quality?.suspected_blur
+      :asset.source?.review?.reason===reason);
+    const annotated=Number(asset.shape_count)>0;
+    const matchesAnnotation=annotation==='all'||(annotation==='annotated'?annotated:!annotated);
+    return asset.name.toLowerCase().includes(search)&&matchesStatus&&matchesReason&&matchesAnnotation;
+  });
+}
+
 export function createReviewPage(context) {
 const {$, state, stats, element, number, date, thumbnailURL, reviewNames, button, safe, selectAsset, switchStage, renderYoloCompatibility, api, projectPath, kind, colorFor, decodeMask, flushAllEdits, updateAssetHeader, toast, checkReviewYoloCompatibility, formDialog, imageURL, saver, editor, renderAssetList, confirmDeleteAssets}=context;
 function filteredReview() {
-  const query=$('reviewSearch').value.toLowerCase(),filter=$('reviewFilter').value;
-  const reason=$('reviewReasonFilter').value;
-  return (state.project?.assets||[]).filter(a=>a.name.toLowerCase().includes(query)&&(filter==='all'||(filter==='correction'?a.review_state==='pending'&&a.source?.review?.needs_correction:a.review_state===filter))&&(!reason||(reason==='疑似模糊'?a.source?.quality?.suspected_blur:a.source?.review?.reason===reason)));
+  return filterReviewAssets(state.project?.assets,{query:$('reviewSearch').value,status:$('reviewFilter').value,
+    reason:$('reviewReasonFilter').value,annotation:$('reviewAnnotationFilter').value});
 }
 function reviewPageItems() {return filteredReview().slice(state.reviewPage*48,(state.reviewPage+1)*48);}
 function updateReviewSelection() {
@@ -37,7 +51,8 @@ function renderReview() {
     card.tabIndex=0;card.setAttribute('aria-label',`選取 ${asset.name}`);
     card.onclick=event=>{if(event.target.closest('button,input,label'))return;check.checked=!check.checked;check.onchange()};
     card.onkeydown=event=>{if(event.target===card&&[' ','Enter'].includes(event.key)){event.preventDefault();check.checked=!check.checked;check.onchange()}};
-    const body=element('div',undefined,'review-card-body');body.append(element('b',asset.name),element('small',`${asset.width} × ${asset.height} · ${asset.shape_count||0} 個物件`));
+    const shapeCount=Number(asset.shape_count)||0;
+    const body=element('div',undefined,'review-card-body');body.append(element('b',asset.name),element('small',`${asset.width} × ${asset.height} · ${shapeCount} 個物件 · ${shapeCount?'有標註':'無標註'}`));
     const review=asset.source?.review;
     if(review?.reason)body.append(element('small',`${review.reason}${review.note?' · '+review.note:''}`));
     if(asset.source?.quality?.suspected_blur)body.append(element('small','疑似模糊 · 請人工確認'));

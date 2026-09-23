@@ -347,7 +347,7 @@ async function openProject(id) {
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;trainingMonitor.reset();trainingParameters.reset();
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
-    state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewReasonFilter').value='';
+    state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
     closeReleaseDrawer();resetValidation('請執行驗證，檢查目前專案及目標格式。');
     $('importReport').hidden=true;$('videoReport').hidden=true;$('mergeReport').hidden=true;
@@ -971,11 +971,12 @@ async function applyProcessing(calibrate=false) {
 bind('applyProcessing',()=>applyProcessing(false),{busy:true,task:()=>`切換影像輸出 · ${$('processingMode').selectedOptions[0]?.textContent||'預覽'}`});bind('calibrateBackground',()=>{if($('processingMode').value!=='classical')throw Error('請先選擇「古典背景分割」模式，再進行背景校正。');return applyProcessing(true)},{busy:true,task:'背景校正'});
 bind('runAI',runAI,{busy:true});
 const reasonFilter=$('reviewReasonFilter');
+const annotationFilter=$('reviewAnnotationFilter');
 bind('reviewCorrection',()=>reviewSelection('pending','待修正'),{busy:true});bind('reviewTrash',trashReview,{busy:true});bind('reviewDelete',deleteReview,{busy:true});bind('reviewRestore',restoreReview,{busy:true});
 bind('reviewQuality',async()=>{state.project=await pollJob(await api(projectPath('/review-quality'),'POST',{}));renderReview();toast('模糊提示已更新，請人工確認是否保留。')},{busy:true});
 bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewReject',excludeReview,{busy:true});bind('reviewPending',()=>reviewSelection('pending'),{busy:true});bind('assignSelected',assignSelected);
 const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;state.reviewScroll=0;renderReview()};
-$('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
+$('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;annotationFilter.onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
 $('reviewSelectAll').onchange=()=>{for(const asset of filteredReview())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
 $('confirmIndependentAssets').onchange=()=>safe(()=>setIndependentAssets($('confirmIndependentAssets').checked));
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};

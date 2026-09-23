@@ -194,6 +194,12 @@ def main():
                 bounds=json.loads(box);assert bounds['height']>height*.4 and bounds['width']>350,bounds
             view.resize(1440,900)
             click("[data-stage='review']");wait("!document.querySelector('#review').hidden")
+            fill("#reviewAnnotationFilter","unannotated")
+            wait("document.querySelector('#reviewPageLabel').innerText.includes('0 張')")
+            assert js("document.querySelector('#reviewGrid').innerText.includes('沒有符合篩選條件')")
+            fill("#reviewAnnotationFilter","annotated")
+            wait("document.querySelectorAll('#reviewGrid .review-card').length===4")
+            assert js("[...document.querySelectorAll('#reviewGrid .review-card-body>small:first-of-type')].every(e=>e.innerText.includes('有標註'))")
             click("#reviewSelectAll");click("#reviewApprove")
             wait("document.querySelector('#reviewStats').innerText.includes('4')")
             wait("!window.workbenchState().busy")
