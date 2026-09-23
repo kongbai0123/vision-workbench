@@ -13,6 +13,7 @@ import {createPreparationPage} from './pages/preparation.mjs';
 import {createCameraPage} from './pages/camera.mjs';
 import {state, mergeProjectDelta} from './state.mjs';
 import {nativeCallbacks, installNativeCallbacks, connectNative} from './native-bridge.mjs';
+import {nearestVisibleScrollTop} from './scroll-position.mjs';
 installNativeCallbacks();
 
 const $ = id => document.getElementById(id);
@@ -535,6 +536,8 @@ function filteredAssets() {
 }
 function renderAssetList() {
   const list=$('assetList'),items=filteredAssets();
+  const previousScrollTop=list.scrollTop;
+  const restoreFocus=list.contains(document.activeElement);
   const thumbnails=new Map([...list.querySelectorAll('[data-asset-id]')].map(row=>[row.dataset.assetId,row.querySelector('img')]));
   list.replaceChildren();$('assetCount').textContent=number(state.project?.assets.length||0);
   for(const asset of items) {
@@ -546,6 +549,17 @@ function renderAssetList() {
     row.title=asset.name;row.append(img,copy,element('span',undefined,'asset-state-dot '+asset.review_state));list.append(row);
   }
   if(!items.length)list.append(element('p',state.project?.assets.length?'沒有符合條件的圖片。':'匯入圖片後會顯示在此。','empty-list'));
+  list.scrollTop=previousScrollTop;
+  const active=list.querySelector('.asset-row.active');
+  if(active&&restoreFocus)active.focus({preventScroll:true});
+  if(active)requestAnimationFrame(()=>{
+    if(!active.isConnected)return;
+    const bounds=list.getBoundingClientRect(),rect=active.getBoundingClientRect();
+    list.scrollTop=nearestVisibleScrollTop({
+      scrollTop:list.scrollTop,viewportHeight:list.clientHeight,contentHeight:list.scrollHeight,
+      itemTop:list.scrollTop+rect.top-bounds.top,itemHeight:rect.height,
+    });
+  });
   updateAssetHeader();renderAcquisitionAssets();
 }
 function updateAssetHeader() {

@@ -205,10 +205,8 @@ class MainWindow(QMainWindow):
         painter.end()
         self.setWindowIcon(QIcon(pixmap))
         self.update_timer = QTimer(self)
-        self.update_timer.setInterval(10000)
+        self.update_timer.setInterval(2500)
         self.update_timer.timeout.connect(self.check_update_indicator)
-        if __import__('os').environ.get('VISION_WORKBENCH_DEVELOPMENT') == '1':
-            self.update_timer.start()
 
     def toggle_fullscreen(self):
         """Switch the native workbench between full-screen and windowed mode."""
@@ -408,6 +406,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "介面載入失敗", "請檢查 data/logs/workbench.log 後重新啟動。專案資料仍保留在本機。")
         else:
             self.check_update_indicator()
+            # ES modules may finish installing the callback just after loadFinished.
+            # Retry once, then keep the indicator current in every desktop session.
+            QTimer.singleShot(400, self.check_update_indicator)
+            self.update_timer.start()
 
     def closeEvent(self, event):
         if self.allow_close:

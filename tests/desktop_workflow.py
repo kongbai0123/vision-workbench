@@ -97,6 +97,15 @@ def main():
             capture("02-shared-import")
             click("[data-stage='annotate']")
             wait("!document.querySelector('#imageStage').hidden && document.querySelector('#assetImage').complete")
+            # Rebuilding the list after selection must retain the user's place.
+            js("{const e=document.querySelector('#assetList');e.style.cssText='flex:0 0 120px;height:120px';e.scrollTop=e.scrollHeight}")
+            js("document.querySelector('#assetList .asset-row:last-child').click()")
+            wait("document.querySelector('#assetList .asset-row:last-child').classList.contains('active') && !document.querySelector('#home').disabled")
+            QTest.qWait(120)
+            assert js("(()=>{const l=document.querySelector('#assetList'),a=l.querySelector('.asset-row.active'),lr=l.getBoundingClientRect(),ar=a.getBoundingClientRect();return l.scrollTop>0&&ar.top>=lr.top-1&&ar.bottom<=lr.bottom+1})()"),'Selected asset did not remain visible at the restored scroll position'
+            js("document.querySelector('#assetList .asset-row:first-child').click()")
+            wait("document.querySelector('#assetList .asset-row:first-child').classList.contains('active') && !document.querySelector('#home').disabled")
+            js("document.querySelector('#assetList').removeAttribute('style')")
             capture("03-annotation-workspace")
             assert js("document.querySelectorAll('#classQuickList .class-choice').length>0")
             # Category management must produce an immediate, persisted UI change.

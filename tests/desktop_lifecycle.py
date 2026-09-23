@@ -29,6 +29,15 @@ def main():
                 if js("typeof window.workbenchFlush==='function'"):break
                 QTest.qWait(100)
             else:raise AssertionError('Native shell failed to load')
+            assert window.update_timer.isActive(),'Update indicator polling did not start after the UI loaded'
+            assert window.update_timer.interval() <= 3000,'Update indicator refresh is too slow'
+            original_hash=window.source_baseline['web/app.mjs']
+            window.source_baseline['web/app.mjs']='outdated'
+            window.check_update_indicator();QTest.qWait(120)
+            assert js("!document.querySelector('#updateDot').hidden"),'Changed source did not show the update indicator'
+            window.source_baseline['web/app.mjs']=original_hash
+            window.check_update_indicator();QTest.qWait(120)
+            assert js("document.querySelector('#updateDot').hidden"),'Current source did not clear the update indicator'
             assert window.fullscreen_action.shortcut().toString() == 'F11'
             window.toggle_fullscreen();QTest.qWait(120)
             assert window.isFullScreen(),'F11 action did not enter full-screen mode'
