@@ -1,5 +1,5 @@
 export function createReviewPage(context) {
-const {$, state, stats, element, number, date, thumbnailURL, reviewNames, button, safe, selectAsset, switchStage, renderYoloCompatibility, api, projectPath, kind, colorFor, decodeMask, flushAllEdits, updateAssetHeader, toast, checkReviewYoloCompatibility, formDialog, imageURL, saver, editor, renderAssetList}=context;
+const {$, state, stats, element, number, date, thumbnailURL, reviewNames, button, safe, selectAsset, switchStage, renderYoloCompatibility, api, projectPath, kind, colorFor, decodeMask, flushAllEdits, updateAssetHeader, toast, checkReviewYoloCompatibility, formDialog, imageURL, saver, editor, renderAssetList, confirmDeleteAssets}=context;
 function filteredReview() {
   const query=$('reviewSearch').value.toLowerCase(),filter=$('reviewFilter').value;
   const reason=$('reviewReasonFilter').value;
@@ -10,7 +10,7 @@ function updateReviewSelection() {
   $('reviewSelectedCount').textContent=`已選 ${state.reviewSelection.size} 張`;
   const page=filteredReview();$('reviewSelectAll').checked=!!page.length&&page.every(a=>state.reviewSelection.has(a.id));
   $('reviewSelectAll').indeterminate=page.some(a=>state.reviewSelection.has(a.id))&&!$('reviewSelectAll').checked;
-  for(const id of ['reviewApprove','reviewReject','reviewPending','reviewCorrection','reviewTrash','assignSelected'])$(id).disabled=!state.reviewSelection.size||state.busy;
+  for(const id of ['reviewApprove','reviewReject','reviewPending','reviewCorrection','reviewTrash','reviewDelete','assignSelected'])$(id).disabled=!state.reviewSelection.size||state.busy;
 }
 function renderReview() {
   const counts=stats(state.project);const summary=$('reviewStats');summary.replaceChildren();
@@ -119,6 +119,14 @@ async function trashReview() {
   if(ids.includes(state.asset?.id)){saver.load(null);state.asset=null;editor.clear()}
   renderReview();renderAssetList();
 }
+async function deleteReview() {
+  const assets=(state.project?.assets||[]).filter(asset=>state.reviewSelection.has(asset.id));
+  if(!assets.length)throw Error('請先選取要永久刪除的圖片。');
+  const result=await confirmDeleteAssets(assets,{review:true});if(!result)return;
+  state.reviewSelection.clear();state.reviewYoloCompatibility=null;renderReview();
+  toast(`已永久刪除 ${result.deleted||assets.length} 張圖片；審核垃圾桶無法還原。`);
+  await checkReviewYoloCompatibility();
+}
 async function restoreReview() {
   const items=await api(projectPath('/review-trash-list'),'POST',{}),body=element('div'),selected=new Set();
   body.append(element('p',items.length?'勾選要還原的圖片，還原後會回到待審核。':'垃圾桶目前沒有圖片。'));
@@ -126,5 +134,5 @@ async function restoreReview() {
   const result=await formDialog({title:'可還原垃圾桶',body,confirm:'還原勾選圖片',onSubmit:items.length?()=>{if(!selected.size)throw Error('請勾選要還原的圖片');return api(projectPath('/review-restore'),'POST',{asset_ids:[...selected],revisions:Object.fromEntries(items.filter(a=>selected.has(a.id)).map(a=>[a.id,a.revision]))})}:null});
   if(result){state.project=result;renderReview();renderAssetList();toast('已還原為待審核圖片。')}
 }
-return {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, restoreReview};
+return {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview};
 }

@@ -290,17 +290,18 @@ function renderAcquisitionAssets() {
   if(!assets.length)list.append(element('div','尚無素材 · 拍攝或匯入後，影像會顯示在這裡。','acquired-empty'));
   updateAcquisitionControls();
 }
-async function confirmDeleteAssets(assets) {
-  if(!assets.length)return;
+async function confirmDeleteAssets(assets,{review=false}={}) {
+  if(!assets.length)return null;
   await flushAllEdits();
   const body=element('div'),shapeCount=assets.reduce((sum,asset)=>sum+Number(asset.shape_count||0),0),approved=assets.filter(asset=>asset.review_state==='approved').length;
-  body.append(element('p',assets.length===1?`即將刪除「${assets[0].name}」。`:`即將刪除所選的 ${assets.length} 張圖片。`));
-  const details=element('ul');details.append(element('li',`包含 ${shapeCount} 個標註物件`),element('li',`${approved} 張已核准圖片`),element('li','圖片、標註與修訂紀錄會從目前專案移除'));body.append(details);
-  const result=await formDialog({title:assets.length===1?'刪除這張素材？':'批量刪除素材？',body,confirm:`刪除 ${assets.length} 張`,eyebrow:'DELETE ASSETS',onSubmit:()=>api(projectPath('/assets'),'DELETE',{asset_ids:assets.map(asset=>asset.id),revisions:Object.fromEntries(assets.map(asset=>[asset.id,asset.revision]))})});
-  if(!result)return;
+  body.append(element('p',review?(assets.length===1?`即將永久刪除「${assets[0].name}」。`:`即將永久刪除選取的 ${assets.length} 張圖片。`):(assets.length===1?`即將刪除「${assets[0].name}」。`:`即將刪除所選的 ${assets.length} 張圖片。`)));
+  const details=element('ul');details.append(element('li',`包含 ${shapeCount} 個標註物件`),element('li',`${approved} 張已核准圖片`),element('li','圖片、標註與修訂紀錄會從目前專案移除'));if(review)details.append(element('li','此操作無法從資料審核的垃圾桶還原'));body.append(details);
+  const result=await formDialog({title:review?(assets.length===1?'永久刪除這張圖片？':'永久刪除選取圖片？'):(assets.length===1?'刪除這張素材？':'批量刪除素材？'),body,confirm:`${review?'永久':''}刪除 ${assets.length} 張`,eyebrow:'DELETE ASSETS',onSubmit:()=>api(projectPath('/assets'),'DELETE',{asset_ids:assets.map(asset=>asset.id),revisions:Object.fromEntries(assets.map(asset=>[asset.id,asset.revision]))})});
+  if(!result)return null;
   const removed=new Set(result.asset_ids||assets.map(asset=>asset.id));state.acquireSelection.clear();state.project=result.project||await api(projectPath());
   if(state.asset&&removed.has(state.asset.id)){saver.load(null);editor.clear();state.asset=null;if(state.project.assets.length)await loadAsset(state.project.assets[0].id);}
   renderAssetList();renderAcquisitionAssets();await loadProjects();status(`已從目前專案刪除 ${number(result.deleted||removed.size)} 張圖片。`);
+  return result;
 }
 function updateProcessingFields() {
   const mode=$('processingMode').value;
@@ -857,7 +858,7 @@ function renderMergeList() {
 
 const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits});
 
-const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, restoreReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,
+const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,confirmDeleteAssets,
   renderYoloCompatibility:(...args)=>renderYoloCompatibility(...args),checkReviewYoloCompatibility:(...args)=>checkReviewYoloCompatibility(...args)});
 
 const {renderExport, openReleaseDrawer, closeReleaseDrawer, renderBatchTable, autoSplitProject, resetValidation, renderValidation, renderValidationView, validateProject, exportProject}=createExportPage({$,state,formatDescriptions,element,formatNames,date,button,safe,api,number,flushAllEdits,projectPath,toast,readable,pollJob,refreshProject,openSplitManager:(...args)=>openSplitManager(...args)});
@@ -956,7 +957,7 @@ async function applyProcessing(calibrate=false) {
 bind('applyProcessing',()=>applyProcessing(false),{busy:true,task:()=>`切換影像輸出 · ${$('processingMode').selectedOptions[0]?.textContent||'預覽'}`});bind('calibrateBackground',()=>{if($('processingMode').value!=='classical')throw Error('請先選擇「古典背景分割」模式，再進行背景校正。');return applyProcessing(true)},{busy:true,task:'背景校正'});
 bind('runAI',runAI,{busy:true});
 const reasonFilter=$('reviewReasonFilter');
-bind('reviewCorrection',()=>reviewSelection('pending','待修正'),{busy:true});bind('reviewTrash',trashReview,{busy:true});bind('reviewRestore',restoreReview,{busy:true});
+bind('reviewCorrection',()=>reviewSelection('pending','待修正'),{busy:true});bind('reviewTrash',trashReview,{busy:true});bind('reviewDelete',deleteReview,{busy:true});bind('reviewRestore',restoreReview,{busy:true});
 bind('reviewQuality',async()=>{state.project=await pollJob(await api(projectPath('/review-quality'),'POST',{}));renderReview();toast('模糊提示已更新，請人工確認是否保留。')},{busy:true});
 bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewReject',excludeReview,{busy:true});bind('reviewPending',()=>reviewSelection('pending'),{busy:true});bind('assignSelected',assignSelected);
 const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;state.reviewScroll=0;renderReview()};

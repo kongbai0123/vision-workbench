@@ -53,6 +53,14 @@ def main():
             click('#reviewRestore');wait("document.querySelector('#dialogBody input[type=checkbox]')")
             js("document.querySelector('#dialogBody input').click();document.querySelector('#confirmDialog').click()")
             wait("!document.querySelector('#formDialog').open && document.querySelectorAll('.review-card').length===2")
+            click('.review-card-media img');click('#reviewDelete')
+            wait("document.querySelector('#formDialog').open && document.querySelector('#dialogTitle').textContent.includes('永久刪除')")
+            assert js("document.querySelector('#dialogBody').textContent.includes('無法從資料審核的垃圾桶還原')")
+            js("document.querySelector('#confirmDialog').click()")
+            wait("!document.querySelector('#formDialog').open && document.querySelectorAll('.review-card').length===1")
+            # One rejected image remains in the project but is hidden by the pending filter.
+            assert len(service.store.get_project(pid)['assets'])==2
+            assert service.store.list_trash(pid)==[]
             assert not js('document.documentElement.scrollWidth>innerWidth+2')
             QTest.qWait(300)
             output=Path(__file__).resolve().parents[1]/'qa-output'/'desktop'
@@ -69,7 +77,7 @@ def main():
             js("document.querySelector('#confirmDialog').click()")
             wait("!document.querySelector('#formDialog').open && !document.querySelector('#home').disabled")
             assert not page.errors, page.errors
-            print('PASS: card selection, edit/return, exclusion, trash/restore, layout and import preview cancellation',flush=True)
+            print('PASS: card selection, exclusion, trash/restore, permanent deletion, layout and import preview cancellation',flush=True)
         finally:
             view.close();service.close();QTest.qWait(100)
 

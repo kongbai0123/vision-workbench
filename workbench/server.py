@@ -229,7 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("請求長度無效")
         if not 0 <= size <= 128*1024*1024:
             raise ValueError("單次標註請求超過 128 MiB")
-        payload = json.loads(self.rfile.read(size) or b"{}")
+        raw = self.rfile.read(size)
+        self._request_body_consumed = True
+        payload = json.loads(raw or b"{}")
         if not isinstance(payload, dict):
             raise ValueError("請求內容必須為物件")
         return payload
@@ -237,16 +239,25 @@ class Handler(BaseHTTPRequestHandler):
     def require_mutation_access(self):
         origin = self.headers.get("Origin")
         if not self.authorized() or not self.host_valid() or (origin and origin != self.app.url) or self.headers.get("X-Workbench") != "1":
-            # Drain a bounded small body so Windows does not replace the 403
-            # with a TCP reset when the connection closes with unread input.
-            try:
-                size=int(self.headers.get('Content-Length','0'))
-                if 0<size<=65536:
-                    previous=self.connection.gettimeout();self.connection.settimeout(.5)
-                    try:self.rfile.read(size)
-                    finally:self.connection.settimeout(previous)
-            except (ValueError,OSError):pass
+            self.drain_small_request_body()
             raise PermissionError("僅接受軟體本機介面的操作")
+
+    def drain_small_request_body(self):
+        """Keep Windows from replacing a local 4xx response with a TCP reset."""
+        if getattr(self, '_request_body_consumed', False):
+            return
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if 0 < size <= 65536:
+                previous = self.connection.gettimeout()
+                self.connection.settimeout(.5)
+                try:
+                    self.rfile.read(size)
+                    self._request_body_consumed = True
+                finally:
+                    self.connection.settimeout(previous)
+        except (ValueError, OSError):
+            pass
 
     def model_upload(self):
         self.require_mutation_access()
@@ -286,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_error(self, exc):
         if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
             return
+        self.drain_small_request_body()
         status = 409 if isinstance(exc, ConflictError) else 403 if isinstance(exc, PermissionError) else 404 if isinstance(exc, FileNotFoundError) else 400 if isinstance(exc, ValueError) else 500
         if isinstance(exc, MethodNotAllowed):
             status = 405
@@ -436,6 +448,7 @@ class Handler(BaseHTTPRequestHandler):
         self.mutate("DELETE")
 
     def mutate(self, method):
+        self._request_body_consumed = False
         try:
             path = urlsplit(self.path).path
             validate_method(path, method)

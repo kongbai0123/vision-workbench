@@ -33,7 +33,7 @@ test('page factories import without executing browser globals', async () => {
 
 test('review controls and augmentation layout are static markup', async () => {
   const html=await readFile(new URL('../web/index.html',import.meta.url),'utf8');
-  for(const id of ['reviewCorrection','reviewTrash','reviewRestore','reviewQuality','reviewReasonFilter'])
+  for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewReasonFilter'])
     assert.equal(html.split(`id="${id}"`).length-1,1);
   assert.ok(html.indexOf('class="panel augmentation-panel"')<html.indexOf('id="splitFlowStats"'));
   const app=await readFile(new URL('../web/app.mjs',import.meta.url),'utf8');
