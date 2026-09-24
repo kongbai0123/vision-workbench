@@ -121,8 +121,6 @@ def smart_split(assets, options=None):
         purpose = 'experimental' if options.get('strategy') == 'random_loose' else 'formal'
     if purpose not in {'formal', 'reviewed_independent', 'experimental', 'all_train'}:
         raise ValueError('不支援的資料用途')
-    if purpose == 'reviewed_independent' and not options.get('independence_confirmed'):
-        raise ValueError('目前已核准資料尚未完成「樣本彼此獨立」確認，或確認已因資料變動失效')
     strategy = options.get("strategy", "smart")
     if purpose in {'reviewed_independent', 'formal'} and strategy == 'random_loose':
         strategy = 'multilabel'
@@ -339,7 +337,7 @@ def smart_split(assets, options=None):
             elif len(carriers) == 1:
                 blocker["action"] = "此類別只有一個來源群組；無法在保持群組完整時同時提供 Train 與 Validation，請補充另一個獨立來源"
     if purpose == 'reviewed_independent':
-        warnings.append('人工確認樣本彼此獨立：按圖片平衡分配；完全相同的圖片仍保持同一集合')
+        warnings.append('圖片層級平衡分配；完全相同的圖片仍保持同一集合')
     elif not isolate:
         warnings.append("未啟用來源隔離：同次拍攝可能跨集合，評估結果不代表新來源表現")
     untracked = sum(not a.get("batch_id") and not a.get("source") for a in assets)

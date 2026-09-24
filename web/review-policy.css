@@ -6,33 +6,10 @@
   min-width: 64px;
 }
 
-.independence-review {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin: 14px 0 4px;
-  padding: 14px 18px;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--warn);
-  border-radius: 6px;
-  background: var(--panel);
-}
-
-.independence-review.current {
-  border-left-color: var(--accent);
-  background: #142a29;
-}
-
-.independence-review b { font-size: 13px; }
-.independence-review p { font-size: 12px; margin: 4px 0 0; }
-.independence-review .check-label { flex-shrink: 0; }
-
 @media (max-width: 1150px) {
   .tool { min-width: 60px; }
 }
 
 @media (max-width: 850px) {
   .tool { min-width: 56px; }
-  .independence-review { align-items: flex-start; flex-direction: column; gap: 10px; }
 }

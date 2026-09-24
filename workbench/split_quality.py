@@ -67,7 +67,7 @@ def split_class_coverage(assets, assignments=None, *, active_splits=SPLIT_ORDER,
         warnings = validation + warnings
         if validation:
             warnings.append({'code': 'reviewed_validation_gap',
-                             'message': '已確認圖片彼此獨立，但 Validation 類別不完整；可訓練，類別指標須個別解讀',
+                             'message': '圖片層級平衡的 Validation 類別不完整；可訓練，類別指標須個別解讀',
                              'action': '增加 Validation 樣本可改善評估覆蓋'})
     elif policy == 'all_train':
         blockers = [item for item in blockers if item['code'] == 'train_class_missing']

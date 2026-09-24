@@ -872,7 +872,7 @@ function renderMergeList() {
 
 const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits});
 
-const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview, dismissIndependenceReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,confirmDeleteAssets,
+const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,confirmDeleteAssets,
   renderYoloCompatibility:(...args)=>renderYoloCompatibility(...args),checkReviewYoloCompatibility:(...args)=>checkReviewYoloCompatibility(...args)});
 
 const {renderExport, openReleaseDrawer, closeReleaseDrawer, renderBatchTable, autoSplitProject, resetValidation, renderValidation, renderValidationView, validateProject, exportProject}=createExportPage({$,state,formatDescriptions,element,formatNames,date,button,safe,api,number,flushAllEdits,projectPath,toast,readable,pollJob,refreshProject,openSplitManager:(...args)=>openSplitManager(...args)});
@@ -893,7 +893,7 @@ async function runAI() {
   }catch(error){$('aiMessage').textContent=error.message;throw error;}
 }
 
-const {openSplitManager, renderSplitPage, setIndependentAssets, augmentationProfile, renderAugmentationPreparation}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,formDialog,thumbnailURL,drawReviewOverlay,
+const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
 const {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
@@ -978,8 +978,6 @@ bind('reviewApprove',()=>reviewSelection('approved'),{busy:true});bind('reviewRe
 const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;state.reviewScroll=0;renderReview()};
 $('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;annotationFilter.onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
 $('reviewSelectAll').onchange=()=>{for(const asset of filteredReview())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
-$('confirmIndependentAssets').onchange=()=>safe(()=>setIndependentAssets($('confirmIndependentAssets').checked));
-$('dismissIndependenceReview').onchange=()=>{if($('dismissIndependenceReview').checked)safe(dismissIndependenceReview)};
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
 bind('prepareTraining',()=>switchStage('split'));
 bind('refreshTraining',()=>loadTraining());

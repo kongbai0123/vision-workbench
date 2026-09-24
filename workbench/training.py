@@ -353,7 +353,7 @@ class TrainingWorkspace:
                 purpose = split_purpose(project.get('split_plan'), records)
                 labels = {
                     'formal': '正式獨立來源評估',
-                    'reviewed_independent': '人工確認獨立／圖片層級平衡',
+                    'reviewed_independent': '圖片層級多類別平衡',
                     'experimental': '同來源寬鬆實驗',
                     'all_train': '全資料最終訓練（無獨立評估）',
                 }
@@ -363,9 +363,10 @@ class TrainingWorkspace:
                     'purpose': purpose, 'label': labels[purpose],
                     'independent_sources': (True if purpose == 'formal' and (project.get('split_plan') or {}).get('source_isolation')
                                             else False if purpose != 'formal' else None),
-                    'reviewed_independent': purpose == 'reviewed_independent',
+                    'reviewed_independent': False,
+                    'image_level_balancing': purpose == 'reviewed_independent',
                     'evaluation_available': purpose != 'all_train',
-                    'independence_review': project.get('independence_review') if purpose == 'reviewed_independent' else None,
+                    'independence_review': None,
                     'split_policy': {'algorithm_version': (project.get('split_plan') or {}).get('algorithm_version'),
                                      'seed': (project.get('split_plan') or {}).get('seed'),
                                      'balance_mode': (project.get('split_plan') or {}).get('balance_mode'),

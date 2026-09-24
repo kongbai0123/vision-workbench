@@ -818,7 +818,6 @@ class ProjectStore:
         ids = {a["id"] for a in assets}
         overrides = {k:v for k,v in project.get("split_plan",{}).get("options",{}).get("group_overrides",{}).items() if k in ids}
         return {"project_revision":project["revision"], "groups":source_groups(assets,overrides),
-                'independence_review': project['independence_review'],
                 "assets":[{k:a[k] for k in ("id","name","batch_id","url")} for a in assets],
                 "previous":project.get("split_plan")}
 
@@ -827,9 +826,7 @@ class ProjectStore:
         project = self.snapshot(project_id)
         assets = [a for a in project["assets"] if a["review_state"] == "approved"]
         options = dict(options or {})
-        options['independence_confirmed'] = bool(project['independence_review'].get('current'))
         plan = smart_split(assets, options)
-        plan['independence_review'] = project['independence_review']
         plan["project_revision"] = project["revision"]
         plan["fingerprint"] = hashlib.sha256(dump(plan).encode()).hexdigest()
         plan["assets"] = [{k: a[k] for k in ("id", "name", "batch_id", "url")} for a in assets]

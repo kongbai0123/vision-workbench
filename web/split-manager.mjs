@@ -16,7 +16,7 @@ export class SplitManager {
     this.message=node('p','','split-manager-message');this.message.setAttribute('role','status');this.dialog.append(this.message);
     this.layout=node('div',undefined,'smart-split-layout');this.dialog.append(this.layout);
     this.settings=node('section',undefined,'smart-split-settings');this.content=node('section',undefined,'smart-split-content');this.layout.append(this.settings,this.content);
-    this.purpose=this.select('資料用途','splitPurpose',[['reviewed_independent','已審核獨立樣本（建議）'],['formal','正式泛化評估'],['experimental','寬鬆實驗'],['all_train','全資料最終訓練']],this.options.purpose,v=>{this.options.purpose=v;this.applyPurpose()});
+    this.purpose=this.select('資料用途','splitPurpose',[['reviewed_independent','圖片層級平衡（建議）'],['formal','正式泛化評估'],['experimental','寬鬆實驗'],['all_train','全資料最終訓練']],this.options.purpose,v=>{this.options.purpose=v;this.applyPurpose()});
     this.balance=this.select('多類別平衡目標','splitStrategy',[['hybrid','綜合平衡（建議）'],['presence','類別出現張數'],['instances','物件數量'],['cooccurrence','類別共現配對']],this.options.balance_mode,v=>{this.options.balance_mode=v;this.options.locks={}});
     this.purposeHelp=node('p','','muted');this.settings.append(this.purposeHelp);
     const isolation=node('label',undefined,'check-label'),isolate=node('input');isolate.type='checkbox';isolate.id='splitSourceIsolation';isolate.checked=true;
@@ -32,13 +32,13 @@ export class SplitManager {
     this.footer.append(this.apply,this.create);this.dialog.append(this.footer);if(!this.dialog.open)this.dialog.showModal();
     await this.work(async()=>{
       const info=await this.api(`/api/projects/${this.pid}/split-info`,'POST',{});this.info=info;
-      this.message.textContent=`已核准 ${info.assets.length} 張 · 可分配圖片 ${info.assets.length} 張 · 來源紀錄 ${info.groups.length} 組 · 樣本獨立確認${info.independence_review?.current?'有效':'未完成或已失效'}。`;
+      this.message.textContent=`已核准 ${info.assets.length} 張 · 可分配圖片 ${info.assets.length} 張 · 來源紀錄 ${info.groups.length} 組。`;
       this.groups.replaceChildren(node('p','正在依目前用途建立圖片層級的平衡分配方案…','muted'));const ids=new Set(info.assets.map(a=>a.id));const prior=Object.fromEntries(Object.entries(info.previous?.options?.group_overrides||{}).filter(([id])=>ids.has(id)));this.options.group_overrides={...prior};
       for(const asset of info.assets){const row=node('label',undefined,'smart-split-asset'),img=node('img');img.src=asset.url+'?thumbnail=1';img.alt='';img.loading='lazy';
         const text=node('span',`${asset.name} · ${asset.batch_id||'未指定來源'}`),input=node('input');input.type='text';input.maxLength=128;input.placeholder='沿用來源批次';input.value=prior[asset.id]||'';input.setAttribute('aria-label',`${asset.name} 的手動分割群組`);
         input.oninput=()=>{this.options.group_overrides[asset.id]=input.value;this.options.locks={};this.invalidate()};row.append(img,text,input);this.assets.append(row)}
     });
-    if(this.info?.independence_review?.current)await this.runPreview();
+    await this.runPreview();
   }
   select(label,id,options,value,change){const l=node('label',label);l.htmlFor=id;const input=node('select');input.id=id;for(const [v,t]of options)input.append(new Option(t,v));input.value=value;input.onchange=()=>{change(input.value);this.invalidate()};this.settings.append(l,input);return input}
   number(label,id,value,min,max,change){const l=node('label',label);l.htmlFor=id;const input=node('input');Object.assign(input,{id,type:'number',min,max,step:1,value});input.oninput=()=>{change(input.value.trim()===''?null:Number(input.value));this.invalidate()};this.settings.append(l,input);return input}
@@ -49,7 +49,7 @@ export class SplitManager {
     else {if(this.options.ratios.val===0){this.options.ratios={train:70,val:20,test:10};for(const [s,input]of Object.entries(this.ratioInputs||{}))input.value=this.options.ratios[s]}for(const input of Object.values(this.ratioInputs||{}))input.disabled=false}
     if(this.balance)this.balance.disabled=!balanced;if(this.keepTest){this.keepTest.disabled=all;this.keepTest.checked=all?false:this.keepTest.checked;this.options.preserve_test=all?false:this.keepTest.checked}
     const isolation=this.dialog.querySelector('#splitSourceIsolation');if(isolation)isolation.checked=formal;
-    if(this.purposeHelp)this.purposeHelp.textContent=({formal:'以來源群組隔離 Train／Validation／Test，適合正式泛化評估；類別缺口採嚴格阻擋。',reviewed_independent:'需先在資料審核確認樣本獨立；可按圖片使用四種多類別平衡，Validation 缺類別改為警告。',experimental:'依圖片隨機分配；來源與類別缺口只警告，結果僅供流程或快速實驗。',all_train:'全部核准圖片用於最終訓練，不建立獨立 Validation／Test，也不產生可比較的泛化分數。'})[purpose];
+    if(this.purposeHelp)this.purposeHelp.textContent=({formal:'以來源群組隔離 Train／Validation／Test，適合正式泛化評估；類別缺口採嚴格阻擋。',reviewed_independent:'按圖片使用四種多類別平衡；Validation 缺類別改為警告，不要求額外確認。',experimental:'依圖片隨機分配；來源與類別缺口只警告，結果僅供流程或快速實驗。',all_train:'全部核准圖片用於最終訓練，不建立獨立 Validation／Test，也不產生可比較的泛化分數。'})[purpose];
   }
   invalidate(){this.plan=null;this.apply.disabled=true;this.create.disabled=true;this.summary?.replaceChildren();this.metrics?.replaceChildren();this.groups?.replaceChildren(node('p','設定已變更；按「預覽智慧分割」重新計算圖片層級的平衡方案。','muted'));this.message.textContent='設定已變更，請重新預覽。'}
   async work(fn){if(this.busy)return;this.busy=true;const controls=[...this.dialog.querySelectorAll('input,select,button')];const disabled=controls.map(x=>x.disabled);controls.forEach(x=>x.disabled=true);

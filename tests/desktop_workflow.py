@@ -204,11 +204,6 @@ def main():
             wait("document.querySelector('#reviewStats').innerText.includes('4')")
             wait("!window.workbenchState().busy")
             assert service.store.get_project(pid)['stats']['approved']==4
-            click('#confirmIndependentAssets');wait("document.querySelector('#formDialog').open")
-            click('#confirmDialog');wait("!document.querySelector('#formDialog').open && document.querySelector('#confirmIndependentAssets').checked")
-            click('#dismissIndependenceReview')
-            wait("document.querySelector('#independenceReview').hidden")
-            assert js("localStorage.getItem('vision-workbench.dismissIndependenceReview')==='1'")
             capture("04-review-approved")
             # Build and run a real immutable training version from the same UI.
             click("#prepareTraining")

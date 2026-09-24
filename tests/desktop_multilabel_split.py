@@ -34,12 +34,9 @@ def main():
         try:
             wait("document.querySelector('.project-card-open')")
             click('.project-card-open');wait("!document.querySelector('#home').disabled")
-            click('[data-stage="review"]');wait("document.querySelector('#confirmIndependentAssets')")
-            click('#confirmIndependentAssets');wait("document.querySelector('#formDialog').open")
-            click('#confirmDialog');wait("!document.querySelector('#formDialog').open && document.querySelector('#confirmIndependentAssets').checked")
             click('[data-stage="split"]');wait("!document.querySelector('#home').disabled")
             click('#openSplitFlowManager');wait("document.querySelector('#smartSplitDialog').open && !document.querySelector('#previewSmartSplit').disabled")
-            assert js("document.querySelector('#splitPurpose').value==='reviewed_independent' && document.querySelector('#splitStrategy').value==='hybrid' && !document.querySelector('#splitSourceIsolation').checked")
+            assert js("document.querySelector('#splitPurpose').value==='reviewed_independent' && document.querySelector('#splitPurpose').selectedOptions[0].textContent.includes('圖片層級平衡') && document.querySelector('#splitStrategy').value==='hybrid' && !document.querySelector('#splitSourceIsolation').checked")
             js("document.querySelector('#splitPurpose').value='formal';document.querySelector('#splitPurpose').dispatchEvent(new Event('change'))")
             click('#previewSmartSplit');wait("document.querySelector('.split-manager-message').textContent.includes('只有 1')")
             assert js("document.querySelector('#applySmartSplit').disabled")

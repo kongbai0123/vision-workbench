@@ -13,14 +13,6 @@ export function filterReviewAssets(assets,{query='',status='pending',reason='',a
   });
 }
 
-export const independenceNoticeKey='vision-workbench.dismissIndependenceReview';
-export function independenceNoticeDismissed(storage=globalThis.localStorage) {
-  try{return storage?.getItem(independenceNoticeKey)==='1'}catch{return false}
-}
-export function dismissIndependenceNotice(storage=globalThis.localStorage) {
-  try{storage?.setItem(independenceNoticeKey,'1');return true}catch{return false}
-}
-
 export function createReviewPage(context) {
 const {$, state, stats, element, number, date, thumbnailURL, reviewNames, button, safe, selectAsset, switchStage, renderYoloCompatibility, api, projectPath, kind, colorFor, decodeMask, flushAllEdits, updateAssetHeader, toast, checkReviewYoloCompatibility, formDialog, imageURL, saver, editor, renderAssetList, confirmDeleteAssets}=context;
 function filteredReview() {
@@ -37,14 +29,6 @@ function updateReviewSelection() {
 function renderReview() {
   const counts=stats(state.project);const summary=$('reviewStats');summary.replaceChildren();
   for(const [key,name]of Object.entries({total:'全部影像',pending:'待審核',approved:'已核准',rejected:'已排除訓練'})){const chip=element('div',undefined,'stat-chip');chip.append(element('span',name),element('b',number(counts[key])));summary.append(chip);}
-  const independence=state.project?.independence_review||{},independencePanel=$('independenceReview');
-  independencePanel.hidden=independenceNoticeDismissed();
-  independencePanel.classList.toggle('current',!!independence.current);
-  $('confirmIndependentAssets').checked=!!independence.current;
-  $('independenceReviewTitle').textContent=independence.current?`已確認 ${number(independence.asset_count)} 張核准樣本彼此獨立`:'樣本獨立性尚未確認';
-  $('independenceReviewText').textContent=independence.current
-    ?`確認時間 ${date(independence.confirmed_at)}；圖片、標註、來源資訊或審核狀態改變時會自動失效。`
-    :(independence.reason||'確認目前已核准圖片不是連拍近似影格或同一原圖的重複版本，才可使用圖片層級平衡分割。');
   const pages=Math.max(1,Math.ceil(filteredReview().length/48));state.reviewPage=Math.max(0,Math.min(state.reviewPage,pages-1));
   $('reviewPageLabel').textContent=`第 ${state.reviewPage+1} / ${pages} 頁 · ${number(filteredReview().length)} 張`;
   $('reviewPrevious').disabled=state.reviewPage<=0;$('reviewNext').disabled=state.reviewPage>=pages-1;
@@ -158,9 +142,5 @@ async function restoreReview() {
   const result=await formDialog({title:'可還原垃圾桶',body,confirm:'還原勾選圖片',onSubmit:items.length?()=>{if(!selected.size)throw Error('請勾選要還原的圖片');return api(projectPath('/review-restore'),'POST',{asset_ids:[...selected],revisions:Object.fromEntries(items.filter(a=>selected.has(a.id)).map(a=>[a.id,a.revision]))})}:null});
   if(result){state.project=result;renderReview();renderAssetList();toast('已還原為待審核圖片。')}
 }
-function dismissIndependenceReview() {
-  if(!dismissIndependenceNotice())throw Error('無法保存提示偏好，請檢查瀏覽器儲存空間。');
-  $('independenceReview').hidden=true;toast('已隱藏此提醒；需要時仍可在資料準備查看獨立性狀態。');
-}
-return {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview, dismissIndependenceReview};
+return {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview};
 }

@@ -1,5 +1,5 @@
 export function createPreparationPage(context) {
-const {$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,createDatasetVersion,loadTraining,toast,flushAllEdits,projectPath,number,element,formDialog,thumbnailURL,drawReviewOverlay}=context;
+const {$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,createDatasetVersion,loadTraining,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay}=context;
 const splitManager=new SplitManager({api,onApplied:async(result,pid,createVersion)=>{
   if(state.project?.id!==pid)return;
   state.project=result.project;renderBatchTable();renderReview();resetValidation('資料分割已更新，請重新驗證。');
@@ -14,7 +14,7 @@ async function renderSplitPage(){
   if(state.project?.id!==projectId||state.stage!=='split')return;
   const readiness=state.training.readiness||{},stats=readiness.stats||{},splits=stats.splits||{};
   const root=$('splitFlowStats');root.replaceChildren();
-  const splitPurpose=state.project.split_plan?.purpose,imageLevel=splitPurpose==='reviewed_independent'||(!splitPurpose&&info.independence_review?.current);
+  const splitPurpose=state.project.split_plan?.purpose,imageLevel=!splitPurpose||splitPurpose==='reviewed_independent';
   const allocationCard=imageLevel
     ?['可分配圖片',number(stats.approved||0),`來源紀錄 ${number(info.groups?.length||0)} 組；建議模式按圖片平衡`]
     :['不可拆來源群組',number(info.groups?.length||0),'正式模式不拆開同來源群組'];
@@ -41,19 +41,6 @@ async function renderSplitPage(){
   $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
   renderAugmentationPreparation();
 }
-async function setIndependentAssets(confirmed) {
-  if(confirmed){
-    const body=element('div');body.append(
-      element('p','此確認只套用目前已核准圖片。請確認它們不是連拍近似影格、同一原圖的裁切／增強版本，且可視為彼此獨立樣本。'),
-      element('p','確認後可依圖片進行多類別平衡；完全相同的圖片仍強制留在同一集合。任何圖片、標註、來源資訊或審核狀態變動都會使確認失效。','muted'));
-    const accepted=await formDialog({title:'確認樣本獨立性',body,confirm:'確認目前樣本獨立',onSubmit:()=>true});
-    if(!accepted){$('confirmIndependentAssets').checked=false;return;}
-  }
-  state.project=await api(projectPath('/independence-review'),'POST',{confirmed,revision:state.project.revision});
-  renderReview();resetValidation('樣本獨立性確認已更新，請重新驗證資料分割。');
-  toast(confirmed?'已保存目前核准樣本的獨立性確認。':'已取消樣本獨立性確認。');
-}
-
 const augmentationPresets={
   off:{brightness:0,contrast:0,fliplr:0,flipud:0,degrees:0,translate:0,scale:0,mosaic:0,mixup:0,copy_paste:0,close_mosaic:0},
   light:{brightness:.1,contrast:.1,fliplr:.5,flipud:0,degrees:2,translate:.03,scale:.1,mosaic:0,mixup:0,copy_paste:0,close_mosaic:0},
@@ -89,5 +76,5 @@ function renderAugmentationPreparation(){
   const trainCount=Number(state.training?.readiness?.stats?.splits?.train||0),expanded=trainCount*profile.expansion_count,total=trainCount+expanded;
   $('augmentationSummary').textContent=`${names[profile.preset]}配方 · 原始 Train ${number(trainCount)} 張 · 每張增加 ${number(profile.expansion_count)} 份 · 每輪共 ${number(total)} 個訓練事件（新增 ${number(expanded)}）· 每份獨立抽樣。水平翻轉 ${(profile.fliplr*100).toFixed(0)}% · 垂直翻轉 ${(profile.flipud*100).toFixed(0)}% · 亮度 ±${(profile.brightness*100).toFixed(0)}% · 對比 ±${(profile.contrast*100).toFixed(0)}%${profile.mosaic?` · Mosaic ${(profile.mosaic*100).toFixed(0)}%（YOLO）`:''}。Validation／Test 保持原始資料。`;
 }
-return {openSplitManager, renderSplitPage, setIndependentAssets, augmentationProfile, renderAugmentationPreparation};
+return {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation};
 }

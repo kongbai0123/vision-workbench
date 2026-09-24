@@ -273,7 +273,7 @@ export class TrainingMonitor {
   }
   renderDataQuality(run,parent){
     const report=this.reports.get(run.run_id),quality=report?.run?.run_id===run.run_id?report.run.data_quality||run.data_quality:run.data_quality;
-    const qualityLabels={formal:['正式獨立來源評估','readiness-item'],reviewed_independent:['人工確認獨立 · 圖片層級平衡','readiness-item'],experimental:['寬鬆實驗 · 不代表獨立泛化能力','readiness-item warning'],diagnostic:['流程驗證 · 同拍攝批次跨集合，非獨立泛化評估','readiness-item warning'],all_train:['全資料最終訓練 · 無獨立 Validation／Test 評估','readiness-item warning']};
+    const qualityLabels={formal:['正式獨立來源評估','readiness-item'],reviewed_independent:['圖片層級多類別平衡','readiness-item'],experimental:['寬鬆實驗 · 不代表獨立泛化能力','readiness-item warning'],diagnostic:['流程驗證 · 同拍攝批次跨集合，非獨立泛化評估','readiness-item warning'],all_train:['全資料最終訓練 · 無獨立 Validation／Test 評估','readiness-item warning']};
     if(qualityLabels[quality?.purpose])parent.append(el('p',quality.label||qualityLabels[quality.purpose][0],qualityLabels[quality.purpose][1]));
   }
   details(title,key,parent=this.root){const d=el('details',undefined,'training-monitor-details');d.dataset.detailKey=key;d.open=this.detailOpen.get(key)||false;d.append(el('summary',title));d.addEventListener('toggle',()=>{if(d.isConnected){this.detailOpen.set(key,d.open);if(d.open)this.restoreView()}});parent.append(d);return d}

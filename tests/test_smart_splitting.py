@@ -23,19 +23,16 @@ class SmartSplitTests(unittest.TestCase):
         for mode in ('hybrid', 'presence', 'instances', 'cooccurrence'):
             with self.subTest(mode=mode):
                 plan = smart_split(assets, {'purpose': 'reviewed_independent',
-                                            'independence_confirmed': True,
                                             'strategy': 'multilabel', 'balance_mode': mode})
                 self.assertTrue(plan['ready'])
                 self.assertEqual(plan['image_counts'], {'train': 40, 'val': 11, 'test': 6})
                 self.assertFalse(plan['source_isolation'])
                 self.assertEqual(plan['purpose'], 'reviewed_independent')
 
-    def test_reviewed_independent_requires_attestation_and_keeps_duplicates_together(self):
+    def test_image_level_balancing_needs_no_attestation_and_keeps_duplicates_together(self):
         assets = [{'id': str(i), 'sha256': 'duplicate' if i < 2 else str(i),
                    'batch_id': 'same', 'source': {}, 'shapes': [{'label': 'part'}]} for i in range(12)]
-        with self.assertRaisesRegex(ValueError, '樣本彼此獨立'):
-            smart_split(assets, {'purpose': 'reviewed_independent'})
-        plan = smart_split(assets, {'purpose': 'reviewed_independent', 'independence_confirmed': True})
+        plan = smart_split(assets, {'purpose': 'reviewed_independent'})
         self.assertEqual(plan['assignments']['0'], plan['assignments']['1'])
     def test_groups_never_split_and_training_keeps_rare_class(self):
         assets=samples();plan=smart_split(assets)
@@ -174,7 +171,7 @@ class SmartSplitStoreTests(unittest.TestCase):
         self.store.assign(self.pid,[asset['id']],split='test')
         with self.assertRaises(ConflictError):self.store.apply_split(self.pid,{},plan['project_revision'],plan['fingerprint'])
 
-    def test_independence_confirmation_persists_and_content_change_invalidates_it(self):
+    def test_legacy_independence_record_does_not_gate_image_balancing(self):
         project = self.store.get_project(self.pid)
         confirmed = self.store.confirm_independence(self.pid, True, project['revision'])
         self.assertTrue(confirmed['independence_review']['current'])
@@ -183,5 +180,5 @@ class SmartSplitStoreTests(unittest.TestCase):
         asset = confirmed['assets'][0]
         changed = self.store.review(self.pid, [asset['id']], 'pending', {asset['id']: asset['revision']})
         self.assertFalse(changed['independence_review']['current'])
-        with self.assertRaisesRegex(ValueError, '確認'):
-            self.store.preview_split(self.pid, {'purpose': 'reviewed_independent'})
+        plan = self.store.preview_split(self.pid, {'purpose': 'reviewed_independent'})
+        self.assertTrue(plan['ready'])

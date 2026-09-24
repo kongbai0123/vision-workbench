@@ -34,11 +34,6 @@ def action_review(self, pid, payload, action):
     return self.json(self.app.store.review(pid,payload.get("asset_ids"),payload.get("state"),payload.get("revisions"),payload.get('reason', ''),payload.get('note', ''),delta_base=payload.get('delta_base')))
 
 
-def action_independence_review(self, pid, payload, action):
-    return self.json(self.app.store.confirm_independence(
-        pid, payload.get('confirmed'), payload.get('revision')))
-
-
 def action_assign(self, pid, payload, action):
     return self.json(self.app.store.assign(pid,payload.get("asset_ids"),batch_id=payload.get("batch_id"),split=payload.get("split"),delta_base=payload.get('delta_base')))
 
@@ -170,7 +165,6 @@ PROJECT_ACTIONS = {
     'review-quality': action_review_quality,
     'import': action_import,
     'review': action_review,
-    'independence-review': action_independence_review,
     'assign': action_assign,
     'auto-split': action_auto_split,
     'split-preview': action_split_preview,

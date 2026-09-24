@@ -205,7 +205,7 @@ function renderTraining(){
   datasetSelect.value=datasets.some(item=>item.id===remember)?remember:datasets[0]?.id||'';
   const dataset=selectedDataset();$('trainingDatasetCurrent').textContent=dataset?.id||'尚未建立';
   renderReadiness(dataset?.readiness||readiness);
-  const purposeMessages={formal:'正式獨立來源評估：Train／Validation／Test 依來源隔離。',reviewed_independent:'人工確認獨立：依圖片進行多類別平衡；請依類別覆蓋解讀指標。',experimental:'寬鬆實驗：來源可能跨集合，分數不代表新場景泛化能力。',diagnostic:'流程驗證：同拍攝批次跨集合，分數不代表新場景泛化能力。',all_train:'全資料最終訓練：沒有獨立 Validation／Test，不提供可比較的泛化評估。'};
+  const purposeMessages={formal:'正式獨立來源評估：Train／Validation／Test 依來源隔離。',reviewed_independent:'圖片層級平衡：依圖片進行多類別平衡；請依類別覆蓋解讀指標。',experimental:'寬鬆實驗：來源可能跨集合，分數不代表新場景泛化能力。',diagnostic:'流程驗證：同拍攝批次跨集合，分數不代表新場景泛化能力。',all_train:'全資料最終訓練：沒有獨立 Validation／Test，不提供可比較的泛化評估。'};
   if(purposeMessages[dataset?.data_quality?.purpose])$('trainingReadiness').append(element('div',purposeMessages[dataset.data_quality.purpose],['experimental','diagnostic','all_train'].includes(dataset.data_quality.purpose)?'readiness-item warning':'readiness-item'));
   if(dataset&&!readiness.ready)$('trainingReadiness').append(element('div','目前專案的分割尚需處理；建立新版本前請前往資料分割。此處檢查結果屬於所選固定版本。','readiness-item warning'));
   $('trainingDatasetHint').textContent=dataset?`${number(dataset.asset_count)} 張 · Train ${number(dataset.splits.train)} / Val ${number(dataset.splits.val)} / Test ${number(dataset.splits.test)}`:'只會固定已核准且完成分割的資料。';
