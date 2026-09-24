@@ -112,6 +112,8 @@ def main():
             click('#continueToTraining');wait("window.workbenchState().stage==='train'")
             fill('#trainingEngine','yolo26n_detect');fill('[data-training-param=batch_size]',4)
             fill('[data-training-param=gradient_accumulation]',3)
+            click('#estimateTrainingTime');wait("document.querySelector('#trainingSetupReport').textContent.includes('首批實測')")
+            assert service.training.list_runs(pid)==[]
             click('#validateTrainingSetup');wait("document.querySelector('#trainingSetupReport').textContent.includes('設定驗證通過')")
             assert js("document.querySelector('#trainingSummary').textContent.includes('12 張')")
             capture('06-preflight')

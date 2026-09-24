@@ -1,3 +1,4 @@
+import {trainingTimeText,trainingTimeDetail,trainingProgress} from './training-time.mjs';
 import {createTrainingCharts, metricDescriptors, normalizedMetricRows, runAppearance, comparisonWarnings, trainingMetricDiagnostics, formatMetric as fmt} from './training-charts.mjs';
 
 const el=(tag,text,className)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(className)n.className=className;return n};
@@ -244,13 +245,15 @@ export class TrainingMonitor {
     return Object.entries(names).filter(([key])=>finite(score[key])&&!(key==='mean_iou'&&finite(score.box_mean_iou))).sort(([a],[b])=>(a===primary?-1:b===primary?1:0)).map(([key,label])=>({key,label,value:score[key]}));
   }
   renderSingleSummary(run){
+    const measured=trainingProgress(run);
     const heading=el('div',undefined,'run-progress-head'),copy=el('div');copy.append(el('span','TRAINING RUN','eyebrow'),el('h2',`${run.run_id} · ${statusName(run.status)}`));heading.append(copy);
-    if(active.has(run.status))heading.append(el('strong',`${Math.round(run.progress||0)}%`));
+    if(active.has(run.status)&&measured.value!==null)heading.append(el('strong',`${measured.label} ${Math.round(measured.value)}%`));
     const hasModel=this.overview?.models?.some(model=>model.model_version_id===run.model_version_id);
     if(hasModel)heading.append(action('評估與模型',()=>this.onModel(run.model_version_id)));
     this.root.append(heading);
     this.renderDataQuality(run,this.root);
-    if(active.has(run.status)){const p=el('progress');p.className='run-progress';p.max=100;p.value=Number(run.progress||0);p.setAttribute('aria-label',`${run.run_id} 訓練進度`);this.root.append(p)}
+    if(active.has(run.status)){const p=el('progress');p.className='run-progress';p.max=100;if(measured.value!==null)p.value=measured.value;p.setAttribute('aria-label',`${run.run_id} 訓練進度`);this.root.append(p)}
+    if(active.has(run.status)){this.root.append(el('p',trainingTimeText(run),'readiness-item'));const detail=trainingTimeDetail(run);if(detail)this.root.append(el('p',detail,'muted'));}
     if(run.message)this.root.append(el('p',run.message,'muted'));
     if(run.error)this.root.append(el('p',run.error,'readiness-item error'));
     const {score,split}=this.evaluation(run),best=this.scoreEntries(run,score)[0],invalid=run.evaluation?.valid===false;
@@ -258,7 +261,7 @@ export class TrainingMonitor {
     const cards=el('div',undefined,'run-metrics training-summary-cards');
     const batch=run.batch&&run.batches_per_epoch?`${run.batch} / ${run.batches_per_epoch}`:'等待 Batch',updates=run.execution?.optimizer_steps;
     const noEvaluation=run.data_quality?.purpose==='all_train';
-    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${statusName(run.status)} · ${Math.round(run.progress||0)}%`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):noEvaluation?'依用途不執行':'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生'],['資料版本',run.dataset_version_id],['引擎',run.engine_name],['裝置設定',String(run.config?.device||'auto').toUpperCase()]]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
+    for(const [label,value] of [['狀態／進度',active.has(run.status)?`${measured.label}${measured.value!==null?` · ${Math.round(measured.value)}%`:``}`:statusName(run.status)],[best?`${split} · ${best.label}`:'主要評估指標',invalid?'不可用':best?fmt(best.value):noEvaluation?'依用途不執行':'等待評估'],['完成／總 Epoch',`${currentEpoch} / ${run.config?.epochs??'—'}`],['Batch／權重更新',`${batch}${Number.isFinite(updates)?` · 更新 ${updates}`:''}`],['模型版本',hasModel?run.model_version_id:'尚未產生'],['資料版本',run.dataset_version_id],['引擎',run.engine_name],['裝置設定',String(run.config?.device||'auto').toUpperCase()]]){const card=el('div',undefined,'run-metric');card.append(el('span',label),el('b',value));cards.append(card)}this.root.append(cards);if(invalid)this.root.append(el('p',run.evaluation.reason||'歷史評估資料不符合目前規範。','readiness-item error'));
   }
   renderComparisonSummary(runs){
     this.root.append(el('p',`${runs[0].dataset_version_id} · 已選 ${runs.length} 個模型 · 曲線來源：${runs[0].metricSplit==='test'?'Test（未設定 Validation）':runs[0].metricSplit==='val'?'Validation':'評估分割未知'}`,'muted'));

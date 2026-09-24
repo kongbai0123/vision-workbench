@@ -21,6 +21,7 @@ from composer_core.geometry import encode_rle, shape_polygons
 from .training_engine import atomic_json, read_json, _status, _stopping
 from .yolo_compatibility import analyze_manifest, blocker_message, compatible_shape
 from .augmentation import normalize_augmentation, yolo_augmentation_args
+from .time_estimation import timed_phase
 
 
 ULTRALYTICS_ENGINES = {
@@ -273,6 +274,27 @@ class _RunMetricsRecorder:
         self.execution = {"batch_size": batch, "gradient_accumulation": accumulation,
                           "effective_batch_size": batch * accumulation,
                           "optimizer_step_measurement": "post_step_hook" if self.hook is not None else "unavailable"}
+        loader = getattr(trainer, 'train_loader', None)
+        if loader is not None:
+            _status(self.run_dir, self.run, status='running', phase='training', epoch=epoch,
+                    batch=0, batches_per_epoch=len(loader), message=f'開始 Epoch {epoch}/{self.epochs}')
+
+    def on_validation_start(self, trainer):
+        if self.run.get('data_purpose') != 'all_train' and self.pending_epoch:
+            _status(self.run_dir, self.run, phase='validation', message='每輪驗證',
+                    timing_work={'completed': self.pending_epoch - 1, 'total': self.epochs})
+
+    def on_validator_start(self, validator):
+        if self.pending_epoch is None:
+            _status(self.run_dir, self.run, phase='engine_validation', message='引擎最終檢查',
+                    timing_work={'completed': 0, 'total': 1})
+        elif self.run.get('data_purpose') == 'all_train':
+            _status(self.run_dir, self.run, phase='validation', message='引擎內部檢查（非獨立評估）',
+                    timing_work={'completed': 0, 'total': 1})
+
+    def on_validator_end(self, validator):
+        if self.pending_epoch is None or self.run.get('data_purpose') == 'all_train':
+            _status(self.run_dir, self.run, timing_work={'completed': 1, 'total': 1})
 
     def on_epoch_end(self, trainer):
         epoch = int(trainer.epoch) + 1
@@ -303,6 +325,8 @@ class _RunMetricsRecorder:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         _status(self.run_dir, self.run, status="running", message=f"{self.definition['name']} {epoch} / {self.epochs}",
                 epoch=epoch, progress=5 + round(epoch / self.epochs * 82), metrics=row,
+                **({'phase': 'validation', 'timing_work': {'completed': epoch, 'total': self.epochs}}
+                   if self.run.get('data_purpose') != 'all_train' else {}),
                 execution=dict(self.execution))
         if _stopping(self.run_dir):
             trainer.stop = True
@@ -396,6 +420,9 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         recorder = _RunMetricsRecorder(run_dir, run, definition)
         model.add_callback("on_train_epoch_start", recorder.on_epoch_start)
         model.add_callback("on_train_batch_end", recorder.on_batch_end)
+        model.add_callback("on_train_epoch_end", recorder.on_validation_start)
+        model.add_callback("on_val_start", recorder.on_validator_start)
+        model.add_callback("on_val_end", recorder.on_validator_end)
         model.add_callback("on_fit_epoch_end", recorder.on_epoch_end)
         requested = run["config"].get("device", "auto")
         device = "0" if requested == "cuda" else "cpu" if requested == "cpu" else None
@@ -426,38 +453,44 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
             best = candidate if candidate.is_file() else Path(str(getattr(trainer, "last", "")))
         if not best.is_file():
             raise RuntimeError("訓練完成但找不到 checkpoint")
-        checkpoint = model_dir / "checkpoint.pt"; shutil.copy2(best, checkpoint)
+        checkpoint = model_dir / "checkpoint.pt"
+        with timed_phase(run_dir, run, 'checkpoint'):
+            shutil.copy2(best, checkpoint)
         test_count = sum(asset["split"] == "test" for asset in manifest["assets"])
         if train_only:
             validation = test = None
             protocol = training_only_protocol()
         else:
-            evaluator = model_class(str(checkpoint))
-            validation_raw = evaluator.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
+            with timed_phase(run_dir, run, 'final_validation'):
+                evaluator = model_class(str(checkpoint))
+                validation_raw = evaluator.val(data=str(data_yaml), split="val", device=device, plots=False, verbose=False)
             val_count = sum(asset["split"] == validation_split for asset in manifest["assets"])
             validation = _result_metrics(validation_raw, definition["kind"], validation_split, val_count)
-            test = (_result_metrics(evaluator.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False),
-                                    definition["kind"], "test", test_count) if test_count else None)
+            test = None
+            if test_count:
+                with timed_phase(run_dir, run, 'test'):
+                    test = _result_metrics(evaluator.val(data=str(data_yaml), split="test", device=device, plots=False, verbose=False), definition["kind"], "test", test_count)
             protocol = evaluation_protocol(checkpoint="best_validation", has_test=bool(test_count), manifest=manifest)
-        record = {"schema_version": 1, "engine": run["engine"], "engine_name": definition["name"],
-                  "task": definition["task"], "model_version_id": run["model_version_id"], "run_id": run["run_id"],
-                  "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
-                  "image_size": int(run["config"].get("image_size", 640)), "score_threshold": .5,
-                  "validation": validation, "test": test, "evaluation_protocol": protocol,
-                  "created_at": time.time(), "checkpoint": "checkpoint.pt",
-                  "initialization": initialization, "execution": dict(recorder.execution)}
-        if compatibility is not None:
-            record["yolo_compatibility"] = compatibility
-        if "data_quality" in run:
-            record["data_quality"] = run["data_quality"]
-        atomic_json(model_dir / "model.json", record)
-        evaluation = {"schema_version": 2, "protocol": protocol, "validation": validation, "test": test}
-        if compatibility is not None:
-            evaluation["yolo_compatibility"] = compatibility
-        if "data_quality" in run:
-            evaluation["data_quality"] = run["data_quality"]
-        atomic_json(run_dir / "evaluation.json", evaluation)
-        _artifact_manifest(run_dir, model_dir, run["run_id"], checkpoint)
+        with timed_phase(run_dir, run, 'saving'):
+            record = {"schema_version": 1, "engine": run["engine"], "engine_name": definition["name"],
+                      "task": definition["task"], "model_version_id": run["model_version_id"], "run_id": run["run_id"],
+                      "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
+                      "image_size": int(run["config"].get("image_size", 640)), "score_threshold": .5,
+                      "validation": validation, "test": test, "evaluation_protocol": protocol,
+                      "created_at": time.time(), "checkpoint": "checkpoint.pt",
+                      "initialization": initialization, "execution": dict(recorder.execution)}
+            if compatibility is not None:
+                record["yolo_compatibility"] = compatibility
+            if "data_quality" in run:
+                record["data_quality"] = run["data_quality"]
+            atomic_json(model_dir / "model.json", record)
+            evaluation = {"schema_version": 2, "protocol": protocol, "validation": validation, "test": test}
+            if compatibility is not None:
+                evaluation["yolo_compatibility"] = compatibility
+            if "data_quality" in run:
+                evaluation["data_quality"] = run["data_quality"]
+            atomic_json(run_dir / "evaluation.json", evaluation)
+            _artifact_manifest(run_dir, model_dir, run["run_id"], checkpoint)
         return _status(run_dir, run, status="completed", message=f"{definition['name']} {'最終訓練完成（無獨立評估）' if train_only else '訓練與評估完成'}", progress=100,
                        completed_at=time.time(), evaluation=evaluation)
     except Exception as exc:

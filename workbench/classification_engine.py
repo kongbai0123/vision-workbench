@@ -6,6 +6,8 @@ adapter never turns a classification result into a full-image bounding box.
 """
 from __future__ import annotations
 
+from .time_estimation import timed_phase
+
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -179,6 +181,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
         _status(run_dir, run, status="preparing", message=f"載入 {CLASSIFICATION_ENGINES[run['engine']]} · {device}", progress=3)
         optimizer_steps = 0
         for epoch in range(1, epochs + 1):
+            _status(run_dir, run, status='running', phase='training', epoch=epoch, batch=0, batches_per_epoch=len(loader), message=f'開始 Epoch {epoch}/{epochs}')
             rates = scheduler.start_epoch(epoch)
             model.train(); losses = []
             for batch, (images, targets, _assets) in enumerate(loader, 1):
@@ -194,7 +197,10 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                         progress=5 + round((((epoch - 1) + batch / len(loader)) / epochs) * 82),
                         execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                    "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
-            score = _evaluate(model, validation, device, torch) if validation.assets else None
+            score = None
+            if validation.assets:
+                with timed_phase(run_dir, run, 'validation', completed=epoch-1, total=epochs):
+                    score = _evaluate(model, validation, device, torch)
             row = {"epoch": epoch, "train/loss": round(sum(losses) / max(1, len(losses)), 6)}
             if score: row.update({"val/accuracy": score["accuracy"], "val/macro_f1": score["macro_f1"],
                                   "val/macro_recall": score["macro_recall"]})
@@ -209,21 +215,29 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path):
                     execution={"batch_size": loader.batch_size, "gradient_accumulation": 1,
                                "effective_batch_size": loader.batch_size, "optimizer_steps": optimizer_steps})
         checkpoint = model_dir / "checkpoint.pt"
-        torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
-        validation_result = _evaluate(model, validation, device, torch) if validation.assets else None
-        test_result = _evaluate(model, testing, device, torch) if testing.assets else None
-        protocol = (training_only_protocol() if train_only else
-                    evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets), manifest=manifest))
-        record = {"schema_version": 1, "engine": run["engine"], "engine_name": CLASSIFICATION_ENGINES[run["engine"]],
-                  "task": "image_classification", "model_version_id": run["model_version_id"], "run_id": run["run_id"],
-                  "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
-                  "image_size": image_size, "validation": validation_result, "test": test_result,
-                  "evaluation_protocol": protocol,
-                  "created_at": time.time(), "checkpoint": "checkpoint.pt", "prediction_mode": "image_class"}
-        atomic_json(model_dir / "model.json", record)
-        atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
-                                                   "validation": validation_result, "test": test_result})
-        _artifacts(run_dir, model_dir, run["run_id"], checkpoint)
+        with timed_phase(run_dir, run, 'checkpoint'):
+            torch.save({"model_state": model.state_dict(), "classes": manifest["classes"], "image_size": image_size, "optimizer_state": optimizer.state_dict(), "scheduler_state": scheduler.state_dict()}, checkpoint)
+        validation_result = None
+        if validation.assets:
+            with timed_phase(run_dir, run, 'final_validation'):
+                validation_result = _evaluate(model, validation, device, torch)
+        test_result = None
+        if testing.assets:
+            with timed_phase(run_dir, run, 'test'):
+                test_result = _evaluate(model, testing, device, torch)
+        with timed_phase(run_dir, run, 'saving'):
+            protocol = (training_only_protocol() if train_only else
+                        evaluation_protocol(checkpoint="final_epoch", has_test=bool(testing.assets), manifest=manifest))
+            record = {"schema_version": 1, "engine": run["engine"], "engine_name": CLASSIFICATION_ENGINES[run["engine"]],
+                      "task": "image_classification", "model_version_id": run["model_version_id"], "run_id": run["run_id"],
+                      "dataset_version_id": manifest["dataset_version_id"], "classes": manifest["classes"],
+                      "image_size": image_size, "validation": validation_result, "test": test_result,
+                      "evaluation_protocol": protocol,
+                      "created_at": time.time(), "checkpoint": "checkpoint.pt", "prediction_mode": "image_class"}
+            atomic_json(model_dir / "model.json", record)
+            atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
+                                                       "validation": validation_result, "test": test_result})
+            _artifacts(run_dir, model_dir, run["run_id"], checkpoint)
         return _status(run_dir, run, status="completed", message=f"{CLASSIFICATION_ENGINES[run['engine']]} {'最終訓練完成（無獨立評估）' if train_only else '訓練與評估完成'}",
                        progress=100, completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
                                                                           "validation": validation_result, "test": test_result})

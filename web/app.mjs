@@ -899,7 +899,7 @@ async function runAI() {
 const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,renderAugmentationError,createPreparedDatasetVersion}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
-const {validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
+const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);
@@ -997,7 +997,7 @@ const workflowDraft=new WorkflowDraft({api,collect:()=>{
   trainingParameters.reset();trainingParameters.drafts=new Map(Object.entries(payload.parameters||{}));
   $('trainingEngine').replaceChildren(new Option(payload.engine||'',payload.engine||''));
   $('trainingDataset').replaceChildren(new Option(payload.dataset||'',payload.dataset||''));
-  state.trainingConfigTab=payload.tab||'basic';state.trainingPreflight=null;
+  state.trainingConfigTab=payload.tab||'basic';state.trainingPreflight=null;state.trainingTimeEstimate=null;
 },onError:error=>toast(`設定尚未保存：${error.message}`,true)});
 window.addEventListener('training-configuration-changed',()=>workflowDraft.changed());
 bind('prepareTraining',()=>switchStage('split'));
@@ -1020,6 +1020,7 @@ $('augmentationExpansion').oninput=updatePreparationDraft;
 for(const id of ['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'])$(id).oninput=updatePreparationDraft;
 document.querySelectorAll('[data-training-tab]').forEach(button=>button.onclick=()=>{state.trainingConfigTab=button.dataset.trainingTab;applyTrainingConfigTab();workflowDraft.changed()});
 $('trainingDataset').onchange=()=>{invalidateYoloCompatibility();renderTraining();workflowDraft.changed()};$('trainingEngine').onchange=()=>{invalidateYoloCompatibility();renderTraining();workflowDraft.changed()};$('trainingDevice').onchange=renderTraining;
+bind('estimateTrainingTime',estimateTrainingTime,{busy:true,task:'快速估時（不訓練）'});
 bind('validateTrainingSetup',validateTrainingSetup,{busy:true,task:'驗證設定（不訓練）'});
 $('checkYoloCompatibility').onclick=()=>safe(checkReviewYoloCompatibility);
 $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));

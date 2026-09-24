@@ -24,6 +24,8 @@ def worker_lifecycle(run_dir, run):
             if stop_requested(run_dir):
                 raise InterruptedError('等待運算資源時已取消訓練')
         with accelerator_lease(root, device=run.get('config', {}).get('device', 'auto'), checkpoint=checkpoint):
+            from .training_engine import _status
+            _status(run_dir, run, status='preparing', phase='preparation', message='準備資料與模型')
             yield
     finally:
         stop.set()

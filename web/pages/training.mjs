@@ -1,4 +1,4 @@
-import {TaskTiming} from '../task-timing.mjs';
+import {trainingTimeText,trainingTimeDetail,trainingProgress,quickEstimateText} from '../training-time.mjs';
 import {decodeMask} from '../shapes.mjs';
 
 export function filterModelVersions(models,{dataset='',engine='',query=''}={}){
@@ -64,8 +64,8 @@ function parameterText(value){if(value===undefined||value===null||value==='')ret
 export function createTrainingPage(context) {
   const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
-let runTiming=null,runTimingKey=null;
-function invalidateYoloCompatibility(){state.trainingPreflight=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
+
+function invalidateYoloCompatibility(){state.trainingTimeEstimate=null;state.trainingPreflight=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
 const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device'),onChange:()=>{invalidateYoloCompatibility();window.dispatchEvent(new Event('training-configuration-changed'))}});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
 function applyTrainingConfigTab(){
@@ -136,14 +136,9 @@ function updateBackgroundTraining(error=''){
   const epoch=run.epoch?` · Epoch ${number(run.epoch)}/${number(run.config?.epochs)}`:'';
   const batch=run.batch&&run.batches_per_epoch?` · Batch ${number(run.batch)}/${number(run.batches_per_epoch)}`:'';
   const updates=Number(run.execution?.optimizer_steps);const step=Number.isFinite(updates)?` · 權重更新 ${number(updates)}`:'';
-  const timingKey=`${state.project?.id}/${run.run_id}`;
-  if(runTimingKey!==timingKey){runTimingKey=timingKey;runTiming=new TaskTiming();}
-  const measured=run.status==='running'&&Number(run.config?.epochs)>0?Number(run.epoch||0)/Number(run.config.epochs)*100:null;
-  runTiming.update(measured,run.status==='preparing'?'running':run.status,run.status);
-  $('backgroundTrainingText').textContent=`${run.run_id} ${trainingStatusName(run.status)}${epoch}${batch}${step} · ${runTiming.text('訓練階段')}（依目前觀測；不含後續評估，早停可能提前結束）`;
-  button.title=$('backgroundTrainingText').textContent;
-  $('backgroundTrainingText').textContent=`${run.run_id} · ${runTiming.text('訓練階段')}`;
-  const progress=Number(run.progress);if(Number.isFinite(progress))$('backgroundTrainingProgress').value=progress;else $('backgroundTrainingProgress').removeAttribute('value');
+  $('backgroundTrainingText').textContent=`${run.run_id} · ${trainingTimeText(run)}`;
+  button.title=`${trainingStatusName(run.status)}${epoch}${batch}${step} · ${trainingTimeDetail(run)}`;
+  const progress=trainingProgress(run).value;if(progress!==null)$('backgroundTrainingProgress').value=progress;else $('backgroundTrainingProgress').removeAttribute('value');
 }
 function renderReadiness(report){
   const root=$('trainingReadiness');root.replaceChildren();
@@ -243,6 +238,9 @@ function renderTraining(){
   }
   const receipt=state.trainingPreflight?.signature===yoloCompatibilitySignature(dataset,config)?state.trainingPreflight:null;
   if(receipt){reportRoot.append(element('p',`設定驗證通過 · ${receipt.dataset_version_id} · ${number(receipt.summary.original_images)} 張原圖 · ${receipt.summary.batches_per_epoch===null?'原圖讀取': '每輪輸入'} ${number(receipt.summary.training_events.events)} 筆 · 未啟動訓練`,'readiness-item'));for(const note of [...receipt.summary.notes,...receipt.warnings.map(item=>item.message),...(!receipt.runtime_ready?[receipt.runtime_message||'模型執行環境尚未安裝']:[])])reportRoot.append(element('p',note,'readiness-item warning'));}
+  const initialEstimate=state.trainingTimeEstimate?.signature===yoloCompatibilitySignature(dataset,config)?state.trainingTimeEstimate:null;
+  if(initialEstimate)reportRoot.append(element('p',quickEstimateText(initialEstimate),'readiness-item'));
+  $('estimateTrainingTime').disabled=!dataset||!!configError;
   $('validateTrainingSetup').disabled=!dataset||!!configError;
   applyTrainingConfigTab();
   $('startTraining').disabled=!!configError||!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
@@ -257,8 +255,16 @@ async function validateTrainingSetup(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先選擇固定資料版本。');
   const projectId=state.project.id,parameters=trainingParameters.collect(),signature=yoloCompatibilitySignature(dataset,parameters),config={engine:$('trainingEngine').value,...parameters};
   const report=await api(projectPath('/training-preflight'),'POST',{dataset_version_id:dataset.id,config});
-  if(state.project?.id===projectId){state.trainingPreflight={...report,signature};renderTraining();}
+  if(state.project?.id===projectId){state.trainingPreflight={...report,signature};state.trainingTimeEstimate={...report.time_estimate,signature};renderTraining();}
   return report;
+}
+async function estimateTrainingTime(){
+  await flushAllEdits();
+  const dataset=selectedDataset();if(!dataset)throw Error('請先選擇固定資料版本。');
+  const projectId=state.project.id,parameters=trainingParameters.collect(),signature=yoloCompatibilitySignature(dataset,parameters);
+  const estimate=await api(projectPath('/training-time-estimate'),'POST',{dataset_version_id:dataset.id,config:{engine:$('trainingEngine').value,...parameters}});
+  if(state.project?.id===projectId){state.trainingTimeEstimate={...estimate,signature};renderTraining()}
+  return estimate;
 }
 let pendingTrainingRequest=null;
 async function startTrainingRun(){
@@ -417,5 +423,5 @@ async function runModelComparison(){const model=state.training?.models?.find(ite
 function setTrialFrame(value){trialIndex=Math.max(0,Math.min(trialResult?.frames?.length-1||0,Number(value)));drawTrial()}
 function toggleTrialPlayback(){if(trialTimer){stopTrialPlayback();return}if(!trialResult?.frames?.length)return;$('trialPlay').textContent='暫停';const frames=trialResult.frames,delay=Math.max(16,Math.round(((frames[1]?.time_seconds||1/10)-(frames[0]?.time_seconds||0))*1000));trialTimer=setInterval(()=>{if(trialIndex>=frames.length-1){stopTrialPlayback();return}setTrialFrame(trialIndex+1)},delay)}
 
-  return {validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial};
+  return {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial};
 }

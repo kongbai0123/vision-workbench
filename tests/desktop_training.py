@@ -330,12 +330,18 @@ def main():
             # instead of resurrecting R004, matching the production contract.
             _old_path, previous, rows = saved["R004"]
             run = dict(previous, run_id='R005', model_version_id='M005', status='running', updated_at=time.time())
+            run['timing'] = {'schema_version': 1, 'phase': 'training', 'phase_label': '訓練',
+                             'completed': 24, 'total': 40, 'remaining_seconds': 120,
+                             'lower_seconds': 90, 'upper_seconds': 160, 'elapsed_seconds': 100,
+                             'samples': 10, 'source': 'live', 'updated_at': time.time(),
+                             'stale_after_seconds': 30, 'seconds_since_advance': 0}
             path = service.training._run_path(pid, 'R005')
             atomic_json(path, run)
             (path.parent / 'metrics.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
             saved['R005'] = (path, run, rows)
             click("#refreshTraining")
             wait("!document.querySelector('#backgroundTraining').hidden")
+            assert js("document.querySelector('#backgroundTrainingText').textContent.includes('全程剩餘')")
             assert js("document.querySelector('#trainingAdvancedFields [data-training-param=learning_rate]').value") == "0.003"
 
             # The monitor starts with outcome metrics and keeps every recorded metric
@@ -434,8 +440,12 @@ def main():
             with (path.parent / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(new_row) + "\n")
             run.update(epoch=13, metrics=new_row, progress=65, updated_at=time.time())
+            run['timing'].update(completed=26, remaining_seconds=100, updated_at=time.time())
             atomic_json(path, run)
             wait(chart_script("val/mean_iou", ".querySelectorAll('circle[data-run-id=R005]').length===13"))
+            wait("document.querySelector('#trainingRunDetail').textContent.includes('全程剩餘')")
+            assert js("document.querySelector('#trainingRunDetail').textContent.includes('波動範圍')")
+            capture('35-training-time-estimate', target='#trainingRunDetail')
             assert "0.9012" in hover_epoch("val/mean_iou", 13)
             assert domains() == live_domains, (live_domains, domains())
             assert abs(epoch_stats()["scroll"] - 65) <= 2, epoch_stats()

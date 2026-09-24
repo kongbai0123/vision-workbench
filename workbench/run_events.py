@@ -6,7 +6,7 @@ from vision_workbench.contracts import validate_run_event
 
 TERMINAL = {'completed', 'failed', 'stopped'}
 PROGRESS_FIELDS = {'progress', 'batch', 'batches_per_epoch', 'execution', 'message',
-                   'updated_at', 'device', 'initialization', 'runtime'}
+                   'updated_at', 'device', 'initialization', 'runtime', 'timing', 'timing_profile'}
 
 
 def append_state(path, value):

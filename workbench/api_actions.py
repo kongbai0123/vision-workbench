@@ -77,6 +77,10 @@ def action_training_preflight(self, pid, payload, action):
     return self.json(self.app.training.training_preflight(pid, payload.get('dataset_version_id'), payload.get('config', {})))
 
 
+def action_training_time_estimate(self, pid, payload, action):
+    return self.json(self.app.training.estimate_training_time(pid, payload.get('dataset_version_id'), payload.get('config', {})))
+
+
 def action_training_runs(self, pid, payload, action):
     return self.json(self.app.training.start_run(pid,payload.get("dataset_version_id"),payload.get("config") or {},payload.get('request_id')))
 
@@ -187,6 +191,7 @@ PROJECT_ACTIONS = {
     'dataset-versions': action_dataset_versions,
     'workflow-draft': action_workflow_draft,
     'training-preflight': action_training_preflight,
+    'training-time-estimate': action_training_time_estimate,
     'training-runs': action_training_runs,
     'training-compatibility': action_training_compatibility,
     'review-compatibility': action_review_compatibility,

@@ -70,6 +70,8 @@ node --test tests/*.test.mjs
 
 此範圍的參數測試使用模擬 optimizer／啟動介面；不代表真實模型驗收。完整 `unittest discover` 與 `desktop_workflow.py` 包含實際訓練測試，因此要求「不訓練」時不要改用完整測試命令。
 
+時間估算另可執行 `python -m unittest tests.test_time_estimation` 與 `python tests/benchmark_time_estimation.py --history-root data/projects`。兩者只使用假時鐘或唯讀事件重播；詳見 [演算法與誤差結果](time-estimation.md)。
+
 ### 其他桌面與模型測試
 
 桌面流程與圖表測試使用 PySide6／Qt WebEngine，截圖等產物寫入 `qa-output/`：

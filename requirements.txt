@@ -7,3 +7,4 @@ mss==10.2.0
 pygrabber==0.2
 comtypes==1.4.16
 labelme==7.4.1
+tqdm==4.70.1

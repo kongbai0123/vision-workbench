@@ -153,6 +153,8 @@ def _evaluate(manifest: dict, dataset_dir: Path, model: dict, split: str) -> dic
 
 
 def _status(run_dir: Path, run: dict, **changes) -> dict:
+    from .time_estimation import record_timing
+    record_timing(run_dir, run, changes)
     run.update(changes, updated_at=time.time())
     atomic_json(run_dir / "run.json", run)
     return run
@@ -173,6 +175,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
     loose = loose_split_applies(manifest.get('split_plan'), manifest.get('assets', []))
     dataset_dir = dataset_manifest.parent
     run = read_json(run_dir / "run.json")
+    from .time_estimation import timed_phase
     epochs = max(1, min(200, int(run["config"].get("epochs", 24))))
     try:
         _status(run_dir, run, status="preparing", message="驗證固定資料版本", progress=2)
@@ -184,6 +187,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
         train_assets = [asset for asset in manifest["assets"] if asset["split"] == "train"]
         if not train_assets:
             raise ValueError("訓練資料版本沒有 Train 圖片")
+        _status(run_dir, run, phase='read_images', timing_work={'completed': 0, 'total': len(train_assets)})
         for index, asset in enumerate(train_assets):
             if _stopping(run_dir):
                 return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
@@ -197,7 +201,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
             if np.any(~occupied):
                 backgrounds.append(rgb[~occupied])
             _status(run_dir, run, status="preparing", message=f"讀取訓練圖片 {index + 1} / {len(train_assets)}",
-                    progress=2 + round((index + 1) / len(train_assets) * 20))
+                    progress=2 + round((index + 1) / len(train_assets) * 20), timing_work={'completed': index + 1, 'total': len(train_assets)})
         empty = [label for label, rows in samples.items() if not rows]
         if empty and not loose:
             raise ValueError(f"Train 缺少類別標註：{'、'.join(empty)}")
@@ -216,6 +220,7 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
         metrics_path = run_dir / "metrics.jsonl"
         best = {label: (1.0, -1.0) for label in classes}
         metrics_path.write_text("", encoding="utf-8")
+        _status(run_dir, run, status='running', phase='threshold', timing_work={'completed': 0, 'total': epochs})
         for epoch, threshold in enumerate(candidates, 1):
             if _stopping(run_dir):
                 return _status(run_dir, run, status="stopped", message="已安全停止", progress=None)
@@ -231,32 +236,37 @@ def train(dataset_manifest: Path, run_dir: Path, model_dir: Path) -> dict:
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             _status(run_dir, run, status="running", message=f"調整像素分類門檻 {epoch} / {epochs}", epoch=epoch,
-                    progress=22 + round(epoch / epochs * 65), metrics=row)
+                    progress=22 + round(epoch / epochs * 65), metrics=row, timing_work={'completed': epoch, 'total': epochs})
         missing_validation = [label for label, (_threshold, score) in best.items() if score < 0]
         if missing_validation and not loose:
             raise ValueError(f"Validation 缺少可評估像素的類別：{'、'.join(missing_validation)}")
         model["thresholds"] = {label: float(best[label][0]) for label in classes}
         model['uncalibrated_classes'] = missing_validation
-        validation = _evaluate(manifest, dataset_dir, model, validation_split)
+        with timed_phase(run_dir, run, 'final_validation'):
+            validation = _evaluate(manifest, dataset_dir, model, validation_split)
         has_test = any(a["split"] == "test" for a in manifest["assets"])
-        test = _evaluate(manifest, dataset_dir, model, "test") if has_test else None
+        test = None
+        if has_test:
+            with timed_phase(run_dir, run, 'test'):
+                test = _evaluate(manifest, dataset_dir, model, 'test')
         protocol = evaluation_protocol(checkpoint="validation_selected_thresholds", has_test=has_test,
                                        manifest=manifest)
-        model.update(validation=validation, test=test, evaluation_protocol=protocol, created_at=time.time(), model_version_id=run["model_version_id"],
-                      run_id=run["run_id"])
-        atomic_json(model_dir / "model.json", model)
-        atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
-                                                   "validation": validation, "test": test})
-        artifact_files = [run_dir / "run.json", run_dir / "metrics.jsonl", run_dir / "evaluation.json", model_dir / "model.json"]
-        artifacts = []
-        for path in artifact_files[1:]:
-            raw = path.read_bytes()
-            artifacts.append({"path": path.relative_to(run_dir.parent.parent.parent).as_posix()
-                              if path.is_relative_to(run_dir.parent.parent.parent) else path.name,
-                              "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
-        atomic_json(run_dir / "artifact-manifest.json", {"schema_version": 1, "run_id": run["run_id"],
-                    "dataset_version_id": manifest["dataset_version_id"], "model_version_id": run["model_version_id"],
-                    "artifacts": artifacts})
+        with timed_phase(run_dir, run, 'saving'):
+            model.update(validation=validation, test=test, evaluation_protocol=protocol, created_at=time.time(), model_version_id=run["model_version_id"],
+                          run_id=run["run_id"])
+            atomic_json(model_dir / "model.json", model)
+            atomic_json(run_dir / "evaluation.json", {"schema_version": 2, "protocol": protocol,
+                                                       "validation": validation, "test": test})
+            artifact_files = [run_dir / "run.json", run_dir / "metrics.jsonl", run_dir / "evaluation.json", model_dir / "model.json"]
+            artifacts = []
+            for path in artifact_files[1:]:
+                raw = path.read_bytes()
+                artifacts.append({"path": path.relative_to(run_dir.parent.parent.parent).as_posix()
+                                  if path.is_relative_to(run_dir.parent.parent.parent) else path.name,
+                                  "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
+            atomic_json(run_dir / "artifact-manifest.json", {"schema_version": 1, "run_id": run["run_id"],
+                        "dataset_version_id": manifest["dataset_version_id"], "model_version_id": run["model_version_id"],
+                        "artifacts": artifacts})
         return _status(run_dir, run, status="completed", message="訓練與評估完成", progress=100,
                        completed_at=time.time(), evaluation={"schema_version": 2, "protocol": protocol,
                                                               "validation": validation, "test": test})

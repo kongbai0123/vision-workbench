@@ -478,7 +478,7 @@ class TrainingWorkspace:
                         return previous
             return self._start_run_locked(project_id, dataset_id, config, request_id)
 
-    def prepare_training(self, project_id, dataset_id, config):
+    def prepare_training(self, project_id, dataset_id, config, *, probe_runtime=True):
         """Validate exactly the launch configuration without allocating or starting a Run."""
         if not isinstance(config, dict):
             raise ValueError("訓練參數必須是物件")
@@ -487,7 +487,11 @@ class TrainingWorkspace:
         if not manifest.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
         engine = str(config.get("engine") or (MASKRCNN_KEY if self._maskrcnn_available else ENGINE_KEY))
-        definition = self.registry.model(engine)
+        if probe_runtime:
+            definition = self.registry.model(engine)
+        else:
+            from .model_registry import MODELS
+            definition = next((item for item in MODELS if item['key'] == engine), None)
         if definition is None:
             raise ValueError("找不到所選訓練引擎")
         from .engine_specs import engine_spec
@@ -532,7 +536,30 @@ class TrainingWorkspace:
                 'config': prepared['config'], 'summary': prepared['summary'],
                 'runtime_ready': bool(prepared['definition']['train']),
                 'runtime_message': prepared['definition'].get('unavailable_reason'),
-                'warnings': prepared['coverage']['warnings']}
+                'warnings': prepared['coverage']['warnings'],
+                'time_estimate': self._estimate_training_time(project_id, prepared)}
+
+    def _estimate_training_time(self, project_id, prepared):
+        from .time_estimation import work_plan, match_key, historical_estimate, environment_key
+        plan = work_plan(prepared['summary'], prepared['config'], prepared['definition']['component'])
+        runtime = environment_key(self.registry.component_python(prepared['definition']['component']))
+        key = match_key(prepared['manifest']['manifest_sha256'], prepared['definition']['key'], prepared['config'], runtime)
+        # Read at most 30 recent small Run states. Never scan image bytes or start
+        # a benchmark/model to guess timing. Legacy runs without profiles skip.
+        parent = self.runs_dir(project_id)
+        paths = sorted(parent.glob('R*/run.json'), reverse=True)[:30] if parent.exists() else []
+        from .run_events import read_state
+        runs = []
+        for path in paths:
+            try:
+                runs.append(read_state(path))
+            except (OSError, ValueError):
+                continue
+        return {**historical_estimate(runs, key, plan), 'match_key': key}
+
+    def estimate_training_time(self, project_id, dataset_id, config):
+        prepared = self.prepare_training(project_id, dataset_id, config, probe_runtime=False)
+        return self._estimate_training_time(project_id, prepared)
 
     def _start_run_locked(self, project_id, dataset_id, config, request_id=None):
         prepared = self.prepare_training(project_id, dataset_id, config)
@@ -564,6 +591,9 @@ class TrainingWorkspace:
                 run.update(request_id=request_id, request_payload={'dataset_id': dataset_id, 'config': config})
             run['training_events'] = prepared['summary']['training_events']
             run['setup_summary'] = prepared['summary']
+            estimate = self._estimate_training_time(project_id, prepared)
+            run.update(timing_plan=estimate['plan'], timing_prior=estimate['priors'],
+                       timing_match_key=estimate['match_key'], time_estimate=estimate)
             if coverage["warnings"]:
                 run["split_warnings"] = coverage["warnings"]
             if compatibility is not None:

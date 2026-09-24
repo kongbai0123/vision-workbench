@@ -149,8 +149,8 @@ class ModelRegistry:
         python = self.training_python
         isolated = self.app_root / ".venv-training" / "Scripts" / "python.exe"
         dedicated = bool(os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON") or self._configured_python or isolated.is_file())
-        code = ("import json,torch,torchvision; print(json.dumps({"
-                "'torch':torch.__version__,'torchvision':torchvision.__version__,"
+        code = ("import json,torch,torchvision,tqdm; print(json.dumps({"
+                "'torch':torch.__version__,'torchvision':torchvision.__version__,'tqdm':tqdm.__version__,"
                 "'cuda':bool(torch.cuda.is_available()),'device':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}))")
         try:
             result = subprocess.run([str(python), "-c", code], capture_output=True, text=True,
@@ -201,7 +201,7 @@ class ModelRegistry:
                 "builtin": {"state": "ready", "message": "隨工作台提供", "python": sys.executable},
                 "torchvision": torchvision,
                 "anomalib": {"state": "planned", "message": "資料 adapter 與獨立 runtime 尚在開發"},
-                "ultralytics": self._probe_python_component("ultralytics", ("torch", "ultralytics")),
+            "ultralytics": self._probe_python_component("ultralytics", ("torch", "ultralytics", "tqdm")),
         }
         with self._lock:
             self._probe_cache, self._probe_time = states, time.monotonic()
