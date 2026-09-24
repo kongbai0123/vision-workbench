@@ -7,7 +7,7 @@ export function augmentationProjection(splits={},expansionCount=0){
     test:{originals:originals.test,expanded:0,events:originals.test},
   };
   return {rows,originals:Object.values(originals).reduce((sum,value)=>sum+value,0),expanded,
-    events:Object.values(rows).reduce((sum,row)=>sum+row.events,0),trainEvents:rows.train.events};
+    trainEvents:rows.train.events};
 }
 
 export function createPreparationPage(context) {
@@ -91,13 +91,13 @@ function renderAugmentationPreparation(){
     heading.append(element('strong',label),element('span',note));
     const equation=element('div',undefined,'augmentation-equation');
     equation.append(element('div',undefined,'augmentation-equation-item'),element('i','＋'),element('div',undefined,'augmentation-equation-item'),element('i','＝'),element('div',undefined,'augmentation-equation-item result'));
-    const parts=equation.querySelectorAll('div');parts[0].append(element('b',number(row.originals)),element('small','原始圖片'));parts[1].append(element('b',number(row.expanded)),element('small','新增事件'));parts[2].append(element('b',number(row.events)),element('small',key==='train'?'事件／Epoch':'原始圖片'));
+    const parts=equation.querySelectorAll('div');parts[0].append(element('b',number(row.originals)),element('small','原始圖片'));parts[1].append(element('b',number(row.expanded)),element('small',key==='train'?'額外載入':'不增強'));parts[2].append(element('b',number(row.events)),element('small',key==='train'?'訓練輸入／輪':'評估原圖'));
     card.append(heading,equation);projectionRoot.append(card);
   }
-  $('augmentationEffectiveTotal').textContent=`${number(projection.events)} 個資料事件`;
+  $('augmentationEffectiveTotal').textContent=`${number(projection.originals)} 張原圖 · Train 每輪 ${number(projection.trainEvents)} 筆`;
   const summary=$('augmentationSummary');summary.replaceChildren(
-    element('strong',`${names[profile.preset]}配方 · Train 每輪 ${number(projection.trainEvents)} 個事件`),
-    element('span',`${number(projection.originals)} 張原圖的分割不變；新增 ${number(projection.expanded)} 個事件全部留在 Train，Validation／Test 零擴充。`),
+    element('strong',`${names[profile.preset]}配方 · Train 每輪 ${number(projection.trainEvents)} 筆輸入`),
+    element('span',`${number(projection.originals)} 張原圖＝Train ${number(projection.rows.train.originals)}＋Validation ${number(projection.rows.val.originals)}＋Test ${number(projection.rows.test.originals)}；Train 每輪另載入 ${number(projection.expanded)} 次隨機增強。`),
     element('small','擴充事件每次載入重新抽樣，但仍來自相同原圖，可能產生相近結果。'));
   const transforms=$('augmentationTransformList');transforms.replaceChildren();
   const badges=profile.preset==='off'?['未啟用隨機增強']:[`水平翻轉 ${(profile.fliplr*100).toFixed(0)}%`,`垂直翻轉 ${(profile.flipud*100).toFixed(0)}%`,`亮度 ±${(profile.brightness*100).toFixed(0)}%`,`對比 ±${(profile.contrast*100).toFixed(0)}%`,`旋轉 ±${profile.degrees.toFixed(0)}°`,`平移 ${(profile.translate*100).toFixed(0)}%`,`縮放 ${(profile.scale*100).toFixed(0)}%`,...(profile.mosaic?[`Mosaic ${(profile.mosaic*100).toFixed(0)}%`]:[])];

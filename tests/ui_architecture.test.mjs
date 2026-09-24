@@ -40,7 +40,7 @@ test('augmentation projection expands Train without changing evaluation splits',
       val:{originals:20,expanded:0,events:20},
       test:{originals:20,expanded:0,events:20},
     },
-    originals:100,expanded:120,events:220,trainEvents:180,
+    originals:100,expanded:120,trainEvents:180,
   });
 });
 
@@ -72,6 +72,8 @@ test('review controls and augmentation layout are static markup', async () => {
   for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewAnnotationFilter','reviewReasonFilter','augmentationSplitProjection','createPreparationDatasetVersion'])
     assert.equal(html.split(`id="${id}"`).length-1,1);
   assert.ok(html.indexOf('class="panel augmentation-panel"')<html.indexOf('id="splitFlowStats"'));
+  assert.match(html,/原圖分割與每輪輸入/);
+  assert.match(html,/原始圖片分割/);
   const app=await readFile(new URL('../web/app.mjs',import.meta.url),'utf8');
   assert.ok(!app.includes('window.workbench'));
   assert.ok(!app.includes("createElement('link')"));

@@ -3,7 +3,7 @@
 Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模型訓練。專案資料與模型保存在本機。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
-[![Version: 2.18.3](https://img.shields.io/badge/Version-2.18.3-45c6b1.svg)](CHANGELOG.md)
+[![Version: 2.18.4](https://img.shields.io/badge/Version-2.18.4-45c6b1.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4.svg)](#快速開始)
 
