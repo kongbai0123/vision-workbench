@@ -44,6 +44,22 @@ test('augmentation projection expands Train without changing evaluation splits',
   });
 });
 
+test('web interface never declares text below 12px', async () => {
+  const cssFiles=['style.css','acquisition.css','review.css','review-policy.css','training.css','split-manager.css'];
+  const violations=[];
+  for(const file of cssFiles) {
+    const source=await readFile(new URL(`../web/${file}`,import.meta.url),'utf8');
+    const declarations=[
+      ...source.matchAll(/\bfont-size\s*:\s*([0-9]*\.?[0-9]+)px/gi),
+      ...source.matchAll(/\bfont\s*:\s*[^;{}]*?\b([0-9]*\.?[0-9]+)px\b/gi),
+    ];
+    for(const match of declarations) {
+      if(Number(match[1])<12) violations.push(`${file}: ${match[0]}`);
+    }
+  }
+  assert.deepEqual(violations,[]);
+});
+
 test('page factories import without executing browser globals', async () => {
   for(const page of ['training','settings','review','export','preparation','camera']) {
     const module=await import(`../web/pages/${page}.mjs`);

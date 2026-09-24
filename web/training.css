@@ -13,7 +13,7 @@
 .training-config-tabs button[aria-selected=true]{color:#8ce0d0;border-color:#438d82;background:#173b39}
 .augmentation-panel{margin-top:18px;padding:0;overflow:hidden}
 .augmentation-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px 0}
-.augmentation-state{flex-shrink:0;padding:5px 9px;border:1px solid #806b42;border-radius:14px;background:#2d291f;color:#e2c783;font-size:11px}
+.augmentation-state{flex-shrink:0;padding:5px 9px;border:1px solid #806b42;border-radius:14px;background:#2d291f;color:#e2c783;font-size:12px}
 .augmentation-state.fixed{border-color:#397d72;background:#15352f;color:#84decf}
 .augmentation-intro{max-width:850px;margin:8px 22px 18px;line-height:1.65}
 .augmentation-layout{display:grid;grid-template-columns:minmax(270px,.68fr) minmax(560px,1.32fr);border-top:1px solid var(--line)}
@@ -21,12 +21,12 @@
 .augmentation-controls>label:first-child{margin-top:0}.augmentation-expansion-input{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}.augmentation-expansion-input span{color:var(--muted)}
 .augmentation-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:14px}
 .augmentation-fields label{display:flex;flex-direction:column;gap:6px;color:var(--muted)}
-.augmentation-transform-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.augmentation-transform-list span{padding:4px 7px;border:1px solid #35515c;border-radius:12px;background:#11202a;color:#a9c2cc;font-size:11px}
+.augmentation-transform-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.augmentation-transform-list span{padding:4px 7px;border:1px solid #35515c;border-radius:12px;background:#11202a;color:#a9c2cc;font-size:12px}
 .augmentation-engine-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}.augmentation-engine-note summary{cursor:pointer;color:#bcd0d8;font-size:12px}.augmentation-engine-note p{margin:8px 0 0;font-size:12px}
 .augmentation-projection-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.augmentation-projection-heading h3{margin-top:3px;font-size:16px}.augmentation-projection-heading>strong{color:#79ddcc;font:600 16px/1.4 Consolas,monospace}
-.augmentation-split-projection{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:16px 0 12px}.augmentation-split-card{min-width:0;padding:12px;border:1px solid #304753;border-radius:7px;background:#111e27}.augmentation-split-card.train{border-color:#3a8076;background:#13312f}.augmentation-split-card-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.augmentation-split-card-heading strong{font:600 12px/1.2 Consolas,monospace;text-transform:uppercase}.augmentation-split-card-heading span{color:#8fa7b1;font-size:10px;text-align:right}
-.augmentation-equation{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:5px;margin-top:12px}.augmentation-equation>i{color:#68808a;font-style:normal}.augmentation-equation-item{display:grid;gap:2px;min-width:0}.augmentation-equation-item b{font-size:18px}.augmentation-equation-item small{font-size:9px;white-space:nowrap}.augmentation-equation-item.result b{color:#71dac9}
-.augmentation-summary{display:grid;gap:4px;margin:12px 0;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;line-height:1.55}.augmentation-summary span,.augmentation-summary small{color:#a9bec7}.augmentation-summary small{font-size:11px}
+.augmentation-split-projection{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:16px 0 12px}.augmentation-split-card{min-width:0;padding:12px;border:1px solid #304753;border-radius:7px;background:#111e27}.augmentation-split-card.train{border-color:#3a8076;background:#13312f}.augmentation-split-card-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.augmentation-split-card-heading strong{font:600 12px/1.2 Consolas,monospace;text-transform:uppercase}.augmentation-split-card-heading span{color:#8fa7b1;font-size:12px;text-align:right}
+.augmentation-equation{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:5px;margin-top:12px}.augmentation-equation>i{color:#68808a;font-style:normal}.augmentation-equation-item{display:grid;gap:2px;min-width:0}.augmentation-equation-item b{font-size:18px}.augmentation-equation-item small{font-size:12px;white-space:nowrap}.augmentation-equation-item.result b{color:#71dac9}
+.augmentation-summary{display:grid;gap:4px;margin:12px 0;padding:11px 12px;border-left:2px solid var(--accent);background:#142a2c;line-height:1.55}.augmentation-summary span,.augmentation-summary small{color:#a9bec7}.augmentation-summary small{font-size:12px}
 .augmentation-preview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .augmentation-preview>div{align-self:start;min-width:0;padding:10px;border:1px solid var(--line);border-radius:5px;background:#0d1820;overflow:hidden}
 .augmentation-preview span{display:block;margin-bottom:8px;color:var(--muted)}

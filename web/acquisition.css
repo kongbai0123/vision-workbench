@@ -144,10 +144,10 @@
 .camera-parameter{margin-top:12px}
 .camera-parameter-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .camera-parameter-heading label{margin:0!important}
-.camera-parameter-heading .check-label{font-size:11px}
+.camera-parameter-heading .check-label{font-size:12px}
 .camera-parameter-fields{display:grid;grid-template-columns:minmax(0,1fr) 82px;align-items:center;gap:10px;margin-top:6px}
 .camera-parameter-fields input[type=range]{padding:0;width:100%;accent-color:var(--accent)}
 .camera-parameter-fields input[type=number]{width:100%;min-width:0}
 .camera-warning,#cameraNegotiation{color:#e8bd7e!important}
 #cameraProfileStatus,#cameraControlsStatus{overflow-wrap:anywhere}
-#cameraReadout{white-space:normal;font-size:11px}
+#cameraReadout{white-space:normal;font-size:12px}
