@@ -1,6 +1,6 @@
 # Vision Workbench
 
-Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模型訓練。專案資料與模型保存在本機。
+Windows 桌面視覺資料工作台，整合影像採集、標註、審核、資料分割與模型訓練。專案資料與模型保存在本機，固定資料版本讓每次實驗的圖片、標註及增強設定可追溯。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
 [![Version: 2.20.0](https://img.shields.io/badge/Version-2.20.0-45c6b1.svg)](CHANGELOG.md)
@@ -30,6 +30,18 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模
 - **模型試跑與比對**：模型清單、試跑與標註比對共用明確的目前版本；結果保留來源模型提示，預測標籤字體不低於 12px。
 - **資料交換**：COCO、YOLO、LabelMe、JSONL 與原生格式匯入／匯出，以及模型封裝匯出。
 
+## 從資料審核到訓練設定
+
+| 階段 | 操作 | 保存與使用方式 |
+| --- | --- | --- |
+| 04 資料審核 | 檢查標註並核准影像 | 修改已核准標註後，圖片回到待審核 |
+| 05 資料準備 | 套用分割、設定增強，建立 Dxxx 固定版本 | 凍結圖片、標註、Train／Validation／Test 與增強配方 |
+| 06 訓練設定 | 選取 Dxxx、模型與參數 | 後續訓練使用所選版本；05 新草稿不會覆蓋舊版本 |
+
+例如 100 張原圖分成 Train 60／Validation 20／Test 20，每張 Train 原圖額外載入 2 次，支援擴充的引擎每輪接收 180 筆 Train 輸入；Validation／Test 各保持 20 張。內建像素基準不使用擴充，會顯示實際讀取的原圖數。
+
+06 的「快速估時（不訓練）」讀取相同設定的歷史耗時；「驗證設定（不訓練）」另外檢查圖片完整性及引擎相容性。兩者都不會建立訓練工作。首次沒有相符耗時紀錄時，實際執行後才由首批資料提供初估；ETA 是會更新的預估值，詳見[算法與誤差紀錄](docs/time-estimation.md)。
+
 ## 相機參數工作流程
 
 在「採集與匯入 → 相機採集 → 相機設定」完成拍攝設定，直接對照左側即時預覽。
@@ -56,6 +68,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 後續直接開啟 `vision-workbench.bat`。
 
 訓練模型的選配環境可於「設定 → 模型與元件」安裝。SAM2 與 CVAT 的準備方式見[使用指南](docs/usage.md)。
+
+### 更新既有安裝
+
+關閉工作台，更新原始碼並同步主程式依賴：
+
+```powershell
+git pull --ff-only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+v2.20.0 新增 `tqdm` 依賴，已安裝的 TorchVision／Ultralytics 環境也需在「設定 → 模型與元件」執行安裝／修復。安裝依賴不會啟動訓練。資料庫升級前會自動備份；固定資料版本與歷史結果保留。自行修改過原始碼時，請先處理 Git 的本地修改提示。
 
 ## 文件
 
