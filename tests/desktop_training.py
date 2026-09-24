@@ -256,11 +256,18 @@ def main():
             wait("document.querySelectorAll('.augmentation-annotation-overlay > *').length>0")
             assert js("document.querySelector('.augmentation-panel').nextElementSibling.id==='splitFlowStats'")
             fill("#augmentationExpansion", 2)
-            wait("document.querySelector('#augmentationSummary').textContent.includes('每輪共 6 個訓練事件')")
-            assert js("document.querySelector('#augmentationSummary').textContent.includes('Validation／Test 保持原始資料')")
+            wait("document.querySelector('#augmentationSummary').textContent.includes('Train 每輪 6 個事件')")
+            assert js("document.querySelector('#augmentationSummary').textContent.includes('Validation／Test 零擴充')")
+            assert js("document.querySelectorAll('#augmentationSplitProjection .augmentation-split-card').length===3")
+            assert js("document.querySelector('#augmentationSplitProjection .train').textContent.includes('4')")
             alignment = json.loads(js("JSON.stringify(['augmentationOriginalPreview','augmentationResultPreview'].map(id=>{const image=document.querySelector('#'+id).getBoundingClientRect(),overlay=document.querySelector('#'+id).parentElement.querySelector('svg').getBoundingClientRect();return {top:Math.abs(image.top-overlay.top),left:Math.abs(image.left-overlay.left),width:Math.abs(image.width-overlay.width),height:Math.abs(image.height-overlay.height)}}))"))
             assert all(max(item.values()) < 1 for item in alignment), alignment
             capture("34-augmentation-overlay-alignment", target=".augmentation-panel")
+            click("#createPreparationDatasetVersion")
+            wait("document.querySelector('#augmentationVersionState').textContent.includes('D003')")
+            dataset = json.loads((service.training.datasets_dir(pid) / "D003" / "manifest.json").read_text(encoding="utf-8"))
+            assert dataset["augmentation"]["expansion_count"] == 2
+            assert service.training.dataset(pid, "D003")["training_events"]["events"] == 6
             click("#continueToTraining")
             wait("window.workbenchState().stage==='train'&&!window.workbenchState().transitioning")
             # Parameter forms expose the selected engine's actual supported schema.

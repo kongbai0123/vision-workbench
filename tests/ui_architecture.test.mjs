@@ -6,6 +6,7 @@ import {nativeCallbacks, installNativeCallbacks, connectNative} from '../web/nat
 import {filterModelVersions} from '../web/pages/training.mjs';
 import {filterReviewAssets} from '../web/pages/review.mjs';
 import {visibleScarcityMessages} from '../web/split-manager.mjs';
+import {augmentationProjection} from '../web/pages/preparation.mjs';
 
 test('project deltas preserve selection ordering, replace and delete only changed IDs', () => {
   const current={id:'p',revision:1,assets:[{id:'b'},{id:'a'},{id:'c'}]};
@@ -32,6 +33,17 @@ test('split warnings only discuss source scarcity when source isolation is enabl
   assert.deepEqual(visibleScarcityMessages(item,true),item.messages);
 });
 
+test('augmentation projection expands Train without changing evaluation splits', () => {
+  assert.deepEqual(augmentationProjection({train:60,val:20,test:20},2),{
+    rows:{
+      train:{originals:60,expanded:120,events:180},
+      val:{originals:20,expanded:0,events:20},
+      test:{originals:20,expanded:0,events:20},
+    },
+    originals:100,expanded:120,events:220,trainEvents:180,
+  });
+});
+
 test('page factories import without executing browser globals', async () => {
   for(const page of ['training','settings','review','export','preparation','camera']) {
     const module=await import(`../web/pages/${page}.mjs`);
@@ -41,7 +53,7 @@ test('page factories import without executing browser globals', async () => {
 
 test('review controls and augmentation layout are static markup', async () => {
   const html=await readFile(new URL('../web/index.html',import.meta.url),'utf8');
-  for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewAnnotationFilter','reviewReasonFilter'])
+  for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewAnnotationFilter','reviewReasonFilter','augmentationSplitProjection','createPreparationDatasetVersion'])
     assert.equal(html.split(`id="${id}"`).length-1,1);
   assert.ok(html.indexOf('class="panel augmentation-panel"')<html.indexOf('id="splitFlowStats"'));
   const app=await readFile(new URL('../web/app.mjs',import.meta.url),'utf8');

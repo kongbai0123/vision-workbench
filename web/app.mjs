@@ -893,7 +893,7 @@ async function runAI() {
   }catch(error){$('aiMessage').textContent=error.message;throw error;}
 }
 
-const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
+const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,createPreparedDatasetVersion}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
 const {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
@@ -987,6 +987,7 @@ bind('refreshSplitPage',async()=>{await refreshProject();await loadTraining();aw
 bind('backToReview',()=>switchStage('review'));
 bind('continueToTraining',()=>switchStage('train'));
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
+bind('createPreparationDatasetVersion',createPreparedDatasetVersion,{busy:true,task:'固定資料分割與增強配方'});
 $('augmentationPreset').onchange=()=>{state.augmentationPreset=$('augmentationPreset').value;renderAugmentationPreparation()};
 $('augmentationExpansion').oninput=()=>{const value=Number($('augmentationExpansion').value);if(Number.isInteger(value)&&value>=0&&value<=50){state.augmentationExpansion=value;renderAugmentationPreparation()}};
 for(const id of ['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'])$(id).oninput=renderAugmentationPreparation;

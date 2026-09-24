@@ -1,3 +1,15 @@
+export function augmentationProjection(splits={},expansionCount=0){
+  const originals={train:Number(splits.train)||0,val:Number(splits.val)||0,test:Number(splits.test)||0};
+  const expansion=Math.max(0,Number(expansionCount)||0),expanded=originals.train*expansion;
+  const rows={
+    train:{originals:originals.train,expanded,events:originals.train+expanded},
+    val:{originals:originals.val,expanded:0,events:originals.val},
+    test:{originals:originals.test,expanded:0,events:originals.test},
+  };
+  return {rows,originals:Object.values(originals).reduce((sum,value)=>sum+value,0),expanded,
+    events:Object.values(rows).reduce((sum,row)=>sum+row.events,0),trainEvents:rows.train.events};
+}
+
 export function createPreparationPage(context) {
 const {$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,createDatasetVersion,loadTraining,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay}=context;
 const splitManager=new SplitManager({api,onApplied:async(result,pid,createVersion)=>{
@@ -72,9 +84,33 @@ function renderAugmentationPreparation(){
       overlay.replaceChildren();overlay.setAttribute('viewBox',`0 0 ${full.width} ${full.height}`);overlay.setAttribute('preserveAspectRatio','xMidYMid meet');overlay.style.transform=flipped?'scaleX(-1)':'none';drawReviewOverlay(overlay,full);
     }
   }).catch(()=>{});
-  const names={off:'關閉',light:'輕量',standard:'標準',custom:'自訂'};
-  const trainCount=Number(state.training?.readiness?.stats?.splits?.train||0),expanded=trainCount*profile.expansion_count,total=trainCount+expanded;
-  $('augmentationSummary').textContent=`${names[profile.preset]}配方 · 原始 Train ${number(trainCount)} 張 · 每張增加 ${number(profile.expansion_count)} 份 · 每輪共 ${number(total)} 個訓練事件（新增 ${number(expanded)}）· 每份獨立抽樣。水平翻轉 ${(profile.fliplr*100).toFixed(0)}% · 垂直翻轉 ${(profile.flipud*100).toFixed(0)}% · 亮度 ±${(profile.brightness*100).toFixed(0)}% · 對比 ±${(profile.contrast*100).toFixed(0)}%${profile.mosaic?` · Mosaic ${(profile.mosaic*100).toFixed(0)}%（YOLO）`:''}。Validation／Test 保持原始資料。`;
+  const names={off:'關閉',light:'輕量',standard:'標準',custom:'自訂'},splits=state.training?.readiness?.stats?.splits||{};
+  const projection=augmentationProjection(splits,profile.expansion_count),projectionRoot=$('augmentationSplitProjection');projectionRoot.replaceChildren();
+  for(const [key,label,note] of [['train','Train','每輪訓練'],['val','Validation','驗證保持原始'],['test','Test','最終評估保持原始']]){
+    const row=projection.rows[key],card=element('article',undefined,`augmentation-split-card ${key}`),heading=element('div',undefined,'augmentation-split-card-heading');
+    heading.append(element('strong',label),element('span',note));
+    const equation=element('div',undefined,'augmentation-equation');
+    equation.append(element('div',undefined,'augmentation-equation-item'),element('i','＋'),element('div',undefined,'augmentation-equation-item'),element('i','＝'),element('div',undefined,'augmentation-equation-item result'));
+    const parts=equation.querySelectorAll('div');parts[0].append(element('b',number(row.originals)),element('small','原始圖片'));parts[1].append(element('b',number(row.expanded)),element('small','新增事件'));parts[2].append(element('b',number(row.events)),element('small',key==='train'?'事件／Epoch':'原始圖片'));
+    card.append(heading,equation);projectionRoot.append(card);
+  }
+  $('augmentationEffectiveTotal').textContent=`${number(projection.events)} 個資料事件`;
+  const summary=$('augmentationSummary');summary.replaceChildren(
+    element('strong',`${names[profile.preset]}配方 · Train 每輪 ${number(projection.trainEvents)} 個事件`),
+    element('span',`${number(projection.originals)} 張原圖的分割不變；新增 ${number(projection.expanded)} 個事件全部留在 Train，Validation／Test 零擴充。`),
+    element('small','擴充事件每次載入重新抽樣，但仍來自相同原圖，可能產生相近結果。'));
+  const transforms=$('augmentationTransformList');transforms.replaceChildren();
+  const badges=profile.preset==='off'?['未啟用隨機增強']:[`水平翻轉 ${(profile.fliplr*100).toFixed(0)}%`,`垂直翻轉 ${(profile.flipud*100).toFixed(0)}%`,`亮度 ±${(profile.brightness*100).toFixed(0)}%`,`對比 ±${(profile.contrast*100).toFixed(0)}%`,`旋轉 ±${profile.degrees.toFixed(0)}°`,`平移 ${(profile.translate*100).toFixed(0)}%`,`縮放 ${(profile.scale*100).toFixed(0)}%`,...(profile.mosaic?[`Mosaic ${(profile.mosaic*100).toFixed(0)}%`]:[])];
+  for(const text of badges)transforms.append(element('span',text));
+  const currentRevision=state.training?.readiness?.project_revision,latest=state.training?.datasets?.[0];
+  const sameSplits=latest&&['train','val','test'].every(key=>Number(latest.splits?.[key]||0)===Number(splits[key]||0));
+  const profileKeys=['preset','expansion_count','brightness','contrast','fliplr','flipud','degrees','translate','scale','mosaic','mixup','copy_paste','close_mosaic'];
+  const sameProfile=latest&&profileKeys.every(key=>latest.augmentation?.[key]===profile[key]);
+  const fixed=!!latest&&latest.project_revision===currentRevision&&sameSplits&&sameProfile;
+  const stateBadge=$('augmentationVersionState');stateBadge.textContent=fixed?`已固定於 ${latest.id}`:'尚未固定';stateBadge.className=`augmentation-state ${fixed?'fixed':'draft'}`;
+  $('augmentationVersionHint').textContent=fixed?`${latest.id} 已保存目前分割與配方；變更任一設定後需建立新版本。`:'目前只是預覽；建立固定資料版本後，新的 Run 才會使用這些數量。';
+  $('createPreparationDatasetVersion').disabled=!state.training?.readiness?.ready;
 }
-return {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation};
+async function createPreparedDatasetVersion(){const created=await createDatasetVersion();await renderSplitPage();return created}
+return {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,createPreparedDatasetVersion};
 }
