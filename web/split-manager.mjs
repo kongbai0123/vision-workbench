@@ -30,12 +30,17 @@ export class SplitManager {
     await this.work(async()=>{
       const info=await this.api(`/api/projects/${this.pid}/split-info`,'POST',{});this.info=info;
       const ids=new Set(info.assets.map(asset=>asset.id));
+      const saved=info.previous?.options;
+      if(saved){this.options={...this.options,...saved,ratios:{...this.options.ratios,...saved.ratios}};}
       const prior=Object.fromEntries(Object.entries(info.previous?.options?.group_overrides||{}).filter(([id])=>ids.has(id)));
       this.options.group_overrides={...prior};
       for(const asset of info.assets)this.addAssetOverride(asset,prior[asset.id]||'');
       this.datasetSummary.textContent=`${info.assets.length} 張已核准圖片 · ${info.groups.length} 筆來源紀錄`;
       this.message.textContent='正在依目前設定建立預覽…';
     });
+    this.purpose.value=this.options.purpose;this.balance.input.value=this.options.balance_mode;
+    this.seed.value=this.options.seed;this.keepTest.checked=!!this.options.preserve_test;
+    const locks=this.options.locks;this.applyPurpose();this.options.locks=locks;
     await this.runPreview();
   }
 

@@ -181,4 +181,5 @@ def create_optimizer(torch, parameters, config):
     if name not in {"AdamW", "SGD"}:
         raise ValueError("不支援的最佳化器")
     return getattr(torch.optim, name)(parameters, lr=float(config.get("learning_rate", .0005)),
-                                      weight_decay=float(config.get("weight_decay", .0001)))
+                                      weight_decay=float(config.get("weight_decay", .0001)),
+                                      **({"momentum": .9} if name == "SGD" else {}))

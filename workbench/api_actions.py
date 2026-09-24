@@ -63,7 +63,18 @@ def action_validate(self, pid, payload, action):
 
 
 def action_dataset_versions(self, pid, payload, action):
-    return self.json(self.app.training.create_dataset_version(pid, payload.get("augmentation")))
+    return self.json(self.app.training.create_dataset_version(pid, payload.get("augmentation"), payload.get("revision")))
+
+
+def action_workflow_draft(self, pid, payload, action):
+    from .workflow_drafts import WorkflowDrafts
+    repository = WorkflowDrafts(self.app.store)
+    return self.json(repository.save(pid, payload.get('revision'), payload.get('payload'))
+                     if 'payload' in payload else repository.read(pid))
+
+
+def action_training_preflight(self, pid, payload, action):
+    return self.json(self.app.training.training_preflight(pid, payload.get('dataset_version_id'), payload.get('config', {})))
 
 
 def action_training_runs(self, pid, payload, action):
@@ -174,6 +185,8 @@ PROJECT_ACTIONS = {
     'validate': action_validate,
     'export': action_validate,
     'dataset-versions': action_dataset_versions,
+    'workflow-draft': action_workflow_draft,
+    'training-preflight': action_training_preflight,
     'training-runs': action_training_runs,
     'training-compatibility': action_training_compatibility,
     'review-compatibility': action_review_compatibility,

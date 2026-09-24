@@ -12,7 +12,7 @@ from PIL import Image
 
 from workbench.split_quality import split_class_coverage
 from workbench.store import ProjectStore
-from workbench.training import TrainingWorkspace
+from workbench.training import TrainingWorkspace, _canonical_hash
 
 
 class TrainingSplitGateTests(unittest.TestCase):
@@ -51,6 +51,7 @@ class TrainingSplitGateTests(unittest.TestCase):
         manifest = {'dataset_version_id': dataset_id, 'project_revision': 1,
                     'created_at': '2026-09-15T00:00:00', 'manifest_sha256': 'original-manifest',
                     'classes': sorted({s['label'] for a in rows for s in a['shapes']}), 'assets': rows}
+        manifest['manifest_sha256'] = _canonical_hash({k: v for k, v in manifest.items() if k != 'manifest_sha256'})
         (target / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
         return target
 
@@ -132,6 +133,7 @@ class TrainingSplitGateTests(unittest.TestCase):
         assignments = {row['asset_id']: 'train' for row in rows}
         manifest['split_plan'] = {'purpose': 'all_train', 'strategy': 'all_train', 'assignments': assignments}
         manifest['data_quality'] = {'purpose': 'all_train', 'evaluation_available': False}
+        manifest['manifest_sha256'] = _canonical_hash({k: v for k, v in manifest.items() if k != 'manifest_sha256'})
         path.write_text(json.dumps(manifest), encoding='utf-8')
         self.assertTrue(self.workspace.dataset('pid', 'D009')['readiness']['ready'])
         with self.assertRaisesRegex(ValueError, '像素原型'):
@@ -162,6 +164,7 @@ class TrainingSplitGateTests(unittest.TestCase):
         manifest = json.loads(path.read_text(encoding='utf-8'))
         manifest['split_plan'] = {'strategy': 'random_loose',
                                   'assignments': {a['asset_id']: a['split'] for a in rows}}
+        manifest['manifest_sha256'] = _canonical_hash({k: v for k, v in manifest.items() if k != 'manifest_sha256'})
         path.write_text(json.dumps(manifest), encoding='utf-8')
         run = self.start_without_worker('D007')
         self.assertIn('loose_split', [item['code'] for item in run['split_warnings']])

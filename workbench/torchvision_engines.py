@@ -89,7 +89,7 @@ class SemanticDataset:
         self.assets = [asset for asset in manifest["assets"] if asset["split"] == split]
         self.class_ids = {label: index + 1 for index, label in enumerate(manifest["classes"])}
         self.image_size = int(image_size)
-        self.augmentation = normalize_augmentation(augmentation) if augmentation else None
+        self.augmentation = normalize_augmentation(augmentation) if split == "train" and augmentation else None
         self.event_layout = augmentation_event_layout(len(self.assets), self.augmentation) if self.augmentation else None
 
     def __len__(self): return self.event_layout["events"] if self.event_layout else len(self.assets)

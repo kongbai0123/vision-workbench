@@ -68,7 +68,7 @@ class ClassificationDataset:
         # Fail before the first epoch so an ambiguous image never receives an
         # arbitrary class.
         self.targets = [_asset_label(asset, self.classes) for asset in self.assets]
-        self.augmentation = normalize_augmentation(augmentation) if augmentation else None
+        self.augmentation = normalize_augmentation(augmentation) if split == "train" and augmentation else None
         self.event_layout = augmentation_event_layout(len(self.assets), self.augmentation) if self.augmentation else None
 
     def __len__(self):

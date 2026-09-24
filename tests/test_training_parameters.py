@@ -99,7 +99,11 @@ class TrainingParameterTests(unittest.TestCase):
             workspace.registry = SimpleNamespace(model=lambda _key: self.definition("maskrcnn_resnet50_fpn"),
                                                   component_python=lambda _component: "python")
             manifest = workspace.datasets / "project" / "D001" / "manifest.json"
-            manifest.parent.mkdir(parents=True); manifest.write_text(json.dumps({"assets":[{"split":"train","shapes":[{"label":"a"}]},{"split":"val","shapes":[{"label":"a"}]}]}))
+            manifest.parent.mkdir(parents=True)
+            from workbench.training import _canonical_hash
+            data = {"assets":[{"split":"train","shapes":[{"label":"a"}]},{"split":"val","shapes":[{"label":"a"}]}]}
+            data['manifest_sha256'] = _canonical_hash(data)
+            manifest.write_text(json.dumps(data))
             submitted = {"engine": "maskrcnn_resnet50_fpn", "epochs": 7, "seed": 9, "device": "cpu",
                          "image_size": 512, "batch_size": 3, "learning_rate": .012, "weight_decay": .023, "optimizer": "SGD",
                          "scheduler":"cosine", "min_learning_rate":.00012, "warmup_epochs":2}
@@ -119,7 +123,7 @@ class TrainingParameterTests(unittest.TestCase):
         parameters = [object()]
         for name in ("AdamW", "SGD"):
             create_optimizer(torch, parameters, {"optimizer": name, "learning_rate": .015, "weight_decay": .025})
-            getattr(torch.optim, name).assert_called_once_with(parameters, lr=.015, weight_decay=.025)
+            getattr(torch.optim, name).assert_called_once_with(parameters, lr=.015, weight_decay=.025, **({"momentum": .9} if name == "SGD" else {}))
 
     def test_classification_passes_size_above_512_to_dataset_without_clamping(self):
         with tempfile.TemporaryDirectory() as directory:

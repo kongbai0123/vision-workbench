@@ -1,3 +1,4 @@
+import {WorkflowDraft} from './workflow-draft.mjs';
 import {AnnotationEditor, colorFor, shapeNames} from './editor.mjs';
 import {kind, decodeMask, encodeMask, brush} from './shapes.mjs';
 import {SaveQueue} from './save-queue.mjs';
@@ -140,10 +141,11 @@ async function flushAllEdits() {
   if(editor.draft.length)throw Error('目前仍有尚未完成的頂點。請按 Enter 完成，或按 Esc 取消。');
   if(editor.candidate)throw Error('目前仍有 AI 候選遮罩。請先接受或捨棄，再切換工作或關閉。');
   await saver.flush();
+  await workflowDraft.flush();
 }
 nativeCallbacks.flush=async()=>{if(state.autoCapture?.active)stopAutoCapture('軟體正在結束目前工作，已停止自動擷取。');await flushAllEdits();return true;};
-nativeCallbacks.state=()=>({projectId:state.project?.id||null,assetId:state.asset?.id||null,dirty:saver.dirty||editor.hasUncommittedWork,stage:state.stage,busy:state.busy||!!state.autoCapture?.active,transitioning:state.transitioning,loading:state.transitioning,saving:!!saver.inFlight,locked:editor.locked});
-window.addEventListener('beforeunload',event=>{if(saver.dirty||editor.hasUncommittedWork||state.busy||state.autoCapture?.active){event.preventDefault();event.returnValue='';}});
+nativeCallbacks.state=()=>({projectId:state.project?.id||null,assetId:state.asset?.id||null,dirty:saver.dirty||workflowDraft.dirty||editor.hasUncommittedWork,stage:state.stage,busy:state.busy||!!state.autoCapture?.active,transitioning:state.transitioning,loading:state.transitioning,saving:!!saver.inFlight,locked:editor.locked});
+window.addEventListener('beforeunload',event=>{if(saver.dirty||workflowDraft.dirty||editor.hasUncommittedWork||state.busy||state.autoCapture?.active){event.preventDefault();event.returnValue='';}});
 
 async function safe(work) {try{return await work()}catch(error){toast(error.message,true);status(error.message,true);return null;}}
 function bind(id,work,{busy=false,task=null}={}) {
@@ -344,14 +346,15 @@ async function openProject(id) {
   try {
     await flushAllEdits();
     const project=await api(`/api/projects/${id}`);
-    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;trainingMonitor.reset();trainingParameters.reset();
+    clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;state.reviewYoloCompatibilityLoading=false;trainingMonitor.reset();trainingParameters.reset();
+    await workflowDraft.load(id);
     state.project=project;state.asset=null;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
     closeReleaseDrawer();resetValidation('請執行驗證，檢查目前專案及目標格式。');
     $('importReport').hidden=true;$('videoReport').hidden=true;$('mergeReport').hidden=true;
-    for(const section of ['library','acquire','annotate','review','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
+    for(const section of ['library','acquire','annotate','review','split','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
     renderAssetList();renderMergeList();renderExport();
     if(project.assets.length)await loadAsset(project.assets[0].id);else await cameraStatus();
@@ -893,10 +896,10 @@ async function runAI() {
   }catch(error){$('aiMessage').textContent=error.message;throw error;}
 }
 
-const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,createPreparedDatasetVersion}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
+const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,renderAugmentationError,createPreparedDatasetVersion}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
-const {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
+const {validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);
@@ -979,6 +982,24 @@ const resetReviewFilter=()=>{state.reviewSelection.clear();state.reviewPage=0;st
 $('reviewSearch').oninput=resetReviewFilter;$('reviewFilter').onchange=resetReviewFilter;annotationFilter.onchange=resetReviewFilter;reasonFilter.onchange=resetReviewFilter;
 $('reviewSelectAll').onchange=()=>{for(const asset of filteredReview())if($('reviewSelectAll').checked)state.reviewSelection.add(asset.id);else state.reviewSelection.delete(asset.id);renderReview()};
 $('reviewPrevious').onclick=()=>{state.reviewPage--;renderReview()};$('reviewNext').onclick=()=>{state.reviewPage++;renderReview()};
+const workflowDraft=new WorkflowDraft({api,collect:()=>{
+  trainingParameters.remember();
+  return {augmentation:{preset:$('augmentationPreset').value,expansion_count:$('augmentationExpansion').value,
+    brightness:$('augmentationBrightness').value,contrast:$('augmentationContrast').value,
+    fliplr:$('augmentationFlipLR').value,flipud:$('augmentationFlipUD').value},
+    engine:$('trainingEngine').value,dataset:$('trainingDataset').value,
+    parameters:Object.fromEntries(trainingParameters.drafts),tab:state.trainingConfigTab};
+},restore:payload=>{
+  const a=payload.augmentation||{};
+  state.augmentationPreset=a.preset||'light';state.augmentationExpansion=a.expansion_count??0;
+  $('augmentationPreset').value=state.augmentationPreset;$('augmentationExpansion').value=state.augmentationExpansion;
+  for(const [id,key,fallback] of [['augmentationBrightness','brightness',.1],['augmentationContrast','contrast',.1],['augmentationFlipLR','fliplr',.5],['augmentationFlipUD','flipud',0]])$(id).value=a[key]??fallback;
+  trainingParameters.reset();trainingParameters.drafts=new Map(Object.entries(payload.parameters||{}));
+  $('trainingEngine').replaceChildren(new Option(payload.engine||'',payload.engine||''));
+  $('trainingDataset').replaceChildren(new Option(payload.dataset||'',payload.dataset||''));
+  state.trainingConfigTab=payload.tab||'basic';state.trainingPreflight=null;
+},onError:error=>toast(`設定尚未保存：${error.message}`,true)});
+window.addEventListener('training-configuration-changed',()=>workflowDraft.changed());
 bind('prepareTraining',()=>switchStage('split'));
 bind('refreshTraining',()=>loadTraining());
 bind('prepareAutoSplit',()=>switchStage('split'));
@@ -988,11 +1009,18 @@ bind('backToReview',()=>switchStage('review'));
 bind('continueToTraining',()=>switchStage('train'));
 bind('createDatasetVersion',createDatasetVersion,{busy:true,task:'建立固定訓練資料'});
 bind('createPreparationDatasetVersion',createPreparedDatasetVersion,{busy:true,task:'固定資料分割與增強配方'});
-$('augmentationPreset').onchange=()=>{state.augmentationPreset=$('augmentationPreset').value;renderAugmentationPreparation()};
-$('augmentationExpansion').oninput=()=>{const value=Number($('augmentationExpansion').value);if(Number.isInteger(value)&&value>=0&&value<=50){state.augmentationExpansion=value;renderAugmentationPreparation()}};
-for(const id of ['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'])$(id).oninput=renderAugmentationPreparation;
-document.querySelectorAll('[data-training-tab]').forEach(button=>button.onclick=()=>{state.trainingConfigTab=button.dataset.trainingTab;applyTrainingConfigTab()});
-$('trainingDataset').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingEngine').onchange=()=>{invalidateYoloCompatibility();renderTraining()};$('trainingDevice').onchange=renderTraining;
+function updatePreparationDraft(){
+  state.augmentationPreset=$('augmentationPreset').value;
+  state.augmentationExpansion=$('augmentationExpansion').value;
+  workflowDraft.changed();state.trainingPreflight=null;
+  try{renderAugmentationPreparation()}catch(error){renderAugmentationError(error)}
+}
+$('augmentationPreset').onchange=updatePreparationDraft;
+$('augmentationExpansion').oninput=updatePreparationDraft;
+for(const id of ['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'])$(id).oninput=updatePreparationDraft;
+document.querySelectorAll('[data-training-tab]').forEach(button=>button.onclick=()=>{state.trainingConfigTab=button.dataset.trainingTab;applyTrainingConfigTab();workflowDraft.changed()});
+$('trainingDataset').onchange=()=>{invalidateYoloCompatibility();renderTraining();workflowDraft.changed()};$('trainingEngine').onchange=()=>{invalidateYoloCompatibility();renderTraining();workflowDraft.changed()};$('trainingDevice').onchange=renderTraining;
+bind('validateTrainingSetup',validateTrainingSetup,{busy:true,task:'驗證設定（不訓練）'});
 $('checkYoloCompatibility').onclick=()=>safe(checkReviewYoloCompatibility);
 $('openSettingsModels').onclick=()=>safe(()=>openSettings('models',$('trainingEngine').value));
 bind('startTraining',startTrainingRun,{busy:true,task:'啟動獨立訓練程序'});

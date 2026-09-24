@@ -53,7 +53,7 @@ def prepare_yolo_dataset(dataset_manifest: Path, output_dir: Path, task: str, co
     if output_dir.exists():
         shutil.rmtree(output_dir)
     class_ids = {name: index for index, name in enumerate(manifest["classes"])}
-    augmentation = normalize_augmentation((config or {}).get("augmentation"))
+    augmentation = normalize_augmentation(manifest.get("augmentation", (config or {}).get("augmentation")))
     for split in ("train", "val", "test"):
         (output_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)

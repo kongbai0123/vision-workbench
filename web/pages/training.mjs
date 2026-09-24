@@ -48,7 +48,7 @@ const modelParameterDefinitions={
   initialization:['初始權重','預訓練權重通常收斂較快；隨機初始化需要更多資料與訓練。'],
   seed:['隨機種子','固定資料順序與隨機操作，方便重現；它不是 Epoch 或迭代次數。'],
   'augmentation.preset':['增強配方','Train 階段採用的資料增強組合。'],
-  'augmentation.expansion_count':['每張擴充數','每張 Train 原圖額外產生的獨立增強事件數。'],
+  'augmentation.expansion_count':['每張擴充數','每張 Train 原圖額外載入的隨機增強次數；結果可能相近。'],
   'augmentation.brightness':['亮度強度','隨機亮度變化範圍。'],
   'augmentation.contrast':['對比強度','隨機對比變化範圍。'],
   'augmentation.fliplr':['水平翻轉率','每個訓練事件進行水平翻轉的機率。'],
@@ -65,8 +65,8 @@ export function createTrainingPage(context) {
   const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 let runTiming=null,runTimingKey=null;
-function invalidateYoloCompatibility(){state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
-const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device'),onChange:invalidateYoloCompatibility});
+function invalidateYoloCompatibility(){state.trainingPreflight=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
+const trainingParameters=new TrainingParameters({preferredDevice:()=>settingValue('device'),onChange:()=>{invalidateYoloCompatibility();window.dispatchEvent(new Event('training-configuration-changed'))}});
 const trainingMonitor=new TrainingMonitor({loadReport:(projectId,runId)=>api(`/api/projects/${projectId}/training-runs/${runId}/metrics`),onSelect:id=>{state.selectedRun=id},onModel:id=>{state.selectedModel=id;safe(()=>switchStage('models'))}});
 function applyTrainingConfigTab(){
   const tab=state.trainingConfigTab||'basic',basic=document.querySelector('[data-training-pane="basic"]'),advanced=$('trainingAdvancedSection'),fields=$('trainingAdvancedFields');
@@ -172,9 +172,12 @@ function renderYoloCompatibility(){
 }
 async function checkReviewYoloCompatibility(){
   if(!state.project||state.reviewYoloCompatibilityLoading)return state.reviewYoloCompatibility;
-  state.reviewYoloCompatibilityLoading=true;renderYoloCompatibility();$('checkYoloCompatibility').disabled=true;
-  try{const report=await api(projectPath('/review-compatibility'),'POST',{config:{yolo_mask_policy:'repair_tiny_holes'}});state.reviewYoloCompatibility=report;renderYoloCompatibility();return report}
-  finally{state.reviewYoloCompatibilityLoading=false;$('checkYoloCompatibility').disabled=false;renderYoloCompatibility()}
+  const request={projectId:state.project.id,revision:state.project.revision};
+  state.reviewYoloCompatibilityLoading=request;renderYoloCompatibility();$('checkYoloCompatibility').disabled=true;
+  try{const report=await api(projectPath('/review-compatibility'),'POST',{config:{yolo_mask_policy:'repair_tiny_holes'}});
+    if(state.reviewYoloCompatibilityLoading!==request||state.project?.id!==request.projectId||state.project.revision!==request.revision)return;
+    state.reviewYoloCompatibility=report;renderYoloCompatibility();return report}
+  finally{if(state.reviewYoloCompatibilityLoading===request){state.reviewYoloCompatibilityLoading=false;$('checkYoloCompatibility').disabled=false;renderYoloCompatibility()}}
 }
 async function showYoloLocation(issue){
   const holes=issue.holes||[];if(!holes.length)throw Error('這筆問題沒有可定位的孔洞座標。');
@@ -226,18 +229,37 @@ function renderTraining(){
   const notice=$('trainingModelNotice');notice.hidden=!!engine?.train;if(!notice.hidden){$('trainingModelNoticeTitle').textContent=engine?.integration==='ready'?'此模型尚未準備完成':'此模型已納入開發待辦';$('trainingModelNoticeText').textContent=engine?.unavailable_reason||'完成必要元件與 Workbench adapter 後即可使用。'}
   const summary=$('trainingSummary');summary.replaceChildren();
   const deviceName=engine?.component==='builtin'?'CPU':({auto:'自動選擇',cuda:'NVIDIA CUDA',cpu:'CPU'}[$('trainingDevice').value]||'自動選擇');
-  let config={};try{config=trainingParameters.collect()}catch{}
-  const trainCount=Number(dataset?.splits?.train||0),trainingEvents=Number(dataset?.training_events?.events||trainCount),expandedEvents=Number(dataset?.training_events?.expanded||0),batchSize=Number(config.batch_size||1),accumulation=Number(config.gradient_accumulation||1),batches=trainingEvents?Math.ceil(trainingEvents/batchSize):0;
+  let config={},configError='';try{config=trainingParameters.collect()}catch(error){configError=error.message}
+  const builtin=engine?.component==='builtin',trainCount=Number(dataset?.splits?.train||0),trainingEvents=builtin?trainCount:Number(dataset?.training_events?.events||trainCount),expandedEvents=builtin?0:Number(dataset?.training_events?.expanded||0),batchSize=Number(config.batch_size||0),accumulation=Number(config.gradient_accumulation||1),batches=!builtin&&trainingEvents&&batchSize?Math.ceil(trainingEvents/batchSize):0;
   const augmentationLabel=dataset?`${dataset.augmentation?.preset||'off'} · 每張 +${number(dataset.augmentation?.expansion_count||0)}`:'—';
-  for(const [label,value]of [['資料版本',dataset?.id||'—'],['資料增強',augmentationLabel],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],['每輪訓練事件',dataset?`${number(trainingEvents)}（${number(trainCount)} 原圖 ＋ ${number(expandedEvents)} 擴充）`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['每輪 Batch',batches?`${number(batches)}（${number(trainingEvents)} ÷ ${number(batchSize)}）`:'—'],['有效批次',config.batch_size?`${number(batchSize*accumulation)} 張`:'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
+  for(const [label,value]of [['資料版本',dataset?.id||'—'],[builtin?'版本配方（此引擎不套用）':'資料增強',augmentationLabel],['圖片',dataset?`${number(dataset.asset_count)} 張`:'—'],[builtin?'讀取原圖（一次）':'每輪訓練輸入',dataset?`${number(trainingEvents)}（${number(trainCount)} 原圖 ＋ ${number(expandedEvents)} 擴充）`:'—'],['任務',engine?.task_name||capabilities.tasks?.[engine?.task]||'—'],['引擎',engine?.name||'—'],['每輪 Batch',!configError&&batches?`${number(batches)}（${number(trainingEvents)} ÷ ${number(batchSize)}）`:'—'],['設定有效批次',!configError&&config.batch_size?`${number(batchSize*accumulation)} 張`:'—'],['裝置',`${deviceName} · 獨立程序`]]){summary.append(element('dt',label),element('dd',value))}
+  const reportRoot=$('trainingSetupReport');reportRoot.replaceChildren();
+  if(builtin)reportRoot.append(element('p','此內建基準只讀原圖一次，不套用擴增或 Batch；輪數代表 Validation 門檻搜尋次數。'));
+  if(configError)reportRoot.append(element('p',configError,'readiness-item error'));
+  let draftProfile;try{draftProfile=augmentationProfile()}catch{}
+  if(dataset&&(!draftProfile||JSON.stringify(draftProfile)!==JSON.stringify(dataset.augmentation))){
+    const keys=['preset','expansion_count','brightness','contrast','fliplr','flipud','degrees','translate','scale','mosaic','mixup','copy_paste','close_mosaic'];
+    if(!draftProfile||keys.some(key=>draftProfile[key]!==dataset.augmentation?.[key]))reportRoot.append(element('p',`05 的增強草稿與 ${dataset.id} 不同；此處使用 ${dataset.id} 已固定的配方。請建立新版本並選取，才能套用變更。`,'readiness-item warning'));
+  }
+  const receipt=state.trainingPreflight?.signature===yoloCompatibilitySignature(dataset,config)?state.trainingPreflight:null;
+  if(receipt){reportRoot.append(element('p',`設定驗證通過 · ${receipt.dataset_version_id} · ${number(receipt.summary.original_images)} 張原圖 · ${receipt.summary.batches_per_epoch===null?'原圖讀取': '每輪輸入'} ${number(receipt.summary.training_events.events)} 筆 · 未啟動訓練`,'readiness-item'));for(const note of [...receipt.summary.notes,...receipt.warnings.map(item=>item.message),...(!receipt.runtime_ready?[receipt.runtime_message||'模型執行環境尚未安裝']:[])])reportRoot.append(element('p',note,'readiness-item warning'));}
+  $('validateTrainingSetup').disabled=!dataset||!!configError;
   applyTrainingConfigTab();
-  $('startTraining').disabled=!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
-  if(engine?.key?.endsWith('_seg')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
+  $('startTraining').disabled=!!configError||!dataset||dataset.readiness?.ready===false||!engine?.train||!engine?.parameters?.length||!!active;
+  if(!configError&&engine?.key?.endsWith('_seg')&&state.yoloCompatibility){const signature=yoloCompatibilitySignature(dataset,trainingParameters.collect());if(state.yoloCompatibilitySignature===signature&&!state.yoloCompatibility.compatible)$('startTraining').disabled=true}
   $('stopTraining').hidden=!active;$('startTraining').hidden=!!active;
   $('trainingActionHint').textContent=active?`${active.run_id} ${trainingStatusName(active.status)}；切換頁面後仍在背景執行。`:!engine?.train?(engine?.unavailable_reason||'請先到設定中心準備模型。'):dataset?'開始時會固定目前顯示的資料、引擎與參數。':'先建立或選擇固定資料版本。';
   trainingMonitor.render();
 }
-async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{augmentation:augmentationProfile()});state.yoloCompatibility=null;state.yoloCompatibilitySignature='';await loadTraining();$('trainingDataset').value=created.id;renderTraining();toast(`已建立固定訓練資料 ${created.id}，並固定資料增強配方。`);return created}
+async function createDatasetVersion(){await flushAllEdits();const created=await api(projectPath('/dataset-versions'),'POST',{augmentation:augmentationProfile(),revision:state.project?.revision});state.yoloCompatibility=null;state.yoloCompatibilitySignature='';await loadTraining();$('trainingDataset').value=created.id;state.trainingPreflight=null;renderTraining();window.dispatchEvent(new Event('training-configuration-changed'));toast(`已建立固定訓練資料 ${created.id}，並固定資料增強配方。`);return created}
+async function validateTrainingSetup(){
+  await flushAllEdits();
+  const dataset=selectedDataset();if(!dataset)throw Error('請先選擇固定資料版本。');
+  const projectId=state.project.id,parameters=trainingParameters.collect(),signature=yoloCompatibilitySignature(dataset,parameters),config={engine:$('trainingEngine').value,...parameters};
+  const report=await api(projectPath('/training-preflight'),'POST',{dataset_version_id:dataset.id,config});
+  if(state.project?.id===projectId){state.trainingPreflight={...report,signature};renderTraining();}
+  return report;
+}
 let pendingTrainingRequest=null;
 async function startTrainingRun(){
   const dataset=selectedDataset();if(!dataset)throw Error('請先建立或選擇訓練資料版本。');
@@ -395,5 +417,5 @@ async function runModelComparison(){const model=state.training?.models?.find(ite
 function setTrialFrame(value){trialIndex=Math.max(0,Math.min(trialResult?.frames?.length-1||0,Number(value)));drawTrial()}
 function toggleTrialPlayback(){if(trialTimer){stopTrialPlayback();return}if(!trialResult?.frames?.length)return;$('trialPlay').textContent='暫停';const frames=trialResult.frames,delay=Math.max(16,Math.round(((frames[1]?.time_seconds||1/10)-(frames[0]?.time_seconds||0))*1000));trialTimer=setInterval(()=>{if(trialIndex>=frames.length-1){stopTrialPlayback();return}setTrialFrame(trialIndex+1)},delay)}
 
-  return {importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial};
+  return {validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial};
 }

@@ -57,6 +57,21 @@ node --test tests\ui_training_parameters.test.mjs
 
 ## 選配整合測試
 
+### 只驗證 04–06，不訓練
+
+使用下列限定範圍，驗證紀錄及資料權威來源見 [設定流程與儲存](setup-workflow-audit.md)。桌面測試使用隔離專案，將 `start_run` 替換為立即失敗的防護，不會啟動訓練：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_setup_workflow tests.test_augmentation tests.test_training_split_gate tests.test_training_parameters tests.test_review_workflow tests.test_project_storage tests.test_architecture_contracts
+.\.venv\Scripts\python.exe -m unittest tests.test_splitting tests.test_split_quality tests.test_smart_splitting tests.test_multilabel_split tests.test_loose_split tests.test_diagnostic_split
+node --test tests/*.test.mjs
+.\.venv\Scripts\python.exe tests/desktop_setup_workflow.py
+```
+
+此範圍的參數測試使用模擬 optimizer／啟動介面；不代表真實模型驗收。完整 `unittest discover` 與 `desktop_workflow.py` 包含實際訓練測試，因此要求「不訓練」時不要改用完整測試命令。
+
+### 其他桌面與模型測試
+
 桌面流程與圖表測試使用 PySide6／Qt WebEngine，截圖等產物寫入 `qa-output/`：
 
 ```powershell

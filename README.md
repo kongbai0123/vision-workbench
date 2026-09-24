@@ -3,7 +3,7 @@
 Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模型訓練。專案資料與模型保存在本機。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
-[![Version: 2.18.4](https://img.shields.io/badge/Version-2.18.4-45c6b1.svg)](CHANGELOG.md)
+[![Version: 2.19.0](https://img.shields.io/badge/Version-2.19.0-45c6b1.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4.svg)](#快速開始)
 
@@ -23,7 +23,8 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核與模
 - **相機控制**：輸出格式、解析度與 FPS 連動；曝光、增益、白平衡、對焦及進階畫質依裝置能力顯示，支援回讀驗證與本機設定檔。
 - **標註編輯**：同視窗切換內建編輯器、Labelme 與本機 CVAT，支援 SAM2／GrabCut 輔助分割；切換或儲存影像時保留清單位置與目前選取項目。
 - **資料管理**：人工審核可依有無標註分類，支援排除訓練、可還原垃圾桶與永久刪除；資料分割以「選擇方式 → 調整比例 → 檢查並套用」引導操作，Train-only 增強會逐集合列出原圖、新增事件及實際訓練量，並可直接固定為可追溯資料版本。
-- **模型訓練**：支援物件偵測、實例分割、語意分割與圖片分類，提供訓練曲線及模型比較。
+- **訓練設定**：增強與各模型參數按專案保存，重開分割管理器保留已套用設定；「驗證設定（不訓練）」核對固定版本、圖片雜湊、輸入量、批次及引擎支援差異。
+- **模型訓練**：支援物件偵測、實例分割、語意分割與圖片分類，提供訓練曲線及模型比較；固定資料版本保存分割與增強配方，編輯草稿不會改寫歷史版本。
 - **外部模型匯入**：可從檔案總管拖曳或用檔案瀏覽器選擇 Ultralytics 相容的 YOLO／RT-DETR `.pt` 權重；驗證後用於圖片／影片試跑與預標註，並保留來源與類別資訊。
 - **模型試跑與比對**：模型清單、試跑與標註比對共用明確的目前版本；結果保留來源模型提示，預測標籤字體不低於 12px。
 - **資料交換**：COCO、YOLO、LabelMe、JSONL 與原生格式匯入／匯出，以及模型封裝匯出。
@@ -61,6 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 - [相機設定](docs/camera.md)：輸出模式、即時硬體參數、設定檔與 FPS 診斷。
 - [模型匯入與試跑](docs/model-assistance-workflows.md)：外部權重、預標註、資料交換及相容性限制。
 - [開發指南](docs/development.md)：本機開發、程式結構與測試。
+- [04–06 設定與儲存驗證](docs/setup-workflow-audit.md)：設定如何生效、擴增數量、資料權威來源與不啟動訓練的驗證範圍。
 - [版本紀錄](CHANGELOG.md)
 - [問題回報](https://github.com/kongbai0123/vision-workbench/issues)
 

@@ -243,8 +243,8 @@ class TrainingWorkspace:
             cache[project_id] = deepcopy(report)
         return report
 
-    def _calculate_readiness(self, project_id):
-        project = self.store.snapshot(project_id)
+    def _calculate_readiness(self, project_id, project=None):
+        project = project if project is not None else self.store.snapshot(project_id)
         approved = [asset for asset in project["assets"] if asset["review_state"] == "approved"]
         blockers, warnings = [], []
         if not approved:
@@ -307,11 +307,21 @@ class TrainingWorkspace:
                           "splits": splits, "classes": class_counts, "class_counts": coverage["class_counts"]},
                 "blockers": blockers, "warnings": warnings}
 
-    def create_dataset_version(self, project_id, augmentation=None):
-        report = self.readiness(project_id)
+    def create_dataset_version(self, project_id, augmentation=None, expected_revision=None):
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 0):
+            raise ValueError('專案修訂必須是非負整數')
+        folder = self.store.directory(project_id)
+        with self.lock, exclusive_file_lock(folder / '.dataset-publish.lock'), exclusive_file_lock(folder / '.images.lock'):
+            project = self.store.snapshot(project_id)
+            if expected_revision is not None and expected_revision != project['revision']:
+                from .store import ConflictError
+                raise ConflictError('專案已變動，請重新整理資料準備後建立版本')
+            return self._create_dataset_version_locked(project_id, augmentation, project)
+
+    def _create_dataset_version_locked(self, project_id, augmentation, project):
+        report = self._calculate_readiness(project_id, project)
         if not report["ready"]:
             raise ValueError("；".join(item["message"] for item in report["blockers"]))
-        project = self.store.snapshot(project_id)
         parent = self.datasets_dir(project_id, create=True)
         with self.lock:
             dataset_id = _next_id(parent, "D")
@@ -338,7 +348,8 @@ class TrainingWorkspace:
                                         "label": shape["label"], "type": shape["type"], "bbox_xywh": box})
                     records.append({"asset_id": asset["id"], "name": asset["name"], "width": asset["width"],
                                     "height": asset["height"], "sha256": asset["sha256"],
-                                    "image_file": f"images/{destination.name}", "annotation_revision": asset["revision"],
+                                    "image_file": f"images/{destination.name}", "asset_revision": asset["revision"],
+                                    "annotation_revision": asset.get("annotation_revision", asset["revision"]),
                                     "annotation_sha256": _canonical_hash(shapes), "split": asset["split"],
                                     "batch_id": asset["batch_id"], "source": asset["source"],
                                     "shapes": shapes, "objects": objects})
@@ -467,26 +478,28 @@ class TrainingWorkspace:
                         return previous
             return self._start_run_locked(project_id, dataset_id, config, request_id)
 
-    def _start_run_locked(self, project_id, dataset_id, config, request_id=None):
+    def prepare_training(self, project_id, dataset_id, config):
+        """Validate exactly the launch configuration without allocating or starting a Run."""
         if not isinstance(config, dict):
             raise ValueError("訓練參數必須是物件")
         dataset_id = _safe_id(dataset_id, "D")
         manifest = self.datasets_dir(project_id) / dataset_id / "manifest.json"
         if not manifest.is_file():
             raise FileNotFoundError("找不到訓練資料版本")
-        if any(run.get("status") in {"queued", "preparing", "running", "stopping"} for run in self.list_runs(project_id)):
-            raise ValueError("此專案已有訓練正在執行")
         engine = str(config.get("engine") or (MASKRCNN_KEY if self._maskrcnn_available else ENGINE_KEY))
         definition = self.registry.model(engine)
         if definition is None:
             raise ValueError("找不到所選訓練引擎")
-        if not definition["train"]:
-            raise ValueError(definition.get("unavailable_reason") or "所選訓練引擎尚未安裝")
         from .engine_specs import engine_spec
+        if not engine_spec(engine).parameter_schema():
+            raise ValueError('此引擎尚無可用訓練設定或僅支援推論')
         effective_config = engine_spec(engine).validate(config)
         immutable = read_json(manifest)
         if "augmentation" in immutable:
             effective_config["augmentation"] = normalize_augmentation(immutable.get("augmentation"))
+        content = {key: value for key, value in immutable.items() if key != 'manifest_sha256'}
+        if immutable.get('manifest_sha256') != _canonical_hash(content):
+            raise ValueError('固定資料版本 manifest 雜湊不符；請從備份還原')
         coverage = dataset_readiness(immutable)
         if not coverage["ready"]:
             raise ValueError("固定資料版本的分割不適合訓練：" + "；".join(item["message"] for item in coverage["blockers"]))
@@ -495,6 +508,39 @@ class TrainingWorkspace:
         if coverage.get('purpose') == 'all_train' and engine == ENGINE_KEY:
             raise ValueError('全資料最終訓練不支援像素原型基準；請先用有 Validation 的資料選模，再以深度學習模型執行最終訓練')
         compatibility = engine_spec(engine).validate_dataset(immutable, effective_config)
+        from .setup_summary import effective_setup
+        plan = effective_setup(immutable, definition, effective_config)
+        return {'manifest_path': manifest, 'manifest': immutable, 'definition': definition,
+                'config': effective_config, 'coverage': coverage, 'compatibility': compatibility,
+                'summary': plan}
+
+    def training_preflight(self, project_id, dataset_id, config):
+        prepared = self.prepare_training(project_id, dataset_id, config)
+        root = prepared['manifest_path'].parent.resolve()
+        for asset in prepared['manifest']['assets']:
+            image = (root / asset['image_file']).resolve()
+            if not image.is_relative_to(root) or not image.is_file():
+                raise ValueError('固定版本圖片遺失或路徑無效')
+            digest = sha256()
+            with image.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            if digest.hexdigest() != asset['sha256']:
+                raise ValueError(f"固定版本圖片雜湊不符：{asset['name']}")
+        return {'validated': True, 'training_started': False, 'dataset_version_id': dataset_id,
+                'manifest_sha256': prepared['manifest']['manifest_sha256'],
+                'config': prepared['config'], 'summary': prepared['summary'],
+                'runtime_ready': bool(prepared['definition']['train']),
+                'runtime_message': prepared['definition'].get('unavailable_reason'),
+                'warnings': prepared['coverage']['warnings']}
+
+    def _start_run_locked(self, project_id, dataset_id, config, request_id=None):
+        prepared = self.prepare_training(project_id, dataset_id, config)
+        manifest, immutable, definition = prepared['manifest_path'], prepared['manifest'], prepared['definition']
+        effective_config, coverage, compatibility = prepared['config'], prepared['coverage'], prepared['compatibility']
+        engine = definition['key']
+        if not definition['train']:
+            raise ValueError(definition.get('unavailable_reason') or '所選訓練引擎尚未安裝')
         project_runs = self.runs_dir(project_id, create=True)
         project_models = self.models_dir(project_id, create=True)
         with self.lock:
@@ -516,9 +562,8 @@ class TrainingWorkspace:
                 run['data_purpose'] = immutable['data_quality'].get('purpose')
             if request_id is not None:
                 run.update(request_id=request_id, request_payload={'dataset_id': dataset_id, 'config': config})
-            run['training_events'] = augmentation_event_layout(
-                sum(asset.get('split') == 'train' for asset in immutable.get('assets', [])),
-                effective_config.get('augmentation'))
+            run['training_events'] = prepared['summary']['training_events']
+            run['setup_summary'] = prepared['summary']
             if coverage["warnings"]:
                 run["split_warnings"] = coverage["warnings"]
             if compatibility is not None:

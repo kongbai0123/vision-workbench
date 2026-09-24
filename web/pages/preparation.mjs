@@ -51,7 +51,17 @@ async function renderSplitPage(){
   $('openSplitFlowManager').disabled=!(stats.approved>0);
   $('continueToTraining').disabled=!readiness.ready;
   $('splitFlowNextHint').textContent=readiness.ready?'分割已具備訓練條件；下一步建立固定資料版本。':'請先處理上方阻擋項目。';
-  renderAugmentationPreparation();
+  try{renderAugmentationPreparation()}catch(error){renderAugmentationError(error)}
+}
+function renderAugmentationError(error){
+  $('augmentationSummary').textContent=error.message;
+  $('augmentationEffectiveTotal').textContent='設定尚未有效';
+  $('augmentationSplitProjection').replaceChildren();
+  $('augmentationTransformList').replaceChildren();
+  $('augmentationVersionState').textContent='設定需要修正';
+  $('augmentationVersionState').className='augmentation-state draft';
+  $('augmentationVersionHint').textContent='請修正設定後再建立固定資料版本。';
+  $('createPreparationDatasetVersion').disabled=true;
 }
 const augmentationPresets={
   off:{brightness:0,contrast:0,fliplr:0,flipud:0,degrees:0,translate:0,scale:0,mosaic:0,mixup:0,copy_paste:0,close_mosaic:0},
@@ -62,13 +72,17 @@ function augmentationProfile(){
   const preset=$('augmentationPreset')?.value||state.augmentationPreset||'light',base={...(augmentationPresets[preset]||augmentationPresets.light)};
   if(preset==='custom')Object.assign(base,{brightness:Number($('augmentationBrightness').value),contrast:Number($('augmentationContrast').value),fliplr:Number($('augmentationFlipLR').value),flipud:Number($('augmentationFlipUD').value)});
   for(const [key,value] of Object.entries(base))if(!Number.isFinite(value))throw Error(`資料增強 ${key} 不是有效數值。`);
-  const expansion=Number($('augmentationExpansion')?.value??state.augmentationExpansion??0);
+  for(const [key,max] of [['brightness',.5],['contrast',.5],['fliplr',1],['flipud',1]])if(base[key]<0||base[key]>max)throw Error(`資料增強 ${key} 必須介於 0 與 ${max}。`);
+  if(preset==='custom'&&['augmentationBrightness','augmentationContrast','augmentationFlipLR','augmentationFlipUD'].some(id=>$(id).value.trim()===''))throw Error('請完整填寫自訂增強參數。');
+  const raw=$('augmentationExpansion')?.value??state.augmentationExpansion??0;
+  if(preset!=='off'&&String(raw).trim()==='')throw Error('請填入每張原圖額外載入次數。');
+  const expansion=preset==='off'?0:Number(raw);
   if(!Number.isInteger(expansion)||expansion<0||expansion>50)throw Error('每張原圖擴充份數必須是 0 到 50 的整數。');
   return {schema_version:2,preset,apply_to:'train',mode:'online',expansion_count:preset==='off'?0:expansion,...base};
 }
 function renderAugmentationPreparation(){
   const preset=$('augmentationPreset');if(!preset)return;preset.value=state.augmentationPreset||preset.value;
-  const expansionInput=$('augmentationExpansion');expansionInput.disabled=preset.value==='off';expansionInput.value=preset.value==='off'?0:state.augmentationExpansion;
+  const expansionInput=$('augmentationExpansion');expansionInput.disabled=preset.value==='off';
   const profile=augmentationProfile();$('augmentationCustomFields').hidden=profile.preset!=='custom';
   const sample=(state.project?.assets||[]).find(asset=>asset.review_state==='approved'&&asset.split==='train')||(state.project?.assets||[]).find(asset=>asset.review_state==='approved');
   for(const id of ['augmentationOriginalPreview','augmentationResultPreview']){
@@ -108,9 +122,9 @@ function renderAugmentationPreparation(){
   const sameProfile=latest&&profileKeys.every(key=>latest.augmentation?.[key]===profile[key]);
   const fixed=!!latest&&latest.project_revision===currentRevision&&sameSplits&&sameProfile;
   const stateBadge=$('augmentationVersionState');stateBadge.textContent=fixed?`已固定於 ${latest.id}`:'尚未固定';stateBadge.className=`augmentation-state ${fixed?'fixed':'draft'}`;
-  $('augmentationVersionHint').textContent=fixed?`${latest.id} 已保存目前分割與配方；變更任一設定後需建立新版本。`:'目前只是預覽；建立固定資料版本後，新的 Run 才會使用這些數量。';
+  $('augmentationVersionHint').textContent=fixed?`${latest.id} 已保存目前分割與配方；變更任一設定後需建立新版本。`:'目前為專案設定草稿；請固定配方並建立資料版本，再於 06 選取該版本。既有版本不會自動更新。';
   $('createPreparationDatasetVersion').disabled=!state.training?.readiness?.ready;
 }
 async function createPreparedDatasetVersion(){const created=await createDatasetVersion();await renderSplitPage();return created}
-return {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,createPreparedDatasetVersion};
+return {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,renderAugmentationError,createPreparedDatasetVersion};
 }

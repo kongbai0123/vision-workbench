@@ -44,6 +44,10 @@ def normalize_augmentation(value=None):
     preset = str(value.get("preset") or "off")
     if preset not in {*_PRESETS, "custom"}:
         raise ValueError("資料增強預設值無效")
+    if value.get('apply_to', 'train') != 'train' or value.get('mode', 'online') != 'online':
+        raise ValueError('目前只支援 Train 線上增強')
+    if type(value.get('schema_version', 2)) is not int or value.get('schema_version', 2) not in (1, 2):
+        raise ValueError('不支援的資料增強版本')
     allowed = {"preset", "schema_version", "apply_to", "mode", *_RANGES, "close_mosaic", "expansion_count"}
     unknown = set(value) - allowed
     if unknown:
@@ -68,6 +72,8 @@ def normalize_augmentation(value=None):
         raise ValueError("每張圖片擴充份數必須是 0 到 50 的整數")
     if preset == "off" and expansion_count:
         raise ValueError("啟用擴充份數前，請先選擇資料增強配方")
+    if preset == 'off' and any(base[key] for key in (*_RANGES, 'close_mosaic')):
+        raise ValueError('關閉增強時不得指定非零變換參數')
     base["expansion_count"] = expansion_count
     return {"schema_version": 2, "preset": preset, "apply_to": "train", "mode": "online", **base}
 
