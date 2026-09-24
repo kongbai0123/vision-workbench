@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {mergeProjectDelta} from '../web/state.mjs';
 import {nativeCallbacks, installNativeCallbacks, connectNative} from '../web/native-bridge.mjs';
 import {filterModelVersions} from '../web/pages/training.mjs';
-import {filterReviewAssets} from '../web/pages/review.mjs';
+import {dismissIndependenceNotice, filterReviewAssets, independenceNoticeDismissed, independenceNoticeKey} from '../web/pages/review.mjs';
 
 test('project deltas preserve selection ordering, replace and delete only changed IDs', () => {
   const current={id:'p',revision:1,assets:[{id:'b'},{id:'a'},{id:'c'}]};
@@ -34,7 +34,7 @@ test('page factories import without executing browser globals', async () => {
 
 test('review controls and augmentation layout are static markup', async () => {
   const html=await readFile(new URL('../web/index.html',import.meta.url),'utf8');
-  for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewAnnotationFilter','reviewReasonFilter'])
+  for(const id of ['reviewCorrection','reviewTrash','reviewDelete','reviewRestore','reviewQuality','reviewAnnotationFilter','reviewReasonFilter','dismissIndependenceReview'])
     assert.equal(html.split(`id="${id}"`).length-1,1);
   assert.ok(html.indexOf('class="panel augmentation-panel"')<html.indexOf('id="splitFlowStats"'));
   const app=await readFile(new URL('../web/app.mjs',import.meta.url),'utf8');
@@ -51,6 +51,14 @@ test('review assets can be classified by whether they contain annotations',()=>{
   assert.deepEqual(filterReviewAssets(assets,{status:'all',annotation:'annotated'}).map(a=>a.id),['a']);
   assert.deepEqual(filterReviewAssets(assets,{status:'all',annotation:'unannotated'}).map(a=>a.id),['b','c']);
   assert.deepEqual(filterReviewAssets(assets,{status:'pending',annotation:'unannotated'}).map(a=>a.id),['b']);
+});
+
+test('independence notice dismissal persists without changing review evidence',()=>{
+  const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)};
+  assert.equal(independenceNoticeDismissed(storage),false);
+  assert.equal(dismissIndependenceNotice(storage),true);
+  assert.equal(values.get(independenceNoticeKey),'1');
+  assert.equal(independenceNoticeDismissed(storage),true);
 });
 
 test('AI annotation and model trial have separate workflow locations',async()=>{
