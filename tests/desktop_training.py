@@ -226,7 +226,7 @@ def main():
             click("#prepareAutoSplit")
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             click("#openSplitFlowManager")
-            wait("document.querySelectorAll('#smartSplitDialog tbody tr').length===6")
+            wait("document.querySelectorAll('#smartSplitDialog .split-group-table tbody tr').length===6")
             click("#previewSmartSplit")
             wait("!document.querySelector('#applySmartSplitVersion').disabled")
             capture("30-smart-split-preview")

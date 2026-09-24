@@ -5,6 +5,7 @@ import {mergeProjectDelta} from '../web/state.mjs';
 import {nativeCallbacks, installNativeCallbacks, connectNative} from '../web/native-bridge.mjs';
 import {filterModelVersions} from '../web/pages/training.mjs';
 import {filterReviewAssets} from '../web/pages/review.mjs';
+import {visibleScarcityMessages} from '../web/split-manager.mjs';
 
 test('project deltas preserve selection ordering, replace and delete only changed IDs', () => {
   const current={id:'p',revision:1,assets:[{id:'b'},{id:'a'},{id:'c'}]};
@@ -23,6 +24,12 @@ test('desktop bridge centralizes callbacks and supports browser-only mode', asyn
   nativeCallbacks.flush=async()=>true;
   assert.equal(await target.workbenchFlush(),true);
   assert.equal(await connectNative(target),null);
+});
+
+test('split warnings only discuss source scarcity when source isolation is enabled', () => {
+  const item={messages:['來源群組不足以在各集合提供獨立來源','Test 少於 5 張，評估可能不穩定']};
+  assert.deepEqual(visibleScarcityMessages(item,false),['Test 少於 5 張，評估可能不穩定']);
+  assert.deepEqual(visibleScarcityMessages(item,true),item.messages);
 });
 
 test('page factories import without executing browser globals', async () => {
