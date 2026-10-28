@@ -5,9 +5,10 @@
 ## 開發環境
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
+
+安裝使用 64 位元 Python 3.13；既有相容的 Python 3.12–3.14 環境可繼續使用。不要依賴全域 `python` 的預設版本。啟動診斷與修復方式見[啟動疑難排解](docs/startup-troubleshooting.md)。
 
 需要測試 SAM2 時，再安裝 `requirements-ai.txt` 並執行 `prepare_models.py`。模型權重不可提交至版本庫。
 
@@ -24,6 +25,8 @@ python -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe scripts\check_runtime.py --report qa-output\startup\runtime.json
+.\.venv\Scripts\python.exe tests\desktop_startup.py
 node --test tests\ui_editor.test.mjs
 .\.venv\Scripts\python.exe tests\desktop_workflow.py
 ```

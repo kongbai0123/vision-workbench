@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import cv2
 import numpy as np
 
-from composer_core.geometry import decode_rle, encode_rle, shape_polygons
+from composer_core.geometry import _opencv, decode_rle, encode_rle, shape_polygons
 from composer_core.mask_cleanup import enclosed_background_components
 
 
@@ -59,6 +58,7 @@ def compatible_shape(asset, shape, shape_index, config=None):
 
     mask = decode_rle(shape.get("counts"), width, height) > 0
     foreground = int(np.count_nonzero(mask))
+    cv2 = _opencv()
     component_count = int(cv2.connectedComponents(
         mask.astype(np.uint8), connectivity=8,
     )[0] - 1)

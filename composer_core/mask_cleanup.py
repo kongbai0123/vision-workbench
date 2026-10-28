@@ -1,8 +1,8 @@
 """Small, auditable repairs for canonical binary masks."""
 from __future__ import annotations
 
-import cv2
 import numpy as np
+from .geometry import _opencv
 
 
 DEFAULT_TINY_HOLE_POLICY = {
@@ -24,6 +24,7 @@ def enclosed_background_components(mask: np.ndarray, *, include_points: bool = F
     if binary.ndim != 2 or not binary.size:
         raise ValueError("mask must be a non-empty two-dimensional array")
     background = np.ascontiguousarray(~binary, dtype=np.uint8)
+    cv2 = _opencv()
     count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
         background, connectivity=4,
     )

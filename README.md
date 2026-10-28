@@ -3,7 +3,7 @@
 Windows 桌面視覺資料工作台，整合影像採集、標註、審核、資料分割與模型訓練。專案資料與模型保存在本機，固定資料版本讓每次實驗的圖片、標註及增強設定可追溯。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
-[![Version: 2.21.9](https://img.shields.io/badge/Version-2.21.9-45c6b1.svg)](CHANGELOG.md)
+[![Version: 2.21.10](https://img.shields.io/badge/Version-2.21.10-45c6b1.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4.svg)](#快速開始)
 
@@ -74,6 +74,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 後續直接開啟 `vision-workbench.bat`。
 
+啟動前會檢查 Python 版本、64 位元架構、固定套件版本及核心桌面元件。環境缺失時自動嘗試安裝一次，失敗會停留在錯誤畫面並提供紀錄位置。重建不相容的環境前，會將原環境保留為 `.venv-backup-<時間>-<識別碼>`；資料與模型保存在原位置。
+
+只產生診斷、不安裝套件或開啟桌面：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch.ps1 -Diagnose
+```
+
+修復環境但不開啟桌面：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch.ps1 -Repair
+```
+
+若 Windows 顯示「不明發行者／已保護您的電腦」，先確認下載來源，再依[啟動疑難排解](docs/startup-troubleshooting.md)處理特定檔案的下載封鎖。此來源版本沒有附帶簽署的 Windows 安裝程式；啟動腳本無法在 Windows 封鎖它之前自行執行檢查。
+
 訓練模型的選配環境可於「設定 → 模型與元件」安裝。SAM2 與 CVAT 的準備方式見[使用指南](docs/usage.md)。
 
 ### 更新既有安裝
@@ -97,6 +113,7 @@ v2.20.0 新增 `tqdm` 依賴，已安裝的 TorchVision／Ultralytics 環境也�
 - [相機設定](docs/camera.md)：輸出模式、即時硬體參數、設定檔與 FPS 診斷。
 - [模型匯入與試跑](docs/model-assistance-workflows.md)：外部權重、預標註、資料交換及相容性限制。
 - [開發指南](docs/development.md)：本機開發、程式結構與測試。
+- [啟動疑難排解](docs/startup-troubleshooting.md)：Windows 信任警告、Python／套件修復與診斷紀錄。
 - [04–06 設定與儲存驗證](docs/setup-workflow-audit.md)：設定如何生效、擴增數量、資料權威來源與不啟動訓練的驗證範圍。
 - [時間估算與回放驗證](docs/time-estimation.md)：tqdm 整合、快速初估、分階段校正與實測誤差。
 - [版本紀錄](CHANGELOG.md)

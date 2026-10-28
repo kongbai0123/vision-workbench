@@ -12,6 +12,17 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
+安裝腳本會尋找 64 位元 Python 3.13，並保留既有相容的 Python 3.12–3.14 環境。不相容或無法執行的環境會先備份，再建立新環境；缺少 Python 時會停止並明確說明。啟動前診斷與不安裝套件的迴歸檢查：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launch.ps1 -Diagnose
+.\.venv\Scripts\python.exe -m unittest tests.test_startup_runtime tests.test_startup_launcher
+```
+
+`scripts/check_runtime.py` 只依賴 Python 標準函式庫；`--json` 供啟動器讀取，`--report <路徑>` 保存報告。核心原生模組在有逾時限制的子程序匯入，避免 DLL 崩潰終止啟動器；OpenCV／螢幕擷取元件匯入失敗會列為警告，保留核心介面降級啟動能力。詳見[啟動疑難排解](startup-troubleshooting.md)。
+
+v2.21.10 的驗證範圍與結果見[啟動修復驗證紀錄](validation-20261028-startup.md)。
+
 使用獨立資料目錄啟動桌面版：
 
 ```powershell
@@ -35,7 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps --no-build-isolation
 .\.venv\Scripts\python.exe -m pip install 'ruff>=0.11,<1'
-.\.venv\Scripts\python.exe -m ruff check workbench src composer_core sam2_segmentation classical_segmentation tests
+.\.venv\Scripts\python.exe -m ruff check workbench src composer_core sam2_segmentation classical_segmentation scripts tests
 node --test tests/*.test.mjs
 ```
 

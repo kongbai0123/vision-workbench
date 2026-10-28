@@ -2,8 +2,11 @@
 setlocal
 set "PYTHONUTF8=1"
 cd /d "%~dp0"
-if not exist ".venv\Scripts\pythonw.exe" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
-  if errorlevel 1 exit /b 1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1" %*
+set "workbench_exit=%errorlevel%"
+if not "%workbench_exit%"=="0" (
+  echo.
+  echo Startup failed. Read the error above and data\logs for details.
+  pause
 )
-start "Vision Workbench" "%~dp0.venv\Scripts\pythonw.exe" "%~dp0main.py"
+exit /b %workbench_exit%

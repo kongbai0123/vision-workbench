@@ -1,6 +1,8 @@
 # Python
 .venv/
 .venv-training/
+.venv-backup-*/
+.venv-training-backup-*/
 .venv-models/
 venv/
 __pycache__/

@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 
 
 SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".css", ".html", ".json", ".ps1", ".bat"}
-SOURCE_DIRECTORIES = ("workbench", "web", "composer_core", "classical_segmentation", "sam2_segmentation")
-SOURCE_FILES = ("main.py", "cvat_setup.py", "setup_cvat.ps1", "bootstrap.ps1", "vision-workbench.bat",
+SOURCE_DIRECTORIES = ("workbench", "web", "scripts", "composer_core", "classical_segmentation", "sam2_segmentation")
+SOURCE_FILES = ("main.py", "cvat_setup.py", "setup_cvat.ps1", "bootstrap.ps1", "launch.ps1", "vision-workbench.bat",
                 "requirements.txt", "requirements-ai.txt", "requirements-training.txt", "requirements-lock.txt")
 PROTECTED_DIRECTORIES = ("data/", "models/", "weights/", "runs/", ".venv/", ".venv-models/", ".venv-training/")
 VERSION_TAG = re.compile(r"refs/tags/v(\d+)\.(\d+)\.(\d+)(?:\^\{\})?$")

@@ -5,14 +5,15 @@ import secrets
 import threading
 import time
 
-import cv2
 import numpy as np
 from PIL import Image
 
 from .store import ConflictError
+from composer_core.geometry import _opencv
 
 
 def image_quality(path):
+    cv2 = _opencv()
     with Image.open(path) as image:
         image = image.convert('RGB')
         image.thumbnail((640, 640))
