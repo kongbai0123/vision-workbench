@@ -108,9 +108,8 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     def open_assist():
         click('#annotationAiTab')
         wait("!document.querySelector('#annotationAiPanel').hidden")
-        if not js("document.querySelector('#annotationAssistPanel').open"):
-            click('#annotationAssistPanel > summary')
-        wait("document.querySelector('#annotationAssistPanel').open")
+        click('#annotationBatchTab')
+        wait("!document.querySelector('#annotationAssistPanel').hidden")
 
     wait("document.querySelector('.project-card-open')")
     click(".project-card-open")
@@ -170,7 +169,7 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     assert not js(f"Boolean(document.querySelector('#annotationAssistCandidates ' + {json.dumps(archived)}))")
     click('#annotationObjectsTab')
     click('#shapeList .shape-row')
-    click('[data-tool="select"]')
+    click('#editBoundingBox')
     coords = json.loads(js("""JSON.stringify((()=>{
         const h=document.querySelector('#overlay [data-handle="0"]').getBoundingClientRect();
         return [h.left+h.width/2,h.top+h.height/2];
@@ -199,7 +198,7 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
     click("#annotationAssistReviewLink")
     wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_id)}")
-    wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationAssistPanel').open")
+    wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationBatchTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAssistPanel').hidden")
     wait("document.querySelector('#annotationAssistExceptions').textContent.includes('待人工覆核')")
     assert service.store.get_asset(pid, exception_id)["shapes"] == []
     window.grab().save(str(root / "04-exception.png"))

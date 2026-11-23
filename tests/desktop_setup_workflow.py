@@ -56,11 +56,23 @@ def check_object_selection(view, js, wait, click, fill):
             }});
         }})()"""
 
+    def assert_box_tools():
+        assert js("""[
+            ['#addBoundingBox', 'rectangle'], ['#editBoundingBox', 'select'],
+        ].every(([selector, tool]) => {
+            const button = document.querySelector(selector);
+            const rect = button.getBoundingClientRect();
+            return button.dataset.tool === tool && button.closest('.annotation-creation-tools') &&
+                !button.closest('#toolStrip, #propertiesSidebar') &&
+                rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight;
+        })"""), 'Bounding Box tools should remain in the visible canvas toolbar'
+
     reset_scroll = "document.querySelector('#shapeList').scrollTop = 0; document.querySelector('#annotationObjectsPanel').scrollTop = 0"
     view.resize(1440, 720)
     wait("document.querySelectorAll('#shapeList .shape-row').length === 20")
     assert js("document.querySelector('#annotationObjectsTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationObjectsPanel').hidden")
     assert js("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'false' && document.querySelector('#annotationAiPanel').hidden")
+    assert_box_tools()
     wait("[...document.querySelectorAll('#shapeList, #annotationObjectsPanel')].some(panel => panel.scrollHeight > panel.clientHeight)")
     js(reset_scroll)
     fill('#shapeLabel', 'spare')
@@ -88,13 +100,45 @@ def check_object_selection(view, js, wait, click, fill):
     click('#annotationAiTab')
     wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAiPanel').hidden")
     assert js("document.querySelector('#annotationObjectsPanel').hidden")
-    for panel in ('segmentationPanel', 'annotationAssistPanel', 'annotationPredictionPanel'):
-        assert js(f"document.querySelector('#annotationAiPanel #{panel} > summary').getClientRects().length > 0")
+    assert js("document.querySelector('#annotationSegmentationTab').getAttribute('aria-selected') === 'true'")
+    current_asset = js('window.workbenchState().assetId')
+    js("document.querySelector('#annotationSegmentationTab').focus()")
+    QTest.keyClick(view.focusProxy() or view, Qt.Key.Key_Right)
+    wait("document.activeElement.id === 'annotationBatchTab' && !document.querySelector('#annotationAssistPanel').hidden")
+    assert js('window.workbenchState().assetId') == current_asset
+    for tab, panel in [('annotationSegmentationTab', 'segmentationPanel'),
+                       ('annotationBatchTab', 'annotationAssistPanel'),
+                       ('annotationPredictionTab', 'annotationPredictionPanel')]:
+        click(f'#annotationAiToolTabs #{tab}')
+        assert js(f"[...document.querySelectorAll('#annotationAiContent > [role=tabpanel]')].filter(tab => !tab.hidden).map(tab => tab.id).join() === '{panel}'")
+        assert_box_tools()
+    click('#addBoundingBox')
+    assert js("document.querySelector('#addBoundingBox').classList.contains('active')")
+    click('#editBoundingBox')
+    assert js("document.querySelector('#editBoundingBox').classList.contains('active')")
     click('#annotationObjectsTab')
     wait(f"document.querySelector({json.dumps(previous)}).getAttribute('aria-pressed') === 'true' && {row_visible(previous)}")
     assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
     assert not js('window.workbenchState().dirty')
     view.resize(1440, 1000)
+
+
+def seed_review_batch(service, project_id, image_path):
+    Image.new('RGB', (320, 240), (100, 110, 95)).save(image_path)
+    asset_id, = service.store.add_assets(project_id, [{'path': str(image_path), 'shapes': []}])['asset_ids']
+    asset = service.store.get_asset(project_id, asset_id)
+    batch_id = 'd' * 32
+    directory = service.annotation_assist.storage.area(project_id, f'integrations/annotation-assist/{batch_id}', create=True)
+    atomic_json(directory / 'batch.json', {
+        'id': batch_id, 'project_id': project_id, 'status': 'complete', 'created_at': '2026-01-01T00:00:00Z',
+        'classes': [{'label': 'part', 'prompt': 'part', 'description': ''}],
+        'model_checks': {'sam': False, 'gemma': False}, 'summary': {'images': 1},
+        'frames': [{'asset_id': asset_id, 'name': asset['name'], 'width': asset['width'], 'height': asset['height'],
+                    'image_sha256': asset['sha256'], 'base_revision': asset['revision'], 'status': 'review',
+                    'exceptions': [{'code': 'uncertain_review', 'reason': 'Desktop fixture needs review'}],
+                    'candidates': [], 'accepted_candidate_ids': []}],
+    })
+    return asset_id
 
 
 def main():
@@ -123,6 +167,7 @@ def main():
         ]}])
         project = service.store.get_project(other)
         service.store.manage_classes(other, ['part', 'spare'], {}, project['revision'])
+        exception_asset = seed_review_batch(service, other, root / 'review-exception.png')
         view=QWebEngineView();page=Page(view);view.setPage(page)
         view.resize(1440,1000);view.show();page.setVisible(True);view.setUrl(QUrl(service.entry_url))
         def js(script):
@@ -196,7 +241,14 @@ def main():
             click('#continueToTraining');wait("document.querySelector('#trainingSetupReport').textContent.includes('草稿與 D001 不同')")
             assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').read_bytes()==old
             click('#home');open_project('Setup B');check_object_selection(view, js, wait, click, fill)
-            print('OBJECT_SELECTION_OK: canvas and list stay synchronized, tabs preserve selection, and labels stay independent.', flush=True)
+            print('OBJECT_SELECTION_OK: selection and labels persist, with Bounding Box tools available across all tabs.', flush=True)
+            click('[data-stage=review]')
+            wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
+            click('#annotationAssistReviewLink')
+            wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_asset)}")
+            wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationBatchTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAssistPanel').hidden")
+            assert js("document.querySelector('#annotationAssistExceptions').textContent.includes('Desktop fixture needs review')")
+            print('ANNOTATION_REVIEW_LINK_OK: review opens the saved exception in the AI batch tab.', flush=True)
             click('[data-stage=split]')
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             assert js("document.querySelector('#augmentationExpansion').value")=='0', js("JSON.stringify({state:window.workbenchState(),value:document.querySelector('#augmentationExpansion').value,text:document.body.innerText.slice(-4000)})")

@@ -41,11 +41,12 @@ function closestEdge(points, point, closed) {
 }
 
 export class AnnotationEditor {
-  constructor({onChange, onNotice, onAssetNavigation}) {
+  constructor({onChange, onNotice, onAssetNavigation, onAiToolChange}) {
     this.$ = id => document.getElementById(id);
     this.onChange = onChange;
     this.notice = onNotice;
     this.onAssetNavigation = onAssetNavigation;
+    this.onAiToolChange = onAiToolChange;
     this.asset = null;
     this.tool = 'select';
     this.selection = new Set();
@@ -61,7 +62,10 @@ export class AnnotationEditor {
     this.locked = false;
     this.active = false;
     this.propertiesScroll = this.$('annotationObjectsPanel');
-    this.sidebarTabs = [this.$('annotationObjectsTab'), this.$('annotationAiTab')];
+    this.sidebarTabs = [...this.$('annotationSidebarTabs').querySelectorAll('[role="tab"]')];
+    this.aiToolTabs = [...this.$('annotationAiToolTabs').querySelectorAll('[role="tab"]')];
+    this.sidebarView = 'objects';
+    this.aiTool = 'segmentation';
     this.installEvents();
     this.resizeObserver = new ResizeObserver(() => this.fit(false));
     this.resizeObserver.observe(this.$('canvasArea'));
@@ -101,23 +105,42 @@ export class AnnotationEditor {
     this.$('imageDimensions').textContent = '— × — px';
   }
   get hasUncommittedWork() { return !!this.draft.length || !!this.gesture || !!this.candidate; }
-  setSidebarTab(view) {
-    const active = view === 'ai' ? this.sidebarTabs[1] : this.sidebarTabs[0];
-    for (const tab of this.sidebarTabs) {
-      const selected = tab === active;
-      tab.setAttribute('aria-selected', String(selected));
-      tab.tabIndex = selected ? 0 : -1;
-      this.$(tab.getAttribute('aria-controls')).hidden = !selected;
+  get activeAiTool() { return this.sidebarView === 'ai' ? this.aiTool : null; }
+  setSidebarTab(view, aiTool = this.aiTool) {
+    const previous = this.activeAiTool;
+    this.sidebarView = view;
+    this.aiTool = aiTool;
+    for (const [tabs, value] of [[this.sidebarTabs, view], [this.aiToolTabs, aiTool]]) {
+      for (const tab of tabs) {
+        const selected = tab.dataset.editorTab === value;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        this.$(tab.getAttribute('aria-controls')).hidden = !selected;
+      }
     }
     if (view === 'objects' && this.selection.size) this.revealShapeInList([...this.selection].at(-1));
+    if (previous !== this.activeAiTool) {
+      if (this.activeAiTool !== 'segmentation' && this.tool.startsWith('ai-')) this.activateTool('select');
+      this.updateCandidate();
+      this.renderCanvas();
+      this.onAiToolChange?.(this.activeAiTool, previous);
+    }
   }
   setTool(tool) {
     if (this.locked) return;
     if (this.draft.length && !['polygon','linestrip'].includes(tool)) {
       this.notice('請先按 Enter 完成目前頂點，或按 Esc 取消。'); return;
     }
+    if (tool.startsWith('ai-')) this.setSidebarTab('ai', 'segmentation');
+    this.activateTool(tool);
+  }
+  activateTool(tool) {
     this.tool = tool;
-    document.querySelectorAll('[data-tool]').forEach(button => button.classList.toggle('active', button.dataset.tool === tool));
+    for (const button of document.querySelectorAll('[data-tool]')) {
+      const selected = button.dataset.tool === tool;
+      button.classList.toggle('active', selected);
+      if (button.hasAttribute('aria-pressed')) button.setAttribute('aria-pressed', String(selected));
+    }
     const hints = {
       select:'拖曳物件移動 · Shift 多選 · 拖曳控制點調整 · 雙擊邊線插入頂點 · Alt 點頂點刪除',
       rectangle:'拖曳建立矩形 · 使用工具列的新物件類別 · Esc 取消操作',
@@ -134,10 +157,6 @@ export class AnnotationEditor {
     const hint = document.getElementById('toolHint');
     if (hint) hint.textContent = hints[tool] || '';
     this.$('overlay').style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
-    if (tool.startsWith('ai-')) {
-      this.setSidebarTab('ai');
-      this.$('segmentationPanel').open = true;
-    }
     this.updateToolPanels();
   }
   label() { return this.$('shapeLabel').value.trim(); }
@@ -297,9 +316,12 @@ export class AnnotationEditor {
       svg.append(svgElement('polyline',{points:points.map(p=>p.join(',')).join(' '),stroke:'#70f2d1','stroke-width':2/scale,fill:'none','stroke-dasharray':`${5/scale} ${3/scale}`,'pointer-events':'none'}));
       for (const [x,y] of this.draft) svg.append(svgElement('circle',{cx:x,cy:y,r:3/scale,fill:'#bcfff1','pointer-events':'none'}));
     }
-    for(const proposal of this.proposals)this.drawShape(proposal,true);
-    if(this.assistPreview)this.drawShape(this.assistPreview,true,true);
-    if(this.assistSamPreview)this.drawShape(this.assistSamPreview,true,'sam');
+    if (this.activeAiTool === 'prediction') for (const proposal of this.proposals) this.drawShape(proposal,true);
+    if (this.activeAiTool === 'batch') {
+      if (this.assistPreview) this.drawShape(this.assistPreview,true,true);
+      if (this.assistSamPreview) this.drawShape(this.assistSamPreview,true,'sam');
+    }
+    if (this.activeAiTool !== 'segmentation') return;
     if (this.candidate) this.drawShape(this.candidate,true);
     for (const [category,points] of Object.entries(this.prompts)) for (const [x,y] of points) {
       const scale = this.scale*this.zoom || 1;
@@ -370,19 +392,23 @@ export class AnnotationEditor {
     this.$('rotateShape').disabled=!rotate||this.locked;
     this.$('finishSettings').hidden=!finish;this.$('toolSettings').hidden=!(brush||finish);
   }
-  installEvents() {
-    const svg = this.$('overlay'), area = this.$('canvasArea');
-    this.sidebarTabs.forEach((tab,index) => {
-      const activate = next => this.setSidebarTab(next === 0 ? 'objects' : 'ai');
-      tab.onclick = () => activate(index);
+  installTabEvents(tabs, activate) {
+    tabs.forEach((tab,index) => {
+      tab.onclick = () => activate(tab.dataset.editorTab);
       tab.onkeydown = event => {
         if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
         event.preventDefault();
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : 1 - index;
-        activate(next);
-        this.sidebarTabs[next].focus();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+          : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        activate(tabs[next].dataset.editorTab);
+        tabs[next].focus();
       };
     });
+  }
+  installEvents() {
+    const svg = this.$('overlay'), area = this.$('canvasArea');
+    this.installTabEvents(this.sidebarTabs, view => this.setSidebarTab(view));
+    this.installTabEvents(this.aiToolTabs, tool => this.setSidebarTab('ai', tool));
     // Screen-space guides stay one pixel wide at every image zoom level.
     const guides = document.createElement('div');
     guides.setAttribute('aria-hidden', 'true');
@@ -553,7 +579,7 @@ export class AnnotationEditor {
   }
   removeSelected() {this.mutate(()=>{this.asset.shapes=this.asset.shapes.filter(shape=>!this.selection.has(shape.id));this.selection.clear()});}
   keyDown(event) {
-    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true],#annotationSidebarTabs'))return;
+    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true],#annotationSidebarTabs,#annotationAiToolTabs'))return;
     const key=event.key.toLowerCase();
     if(event.ctrlKey||event.metaKey) {
       if(key==='z'){event.preventDefault();this.travel(event.shiftKey?'redo':'undo');}
@@ -592,7 +618,9 @@ export class AnnotationEditor {
     this.$('acceptAI').disabled=!this.candidate||this.locked;
     this.$('discardAI').disabled=!this.candidate||this.locked;
     this.$('canvasNotice').hidden=!this.candidate;
-    this.$('canvasNotice').textContent='候選遮罩預覽 · 請在右側接受或捨棄';
+    this.$('canvasNotice').textContent=this.activeAiTool === 'segmentation'
+      ? '候選遮罩預覽 · 請在右側接受或捨棄'
+      : '候選遮罩待處理 · 請回到「AI 輔助 → 互動分割」';
   }
 }
 function areaFocus(area) {area.focus({preventScroll:true});}

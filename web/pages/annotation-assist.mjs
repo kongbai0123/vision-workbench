@@ -236,7 +236,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     layers.hidden=!candidate?.shape && !sam;
     $('annotationAssistShowOriginal').disabled=!candidate?.shape;
     $('annotationAssistShowSam').disabled=!sam;
-    const showing=panel.open && state.stage==='annotate';
+    const showing=editor.activeAiTool==='batch' && state.stage==='annotate';
     editor.setAssistPreview(
       showing && $('annotationAssistShowOriginal').checked ? candidate?.shape ?? null : null,
       showing && $('annotationAssistShowSam').checked ? sam : null,
@@ -520,13 +520,11 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
 
   function openPanel() {
     if($('propertiesSidebar').hidden)$('toggleProperties').click();
-    editor.setSidebarTab('ai');
-    panel.open=true;
+    editor.setSidebarTab('ai','batch');
     panel.scrollIntoView({block:'nearest'});
     renderFrame();
   }
 
-  panel.ontoggle=()=>{renderFrame();if(panel.open)void safe(()=>refresh());};
   $('annotationAssistScope').onchange=renderControls;
   $('annotationAssistStart').onclick=()=>safe(start);
   $('annotationAssistStop').onclick=()=>safe(stop);

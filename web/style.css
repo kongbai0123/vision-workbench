@@ -32,16 +32,11 @@
 .class-management-row.delete-objects{border-color:#9a555b;background:#3a282d}.class-management-row.delete-objects select{color:#ffc1c1;border-color:#9a555b}
 
 .canvas-editor-toolbar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   background: #1b2731;
   border-bottom: 1px solid var(--line);
-}
-.canvas-editor-toolbar .tool-strip {
-  flex: 1 1 48rem;
-  min-width: 0;
-  border-bottom: 0;
 }
 .canvas-editor-toolbar .tool {
   flex-shrink: 0;
@@ -53,6 +48,29 @@
   gap: 6px 12px;
   min-width: 0;
   padding: 6px 9px;
+}
+.annotation-box-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.annotation-box-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.annotation-box-tool kbd {
+  margin-left: 0;
+  color: var(--muted);
+}
+.annotation-box-tool.active {
+  background: #17423f;
+  border-color: #377770;
+  color: #6edbc9;
+}
+.annotation-box-tool.active kbd {
+  border-color: #377770;
+  color: inherit;
 }
 .annotation-new-class {
   display: flex;
@@ -100,14 +118,22 @@
   padding: 5px 8px;
 }
 
-.annotation-sidebar-tabs {
+.annotation-sidebar-tabs,
+.annotation-ai-tool-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   flex-shrink: 0;
   background: #15202a;
   border-bottom: 1px solid var(--line);
 }
-.annotation-sidebar-tabs button {
+.annotation-sidebar-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.annotation-ai-tool-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  background: #16212b;
+}
+.annotation-sidebar-tabs button,
+.annotation-ai-tool-tabs button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -123,21 +149,38 @@
   font-weight: 600;
   white-space: normal;
 }
-.annotation-sidebar-tabs button:hover {
+.annotation-ai-tool-tabs button {
+  min-height: 36px;
+  padding: 4px 2px;
+}
+.annotation-sidebar-tabs button:hover,
+.annotation-ai-tool-tabs button:hover {
   background: #1e2e38;
   color: var(--text);
 }
-.annotation-sidebar-tabs button[aria-selected="true"] {
+.annotation-sidebar-tabs button[aria-selected="true"],
+.annotation-ai-tool-tabs button[aria-selected="true"] {
   color: var(--accent);
   border-bottom-color: var(--accent);
   background: #1a2c31;
 }
-.annotation-sidebar-tabs button:focus-visible {
+.annotation-sidebar-tabs button:focus-visible,
+.annotation-ai-tool-tabs button:focus-visible {
   outline-offset: -3px;
 }
 .annotation-sidebar-panel {
   flex: 1;
   min-width: 0;
+  overflow-x: hidden;
+}
+.annotation-ai-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.annotation-ai-content {
+  flex: 1;
   overflow-x: hidden;
 }
 .annotation-objects-panel {

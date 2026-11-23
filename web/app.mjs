@@ -137,6 +137,11 @@ const saver = new SaveQueue((id,payload)=>api(projectPath(`/assets/${id}`),'PUT'
 const editor = new AnnotationEditor({
   onChange:()=>{saver.changed();updateAssetHeader();assistPage.renderFrame();},onNotice:toast,
   onAssetNavigation:direction=>safe(()=>navigateAsset(direction)),
+  onAiToolChange:(active,previous)=>{
+    if (active==='batch'||previous==='batch') assistPage.renderFrame();
+    if (active==='batch') void safe(()=>assistPage.refresh());
+    if (active==='prediction'&&!state.training) void safe(()=>loadTraining());
+  },
 });
 const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element,safe,toast,filteredAssets,selectAsset,switchStage,flushAllEdits,date});
 
@@ -358,7 +363,7 @@ async function openProject(id) {
     const project=await api(`/api/projects/${id}`);
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;state.reviewYoloCompatibilityLoading=false;trainingMonitor.reset();trainingParameters.reset();
     await workflowDraft.load(id);
-    state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();editor.setSidebarTab('objects');$('annotationPredictionPanel').open=false;state.reviewSelection.clear();state.acquireSelection.clear();
+    state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();editor.setSidebarTab('objects','segmentation');state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -900,9 +905,6 @@ const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentatio
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
 const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
-$('annotationPredictionPanel').ontoggle=()=>{
-  if ($('annotationPredictionPanel').open && state.stage==='annotate' && !state.training) void safe(()=>loadTraining());
-};
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);

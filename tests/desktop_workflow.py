@@ -168,17 +168,17 @@ def main():
             assert not any(shape['label']=='工件' for asset in snapshot['assets'] for shape in asset['shapes'])
             # Request an actual local segmentation through the UI and accept it.
             click("#selectAllShapes");click("#annotationAiTab")
-            js("document.querySelector('#segmentationPanel').open=true")
+            click("#annotationSegmentationTab")
+            wait("!document.querySelector('#segmentationPanel').hidden")
             fill("#aiEngine","grabcut");click("#runAI")
             wait("!document.querySelector('#acceptAI').disabled")
             assert service.store.get_asset(pid,changed_id)['shape_count']==2,"AI silently committed its candidate"
             click("#acceptAI");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==3
             assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Default class must persist after creation"
-            click("#annotationObjectsTab")
-            # Native Qt pointer events draw a rectangle on the actual SVG canvas.
+            # Native Qt pointer events draw a rectangle without leaving AI assistance.
             fill("#shapeLabel","已修正工件")
-            click("[data-tool='rectangle']")
+            click("#addBoundingBox")
             coords=json.loads(js("JSON.stringify((()=>{const r=document.querySelector('#overlay').getBoundingClientRect();return [r.left+45/640*r.width,r.top+40/480*r.height,r.left+100/640*r.width,r.top+75/480*r.height]})())"))
             start=QPoint(round(coords[0]),round(coords[1]));end=QPoint(round(coords[2]),round(coords[3]))
             target=view.focusProxy() or view
@@ -188,6 +188,9 @@ def main():
             QTest.mouseRelease(target,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
             click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==4,"Canvas rectangle gesture did not persist"
+            click("#editBoundingBox")
+            assert js("document.querySelector('#editBoundingBox').classList.contains('active') && !document.querySelector('#annotationAiPanel').hidden")
+            click("#annotationObjectsTab")
             for width,height in ((1280,720),(1920,1080)):
                 view.resize(width,height);QTest.qWait(200)
                 capture(f"annotation-{width}x{height}")
@@ -263,7 +266,8 @@ def main():
             click("[data-stage='annotate']")
             wait("document.querySelector('#annotationModel').value==='M001'")
             click("#annotationAiTab")
-            js("document.querySelector('#annotationPredictionPanel').open=true")
+            click("#annotationPredictionTab")
+            wait("!document.querySelector('#annotationPredictionPanel').hidden")
             click("#generateCurrentPrediction")
             wait("document.querySelector('#annotationPredictionList').textContent.includes('M001')",seconds=60)
             generated_candidate=service.training.list_predictions(pid)[0]
