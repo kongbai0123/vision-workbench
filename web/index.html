@@ -87,11 +87,6 @@
         <button id="addBoundingBox" type="button" class="secondary annotation-box-tool" data-tool="rectangle" aria-pressed="false">新增矩形框 <kbd>R</kbd></button>
         <button id="editBoundingBox" type="button" class="secondary annotation-box-tool active" data-tool="select" aria-pressed="true">選取／編輯 <kbd>V</kbd></button>
        </div>
-       <div class="annotation-new-class">
-        <label for="shapeLabel">新物件類別</label>
-        <select id="shapeLabel"><option value="">尚未選擇</option></select>
-        <button id="manageClasses" type="button" class="text-button">管理類別</button>
-       </div>
        <div id="toolSettings" hidden>
         <div id="brushSettings" hidden><label for="brushRadius">筆刷半徑 <span>px</span></label><input id="brushRadius" type="number" min="1" max="200" value="12"></div>
         <div class="inline" id="finishSettings" hidden><button id="finishShape" class="secondary">完成頂點 ↵</button><button id="cancelDrawing" class="secondary">取消 Esc</button></div>
@@ -102,6 +97,13 @@
      <div class="canvas-footer"><div class="inline"><button id="previousAsset" class="icon-button" title="Previous / A / ←">‹</button><span id="assetPosition">0 / 0</span><button id="nextAsset" class="icon-button" title="Next / D / →">›</button><span id="imageDimensions" class="muted">— × — px</span></div><div class="inline"><button id="zoomOut" class="icon-button" title="Zoom out">−</button><span id="zoomLabel">100%</span><button id="zoomIn" class="icon-button" title="Zoom in">＋</button><button id="fitImage" class="text-button">Fit</button></div></div>
     </div>
     <aside id="propertiesSidebar" class="properties-sidebar" aria-label="標註側欄">
+     <div class="annotation-new-class">
+      <div class="annotation-class-heading">
+       <label for="shapeLabel">新物件類別</label>
+       <button id="manageClasses" type="button" class="text-button">管理類別</button>
+      </div>
+      <select id="shapeLabel"><option value="">尚未選擇</option></select>
+     </div>
      <div id="annotationSidebarTabs" class="annotation-sidebar-tabs" role="tablist" aria-label="標註側欄">
       <button id="annotationObjectsTab" type="button" role="tab" data-editor-tab="objects" aria-controls="annotationObjectsPanel" aria-selected="true" tabindex="0">物件 <span id="shapeCount" class="badge">0 個</span></button>
       <button id="annotationAiTab" type="button" role="tab" data-editor-tab="ai" aria-controls="annotationAiPanel" aria-selected="false" tabindex="-1">AI 輔助</button>

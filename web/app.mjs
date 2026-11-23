@@ -887,7 +887,7 @@ const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, que
 const {renderExport, openReleaseDrawer, closeReleaseDrawer, renderBatchTable, autoSplitProject, resetValidation, renderValidation, renderValidationView, validateProject, exportProject}=createExportPage({$,state,formatDescriptions,element,formatNames,date,button,safe,api,number,flushAllEdits,projectPath,toast,readable,pollJob,refreshProject,openSplitManager:(...args)=>openSplitManager(...args)});
 async function runAI() {
   if(!state.asset)throw Error('請先選取一張圖片。');
-  if(!editor.label())throw Error('請先新增並選擇 AI 候選要使用的物件類別。');
+  if(!editor.label())throw Error('請先在右側欄選擇新物件類別，再產生候選遮罩。');
   await saver.flush();if(editor.draft.length||editor.gesture)throw Error('請先完成目前的繪圖操作。');
   if(editor.candidate)throw Error('請先接受或捨棄現有候選遮罩。');
   const assetId=state.asset.id,revision=state.asset.revision;

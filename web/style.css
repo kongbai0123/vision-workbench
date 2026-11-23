@@ -72,24 +72,11 @@
   border-color: #377770;
   color: inherit;
 }
-.annotation-new-class {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
 .annotation-creation-tools label {
   margin: 0;
   white-space: nowrap;
 }
-.annotation-new-class select {
-  flex: 1 1 8rem;
-  width: 8rem;
-  max-width: 11rem;
-}
-.annotation-creation-tools input,
-.annotation-creation-tools select {
+.annotation-creation-tools input {
   min-height: 30px;
   padding: 5px 7px;
   font-size: 12px;
@@ -116,6 +103,29 @@
 .annotation-creation-tools .secondary {
   min-height: 30px;
   padding: 5px 8px;
+}
+
+.annotation-new-class {
+  display: grid;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  background: #15202a;
+  border-bottom: 1px solid var(--line);
+}
+.annotation-class-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.annotation-class-heading label {
+  margin: 0;
+}
+.annotation-new-class select {
+  min-height: 32px;
+  padding: 5px 7px;
+  font-size: 12px;
 }
 
 .annotation-sidebar-tabs,

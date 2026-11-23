@@ -143,7 +143,7 @@ export class AnnotationEditor {
     }
     const hints = {
       select:'拖曳物件移動 · Shift 多選 · 拖曳控制點調整 · 雙擊邊線插入頂點 · Alt 點頂點刪除',
-      rectangle:'拖曳建立矩形 · 使用工具列的新物件類別 · Esc 取消操作',
+      rectangle:'拖曳建立矩形 · 使用右側欄的新物件類別 · Esc 取消操作',
       obb:'拖曳建立旋轉框 · 選取後可使用右側角度旋轉',
       polygon:'逐點建立多邊形 · Enter 或雙擊完成 · Backspace 撤回頂點 · Esc 取消',
       linestrip:'逐點建立折線 · Enter 或雙擊完成 · Backspace 撤回頂點 · Esc 取消',
@@ -482,7 +482,7 @@ export class AnnotationEditor {
     event.preventDefault();
     if(event.detail>1&&['polygon','linestrip'].includes(this.tool))return;
     const creates=['rectangle','obb','polygon','linestrip','point'].includes(this.tool)||(this.tool==='mask'&&!this.selected().some(shape=>kind(shape)==='mask'));
-    if(creates&&!this.label()){this.notice('請先在工具列選擇新物件類別。沒有類別時，可使用「管理類別」新增。',true);return;}
+    if(creates&&!this.label()){this.notice('請先在右側欄選擇新物件類別。沒有類別時，可使用「管理類別」新增。',true);return;}
     const point=this.point(event), shape=this.asset.shapes.find(s=>s.id===event.target.dataset.shape);
     if(this.tool==='pan'||event.altKey&&event.target.dataset.handle===undefined&&event.shiftKey) {
       this.gesture={kind:'pan',start:{x:event.clientX,y:event.clientY},pan:{...this.pan}};

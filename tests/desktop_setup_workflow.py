@@ -67,12 +67,27 @@ def check_object_selection(view, js, wait, click, fill):
                 rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight;
         })"""), 'Bounding Box tools should remain in the visible canvas toolbar'
 
+    def assert_shared_class_controls():
+        assert js("""(() => {
+            const sidebar = document.querySelector('#propertiesSidebar');
+            const tabs = document.querySelector('#annotationSidebarTabs');
+            const controls = ['#shapeLabel', '#manageClasses'].map(selector => document.querySelector(selector));
+            const header = [...sidebar.children].find(child => controls.every(control => child.contains(control)));
+            return header && (header.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+                controls.every(control => {
+                    const rect = control.getBoundingClientRect();
+                    return !control.closest('[role=tabpanel]') && rect.width > 0 && rect.height > 0 &&
+                        rect.top >= 0 && rect.bottom <= innerHeight && rect.left >= 0 && rect.right <= innerWidth;
+                });
+        })()"""), 'Class controls should remain in the shared sidebar header above the tabs'
+
     reset_scroll = "document.querySelector('#shapeList').scrollTop = 0; document.querySelector('#annotationObjectsPanel').scrollTop = 0"
     view.resize(1440, 720)
     wait("document.querySelectorAll('#shapeList .shape-row').length === 20")
     assert js("document.querySelector('#annotationObjectsTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationObjectsPanel').hidden")
     assert js("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'false' && document.querySelector('#annotationAiPanel').hidden")
     assert_box_tools()
+    assert_shared_class_controls()
     wait("[...document.querySelectorAll('#shapeList, #annotationObjectsPanel')].some(panel => panel.scrollHeight > panel.clientHeight)")
     js(reset_scroll)
     fill('#shapeLabel', 'spare')
@@ -112,12 +127,15 @@ def check_object_selection(view, js, wait, click, fill):
         click(f'#annotationAiToolTabs #{tab}')
         assert js(f"[...document.querySelectorAll('#annotationAiContent > [role=tabpanel]')].filter(tab => !tab.hidden).map(tab => tab.id).join() === '{panel}'")
         assert_box_tools()
+        assert_shared_class_controls()
+        assert js("document.querySelector('#shapeLabel').value === 'spare'")
     click('#addBoundingBox')
     assert js("document.querySelector('#addBoundingBox').classList.contains('active')")
     click('#editBoundingBox')
     assert js("document.querySelector('#editBoundingBox').classList.contains('active')")
     click('#annotationObjectsTab')
     wait(f"document.querySelector({json.dumps(previous)}).getAttribute('aria-pressed') === 'true' && {row_visible(previous)}")
+    assert_shared_class_controls()
     assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
     assert not js('window.workbenchState().dirty')
     view.resize(1440, 1000)
