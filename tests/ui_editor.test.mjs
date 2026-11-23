@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {SaveQueue} from '../web/save-queue.mjs';
 import {maskMoved} from '../web/editor.mjs';
-import {encodeMask,decodeMask,validateShape,rotated,history} from '../web/shapes.mjs';
+import {encodeMask,decodeMask,validateShape,rotated,resizeRectangle,history} from '../web/shapes.mjs';
 
 test('save queue serializes revisions and keeps edits made during an active save',async()=>{
   const calls=[],responses=[],states=[];
@@ -35,6 +35,40 @@ test('rotated boxes keep IDs and reject out-of-image geometry',()=>{
   const rectangle={id:'stable',type:'rectangle',label:'part',x:30,y:30,width:20,height:10,metadata:{source:'fixture'}};
   const result=rotated(rectangle,30,100,100);assert.equal(result.id,'stable');assert.equal(result.type,'obb');assert.equal(result.points.length,4);assert.deepEqual(result.metadata,rectangle.metadata);
   assert.throws(()=>rotated({...rectangle,x:0,y:0},45,100,100),/無效/);
+});
+
+test('rectangle edge resizing keeps the opposite edge, unrelated axis, and metadata', () => {
+  const rectangle = Object.freeze({id: 'stable', label: 'part', x: 20, y: 30, width: 15, height: 25,
+    hidden: true, metadata: {source: 'fixture'}});
+  const cases = [
+    ['n', {x: 80, y: -5}, {y: 25, height: 30}],
+    ['e', {x: 5, y: -80}, {width: 20}],
+    ['s', {x: -80, y: 5}, {height: 30}],
+    ['w', {x: -5, y: 80}, {x: 15, width: 20}],
+  ];
+  for (const [direction, delta, changes] of cases) {
+    assert.deepEqual(resizeRectangle(rectangle, direction, delta, 100, 80), {...rectangle, ...changes}, direction);
+  }
+});
+
+test('rectangle corners stay inside the image and cross the opposite corner with positive extents', () => {
+  const rectangle = {type: 'rectangle', label: 'part', x: 20, y: 30, width: 15, height: 25};
+  assert.deepEqual(resizeRectangle(rectangle, 'ne', {x: 100, y: -100}, 100, 80),
+    {...rectangle, y: 0, width: 80, height: 55});
+  assert.deepEqual(resizeRectangle(rectangle, 'sw', {x: -100, y: 100}, 100, 80),
+    {...rectangle, x: 0, width: 35, height: 50});
+  assert.deepEqual(resizeRectangle(rectangle, 'se', {x: 4, y: 6}, 100, 80),
+    {...rectangle, width: 19, height: 31});
+  assert.deepEqual(resizeRectangle(rectangle, 'nw', {x: 40, y: 40}, 100, 80),
+    {...rectangle, x: 35, y: 55, width: 25, height: 15});
+  assert.throws(() => resizeRectangle(rectangle, 'e', {x: -15, y: 0}, 100, 80), /尺寸無效/);
+});
+
+test('zero and clamped drag preserve fractional geometry exactly', () => {
+  const rectangle = {type: 'rectangle', label: 'part', x: 0, y: 0.1, width: 0.2, height: 0.2};
+  assert.deepEqual(resizeRectangle(rectangle, 'se', {x: 0, y: 0}, 100, 80), rectangle);
+  assert.deepEqual(resizeRectangle(rectangle, 'w', {x: -10, y: 40}, 100, 80), rectangle);
+  assert.equal(resizeRectangle(rectangle, 'e', {x: 5, y: 40}, 100, 80).height, rectangle.height);
 });
 
 test('mask translation stops at the image boundary without discarding foreground pixels',()=>{

@@ -1,4 +1,4 @@
-import {kind, bounds, vector, validateShape, decodeMask, encodeMask, brush, moved, rotated, resizeOBB, history} from './shapes.mjs';
+import {kind, bounds, vector, validateShape, decodeMask, encodeMask, brush, moved, rotated, resizeRectangle, resizeOBB, history} from './shapes.mjs';
 import {nearestVisibleScrollTop} from './scroll-position.mjs';
 
 export const shapeNames = {rectangle:'矩形', obb:'旋轉框', polygon:'多邊形', linestrip:'折線', point:'關鍵點', mask:'遮罩'};
@@ -28,6 +28,10 @@ function svgElement(name, attrs = {}) {
   for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
   return element;
 }
+const rectangleResizeCursors = {
+  n:'ns-resize', ne:'nesw-resize', e:'ew-resize', se:'nwse-resize',
+  s:'ns-resize', sw:'nesw-resize', w:'ew-resize', nw:'nwse-resize',
+};
 function closestEdge(points, point, closed) {
   let result = {distance: Infinity, index: 0};
   for (let i = 0; i < points.length - (closed ? 0 : 1); i++) {
@@ -142,7 +146,7 @@ export class AnnotationEditor {
       if (button.hasAttribute('aria-pressed')) button.setAttribute('aria-pressed', String(selected));
     }
     const hints = {
-      select:'拖曳物件移動 · Shift 多選 · 拖曳控制點調整 · 雙擊邊線插入頂點 · Alt 點頂點刪除',
+      select:'拖曳框內移動 · 靠近矩形邊或角可拖曳調整 · Shift 多選 · 雙擊多邊形邊線插入頂點',
       rectangle:'拖曳建立矩形 · 使用右側欄的新物件類別 · Esc 取消操作',
       obb:'拖曳建立旋轉框 · 選取後可使用右側角度旋轉',
       polygon:'逐點建立多邊形 · Enter 或雙擊完成 · Backspace 撤回頂點 · Esc 取消',
@@ -156,8 +160,14 @@ export class AnnotationEditor {
     };
     const hint = document.getElementById('toolHint');
     if (hint) hint.textContent = hints[tool] || '';
-    this.$('overlay').style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
+    this.updateCanvasCursor();
     this.updateToolPanels();
+    this.renderCanvas();
+  }
+  updateCanvasCursor() {
+    this.$('overlay').style.cursor = this.gesture?.kind === 'rectangle-resize'
+      ? rectangleResizeCursors[this.gesture.direction]
+      : this.tool === 'pan' ? 'grab' : this.tool === 'select' ? 'default' : 'crosshair';
   }
   label() { return this.$('shapeLabel').value.trim(); }
   selected() { return this.asset?.shapes.filter(shape => this.selection.has(shape.id)) || []; }
@@ -198,10 +208,11 @@ export class AnnotationEditor {
     this.transform();
     this.notice(`已定位至 X=${Math.round(x)}、Y=${Math.round(y)}；可直接使用遮罩筆刷或橡皮擦。`);
   }
-  point(event) {
+  point(event, clamp = true) {
     const rect = this.$('overlay').getBoundingClientRect();
-    return {x: Math.max(0, Math.min(this.asset.width, (event.clientX - rect.left) / rect.width * this.asset.width)),
-      y: Math.max(0, Math.min(this.asset.height, (event.clientY - rect.top) / rect.height * this.asset.height))};
+    const x = (event.clientX - rect.left) / rect.width * this.asset.width;
+    const y = (event.clientY - rect.top) / rect.height * this.asset.height;
+    return clamp ? {x:Math.max(0,Math.min(this.asset.width,x)), y:Math.max(0,Math.min(this.asset.height,y))} : {x,y};
   }
   commit(before) {
     if (JSON.stringify(before) === JSON.stringify(this.asset.shapes)) { this.render(); return; }
@@ -263,7 +274,9 @@ export class AnnotationEditor {
   }
   cancel() {
     if (this.gesture?.before && this.asset) this.asset.shapes = this.gesture.before;
-    this.gesture = null; this.draft = []; this.render();
+    this.gesture = null; this.draft = [];
+    this.updateCanvasCursor();
+    this.render();
   }
   maskURL(shape, candidate = false) {
     if (this.maskCache.has(shape)) return this.maskCache.get(shape);
@@ -300,15 +313,55 @@ export class AnnotationEditor {
       const label = svgElement('text',{x:shape.x,y:Math.max(14/scale,shape.y-5/scale),fill:color,'font-size':12/scale,'font-family':'Segoe UI, Microsoft JhengHei, sans-serif','font-weight':600,'paint-order':'stroke','stroke':'#101820','stroke-width':2/scale,'pointer-events':'none'});
       label.textContent = shape.label; this.$('overlay').append(label);
     }
-    if (selected && !proposal && t !== 'mask') {
-      const points = shape.points || [[shape.x,shape.y],[shape.x+shape.width,shape.y],[shape.x+shape.width,shape.y+shape.height],[shape.x,shape.y+shape.height]];
-      points.forEach((point,index) => this.$('overlay').append(svgElement('rect',{x:point[0]-3.5/scale,y:point[1]-3.5/scale,width:7/scale,height:7/scale,fill:'#e5fff5',stroke:'#175753','stroke-width':1/scale,'data-handle':index,'data-owner':shape.id,style:'cursor:crosshair'})));
+    if (selected && !proposal && t !== 'mask' && t !== 'rectangle') {
+      shape.points.forEach((point,index) => this.$('overlay').append(svgElement('rect',{x:point[0]-3.5/scale,y:point[1]-3.5/scale,width:7/scale,height:7/scale,fill:'#e5fff5',stroke:'#175753','stroke-width':1/scale,'data-handle':index,'data-owner':shape.id,style:'cursor:crosshair'})));
     }
+  }
+  drawRectangleResizeControls(shape, svg) {
+    const {x, y, width, height} = shape;
+    const right = x + width, bottom = y + height;
+    const scale = this.scale * this.zoom || 1;
+    // Keep the perimeter easy to grab at different zoom levels while leaving room to move a small box.
+    const padX = Math.min(8 / scale, width / 4), padY = Math.min(8 / scale, height / 4);
+    const cornerWidth = width / 4, cornerHeight = height / 4;
+    const group = svgElement('g', {'aria-hidden':'true'});
+    const addZone = (direction, x, y, width, height) => {
+      group.append(svgElement('rect', {x,y,width,height,fill:'transparent','pointer-events':'all',
+        'data-rect-resize':direction,'data-resize-owner':shape.id,style:`cursor:${rectangleResizeCursors[direction]}`}));
+    };
+    for (const [edge, top] of [['n', y-padY], ['s', bottom-padY]]) {
+      addZone(`${edge}w`, x-padX, top, cornerWidth+padX, 2*padY);
+      addZone(edge, x+cornerWidth, top, width/2, 2*padY);
+      addZone(`${edge}e`, right-cornerWidth, top, cornerWidth+padX, 2*padY);
+    }
+    for (const [edge, left] of [['w', x-padX], ['e', right-padX]]) {
+      addZone(`n${edge}`, left, y-padY, 2*padX, cornerHeight+padY);
+      addZone(edge, left, y+cornerHeight, 2*padX, height/2);
+      addZone(`s${edge}`, left, bottom-cornerHeight, 2*padX, cornerHeight+padY);
+    }
+    const size = Math.min(7 / scale, width / 3, height / 3);
+    const points = [[x,y],[right,y],[right,bottom],[x,bottom],
+      [x+width/2,y],[right,y+height/2],[x+width/2,bottom],[x,y+height/2]];
+    for (const [index, [cx, cy]] of points.entries()) {
+      const marker = svgElement('rect', {x:cx-size/2,y:cy-size/2,width:size,height:size,
+        fill:'#e5fff5',stroke:'#175753','stroke-width':Math.min(1/scale,size/4),'pointer-events':'none'});
+      if (index < 4) {
+        marker.setAttribute('data-handle',index);
+        marker.setAttribute('data-owner',shape.id);
+      }
+      group.append(marker);
+    }
+    svg.append(group);
   }
   renderCanvas() {
     const svg = this.$('overlay'); svg.replaceChildren();
     if (!this.asset) return;
     for (const shape of this.asset.shapes) if (!shape.hidden && !(this.gesture?.kind==='brush' && this.gesture.target===shape.id)) this.drawShape(shape);
+    if (this.tool === 'select') {
+      for (const shape of this.selected()) {
+        if (!shape.hidden && kind(shape) === 'rectangle') this.drawRectangleResizeControls(shape, svg);
+      }
+    }
     if (this.gesture?.preview) this.drawShape(this.gesture.preview,true);
     if (this.draft.length) {
       const points = [...this.draft, ...(this.hoverPoint?[[this.hoverPoint.x,this.hoverPoint.y]]:[])];
@@ -483,16 +536,23 @@ export class AnnotationEditor {
     if(event.detail>1&&['polygon','linestrip'].includes(this.tool))return;
     const creates=['rectangle','obb','polygon','linestrip','point'].includes(this.tool)||(this.tool==='mask'&&!this.selected().some(shape=>kind(shape)==='mask'));
     if(creates&&!this.label()){this.notice('請先在右側欄選擇新物件類別。沒有類別時，可使用「管理類別」新增。',true);return;}
-    const point=this.point(event), shape=this.asset.shapes.find(s=>s.id===event.target.dataset.shape);
-    if(this.tool==='pan'||event.altKey&&event.target.dataset.handle===undefined&&event.shiftKey) {
+    const target = event.target.dataset;
+    const point=this.point(event), shape=this.asset.shapes.find(s=>s.id===target.shape);
+    if(this.tool==='pan'||event.altKey&&target.handle===undefined&&!target.rectResize&&event.shiftKey) {
       this.gesture={kind:'pan',start:{x:event.clientX,y:event.clientY},pan:{...this.pan}};
     } else if(this.tool.startsWith('ai-')) {
       const key=this.tool==='ai-positive'?'positive':'negative';
       if(this.prompts.positive.length+this.prompts.negative.length>=64){this.notice('提示點最多 64 個。');return;}
       this.prompts[key].push([point.x,point.y]);this.renderCanvas();return;
     } else if(this.tool==='select') {
-      const owner=this.asset.shapes.find(s=>s.id===event.target.dataset.owner),handle=Number(event.target.dataset.handle);
-      if(owner&&Number.isInteger(handle)) {
+      const owner=this.asset.shapes.find(s=>s.id===(target.resizeOwner||target.owner)),handle=Number(target.handle);
+      if (owner && target.rectResize) {
+        if (event.shiftKey || event.ctrlKey) { this.choose(owner.id, true); return; }
+        this.revealShapeInList(owner.id);
+        this.gesture={kind:'rectangle-resize', before:structuredClone(this.asset.shapes), owner:owner.id,
+          direction:target.rectResize, start:this.point(event,false)};
+        this.updateCanvasCursor();
+      } else if(owner&&Number.isInteger(handle)) {
         if(event.altKey&&['polygon','linestrip'].includes(kind(owner))) {
           const min=kind(owner)==='polygon'?3:2;
           if(owner.points.length<=min){this.notice('刪除後頂點不足。');return;}
@@ -524,8 +584,8 @@ export class AnnotationEditor {
   }
   pointerMove(event) {
     if(this.locked||!this.asset)return;
-    const point=this.point(event);this.hoverPoint=point;
     const gesture=this.gesture;
+    const point=this.point(event,gesture?.kind!=='rectangle-resize');this.hoverPoint=point;
     if(!gesture){if(this.draft.length)this.renderCanvas();return;}
     if(gesture.kind==='pan') {
       this.pan={x:gesture.pan.x+event.clientX-gesture.start.x,y:gesture.pan.y+event.clientY-gesture.start.y};this.transform();return;
@@ -536,19 +596,28 @@ export class AnnotationEditor {
     } else if(gesture.kind==='move') {
       const dx=point.x-gesture.start.x,dy=point.y-gesture.start.y;
       this.asset.shapes=gesture.before.map(shape=>this.selection.has(shape.id)?(kind(shape)==='mask'?maskMoved(shape,dx,dy,this.asset.width,this.asset.height):moved(shape,dx,dy,this.asset.width,this.asset.height)):structuredClone(shape));
+    } else if (gesture.kind==='rectangle-resize') {
+      this.resizeSelectedRectangle(gesture, point);
     } else if(gesture.kind==='handle') {
       const original=gesture.before.find(s=>s.id===gesture.owner),shape=structuredClone(original),i=gesture.handle;
       try {
-        if(kind(shape)==='rectangle') {
-          const corners=[[shape.x,shape.y],[shape.x+shape.width,shape.y],[shape.x+shape.width,shape.y+shape.height],[shape.x,shape.y+shape.height]],opposite=corners[(i+2)%4];
-          Object.assign(shape,{x:Math.min(point.x,opposite[0]),y:Math.min(point.y,opposite[1]),width:Math.abs(point.x-opposite[0]),height:Math.abs(point.y-opposite[1])});
-        } else if(kind(shape)==='obb') Object.assign(shape,resizeOBB(shape,i,point,this.asset.width,this.asset.height));
+        if(kind(shape)==='obb') Object.assign(shape,resizeOBB(shape,i,point,this.asset.width,this.asset.height));
         else {shape.points[i]=[point.x,point.y];Object.assign(shape,bounds(shape.points));}
         validateShape(shape,this.asset.width,this.asset.height);
         this.asset.shapes=this.asset.shapes.map(s=>s.id===shape.id?shape:s);
       } catch {}
     } else if(gesture.kind==='brush')this.paint(point);
     this.renderCanvas();
+  }
+  resizeSelectedRectangle(gesture, point) {
+    const original = gesture.before.find(shape => shape.id === gesture.owner);
+    const delta = {x:point.x-gesture.start.x, y:point.y-gesture.start.y};
+    try {
+      const updated = resizeRectangle(original, gesture.direction, delta, this.asset.width, this.asset.height);
+      this.asset.shapes = this.asset.shapes.map(shape => shape.id === updated.id ? updated : shape);
+    } catch {
+      // When the dragged side reaches its opposite side exactly, keep the last valid box.
+    }
   }
   paint(point) {
     const gesture=this.gesture,width=this.asset.width,height=this.asset.height;
@@ -562,6 +631,10 @@ export class AnnotationEditor {
     const gesture=this.gesture;if(!gesture||!this.asset)return;
     this.gesture=null;
     try{this.$('overlay').releasePointerCapture(event.pointerId)}catch{}
+    if (gesture.kind==='rectangle-resize') {
+      this.resizeSelectedRectangle(gesture, this.point(event,false));
+      this.updateCanvasCursor();
+    }
     if(gesture.kind==='pan')return;
     if(gesture.kind==='draw') {
       if(!gesture.preview||gesture.preview.width*this.scale*this.zoom<2||gesture.preview.height*this.scale*this.zoom<2){this.renderCanvas();return;}

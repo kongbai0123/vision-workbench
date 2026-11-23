@@ -144,7 +144,73 @@ def check_object_selection(view, js, wait, click):
     assert_shared_class_controls()
     assert js(f"document.querySelector('#selectedShapeLabel').value === 'part' && {spare_selected}")
     assert not js('window.workbenchState().dirty')
-    view.resize(1440, 1000)
+
+
+def check_rectangle_resize(view, js, wait, click, service, project_id):
+    shape_id = 'object-18'
+    selector = f'#overlay rect[data-shape="{shape_id}"]'
+    asset_id = js('window.workbenchState().assetId')
+    original_shapes = service.store.get_asset(project_id, asset_id)['shapes']
+
+    def edges():
+        return json.loads(js(f"""JSON.stringify((() => {{
+            const {{x, y, width, height}} = document.querySelector({json.dumps(selector)}).getBBox();
+            return [x, y, x + width, y + height];
+        }})())"""))
+
+    def drag(direction, fraction, offset, movement, moving_edges, cursors):
+        before = edges()
+        x, y, width, height = json.loads(js(f"""JSON.stringify((() => {{
+            const box = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
+            return [box.left, box.top, box.width, box.height];
+        }})())"""))
+        start = QPoint(round(x + width * fraction[0] + offset[0]), round(y + height * fraction[1] + offset[1]))
+        end = start + QPoint(*movement)
+        target = view.focusProxy() or view
+        native_start = target.mapFrom(view, start)
+        QTest.mouseMove(target, native_start)
+        hit = json.loads(js(f"""JSON.stringify((() => {{
+            const node = document.elementFromPoint({start.x()}, {start.y()});
+            const region = node.closest('[data-rect-resize]');
+            return [region?.dataset.rectResize, region?.dataset.resizeOwner, getComputedStyle(node).cursor,
+                    node.hasAttribute('data-handle')];
+        }})())"""))
+        assert hit[:2] == [direction, shape_id] and hit[2] in cursors and not hit[3], (direction, hit)
+
+        button, modifier = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+        QTest.mousePress(target, button, modifier, native_start)
+        QTest.mouseMove(target, target.mapFrom(view, end), 60)
+        QTest.mouseRelease(target, button, modifier, target.mapFrom(view, end))
+        after = edges()
+        for index, (old_edge, new_edge) in enumerate(zip(before, after)):
+            sign = moving_edges.get(index)
+            if sign:
+                assert (new_edge - old_edge) * sign > 5, (direction, index, before, after)
+            else:
+                assert abs(new_edge - old_edge) < 0.001, (direction, index, before, after)
+
+    wait(f"new Set([...document.querySelectorAll('#overlay [data-resize-owner={shape_id}]')].map(node => node.dataset.rectResize)).size === 8")
+    drag('n', (0.5, 0), (0, -3), (7, -18), {1: -1}, {'ns-resize', 'n-resize'})
+    drag('e', (1, 0.5), (3, 0), (18, -7), {2: 1}, {'ew-resize', 'e-resize'})
+    drag('s', (0.5, 1), (0, 3), (-7, 18), {3: 1}, {'ns-resize', 's-resize'})
+    drag('w', (0, 0.5), (-3, 0), (-18, 7), {0: -1}, {'ew-resize', 'w-resize'})
+    before_corner = edges()
+    # Start on the top edge away from the visible square corner handle.
+    drag('nw', (0.18, 0), (0, -3), (-16, -16), {0: -1, 1: -1}, {'nwse-resize', 'nw-resize'})
+    after_corner = edges()
+
+    click('#undo')
+    assert edges() == before_corner
+    click('#redo')
+    assert edges() == after_corner
+    wait('!window.workbenchState().dirty && !window.workbenchState().saving')
+    saved_shapes = service.store.get_asset(project_id, asset_id)['shapes']
+    assert [shape for shape in saved_shapes if shape['id'] != shape_id] == [shape for shape in original_shapes if shape['id'] != shape_id]
+    saved = next(shape for shape in saved_shapes if shape['id'] == shape_id)
+    left, top, right, bottom = after_corner
+    assert saved['type'] == 'rectangle' and saved['label'] == 'part'
+    assert all(abs(saved[key] - expected) < 0.001 for key, expected in
+               {'x': left, 'y': top, 'width': right - left, 'height': bottom - top}.items())
 
 
 def seed_review_batch(service, project_id, image_path):
@@ -266,6 +332,9 @@ def main():
             assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').read_bytes()==old
             click('#home');open_project('Setup B');check_object_selection(view, js, wait, click)
             print('OBJECT_SELECTION_OK: selection and labels persist, with Bounding Box tools available across all tabs.', flush=True)
+            check_rectangle_resize(view, js, wait, click, service, other)
+            print('RECTANGLE_RESIZE_OK: four edges and a near-corner resize preserve anchors and undo/redo.', flush=True)
+            view.resize(1440, 1000)
             click('[data-stage=review]')
             wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
             click('#annotationAssistReviewLink')

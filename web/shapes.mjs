@@ -29,6 +29,31 @@ export function brush(data,w,h,a,b,r,erase=false){
 }
 export function moved(s,dx,dy,w,h){if(kind(s)==='mask')return s;dx=Math.max(-s.x,Math.min(dx,w-s.x-s.width));dy=Math.max(-s.y,Math.min(dy,h-s.y-s.height));return s.points?{...s,...vector(kind(s),s.points.map(([x,y])=>[x+dx,y+dy]),s.label)}:{...s,x:s.x+dx,y:s.y+dy};}
 export function rotated(s,degrees,w,h){const p=s.points||[[s.x,s.y],[s.x+s.width,s.y],[s.x+s.width,s.y+s.height],[s.x,s.y+s.height]];const cx=p.reduce((n,v)=>n+v[0],0)/p.length,cy=p.reduce((n,v)=>n+v[1],0)/p.length,a=degrees*Math.PI/180;return validateShape({...s,...vector('obb',p.map(([x,y])=>[cx+(x-cx)*Math.cos(a)-(y-cy)*Math.sin(a),cy+(x-cx)*Math.sin(a)+(y-cy)*Math.cos(a)]),s.label)},w,h);}
+export function resizeRectangle(shape, direction, delta, width, height) {
+  const next = {...shape};
+  const west = direction.includes('w'), north = direction.includes('n');
+  if (delta.x !== 0 && (west || direction.includes('e'))) {
+    const right = shape.x + shape.width;
+    const moving = west ? shape.x : right;
+    const fixed = west ? right : shape.x;
+    const dragged = Math.max(0, Math.min(width, moving + delta.x));
+    if (dragged !== moving) {
+      next.x = Math.min(fixed, dragged);
+      next.width = Math.abs(fixed - dragged);
+    }
+  }
+  if (delta.y !== 0 && (north || direction.includes('s'))) {
+    const bottom = shape.y + shape.height;
+    const moving = north ? shape.y : bottom;
+    const fixed = north ? bottom : shape.y;
+    const dragged = Math.max(0, Math.min(height, moving + delta.y));
+    if (dragged !== moving) {
+      next.y = Math.min(fixed, dragged);
+      next.height = Math.abs(fixed - dragged);
+    }
+  }
+  return validateShape(next, width, height);
+}
 export function resizeOBB(s,index,p,w,h){const pts=s.points,o=pts[(index+2)%4],a=pts[(index+1)%4],b=pts[(index+3)%4],unit=q=>{const d=Math.hypot(q[0]-o[0],q[1]-o[1]);return [(q[0]-o[0])/d,(q[1]-o[1])/d]};const u=unit(a),v=unit(b),dx=p.x-o[0],dy=p.y-o[1],du=Math.max(2,dx*u[0]+dy*u[1]),dv=Math.max(2,dx*v[0]+dy*v[1]),next=structuredClone(pts);next[(index+1)%4]=[o[0]+du*u[0],o[1]+du*u[1]];next[(index+3)%4]=[o[0]+dv*v[0],o[1]+dv*v[1]];next[index]=[o[0]+du*u[0]+dv*v[0],o[1]+du*u[1]+dv*v[1]];try{return validateShape({...s,...vector('obb',next,s.label)},w,h)}catch{return s;}}
 export function shapeKey(s){return JSON.stringify([kind(s),s.label,s.points||null,s.counts||null,s.x,s.y,s.width,s.height]);}
 export function history(limit=40){let undo=[],redo=[];const record=v=>({value:structuredClone(v),size:JSON.stringify(v).length*2});function trim(){while(undo.length>limit||undo.reduce((n,r)=>n+r.size,0)+redo.reduce((n,r)=>n+r.size,0)>64*1024*1024){if(undo.length)undo.shift();else if(redo.length)redo.shift();else break;}}return {push(v){undo.push(record(v));redo=[];trim()},undo(v){if(!undo.length)return null;redo.push(record(v));const value=undo.pop().value;trim();return value},redo(v){if(!redo.length)return null;undo.push(record(v));const value=redo.pop().value;trim();return value},clear(){undo=[];redo=[]},get canUndo(){return !!undo.length},get canRedo(){return !!redo.length}};}
