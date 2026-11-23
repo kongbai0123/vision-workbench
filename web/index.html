@@ -92,16 +92,30 @@
       <div class="annotation-assist-config">
        <label for="annotationAssistScope">處理影像</label>
        <select id="annotationAssistScope"><option value="current">目前影像</option><option value="visible">左側清單符合篩選的影像</option></select>
-       <details class="annotation-assist-class-settings" open><summary>類別與提示詞 <span id="annotationAssistClassCount"></span></summary><div id="annotationAssistClasses"></div></details>
+       <details id="annotationAssistClassSetup" class="annotation-assist-class-settings" open><summary>類別與提示詞 <span id="annotationAssistClassCount"></span></summary><div id="annotationAssistClasses"></div></details>
+       <div class="annotation-assist-checks">
+        <label class="check-label"><input id="annotationAssistEnableSam" type="checkbox" checked> SAM 2.1 框界檢查</label>
+        <label class="check-label"><input id="annotationAssistEnableGemma" type="checkbox"> Gemma 4 觀察覆核</label>
+       </div>
        <div class="inline"><button id="annotationAssistStart" class="primary full">開始批量找框</button><button id="annotationAssistStop" class="secondary" hidden>停止</button></div>
        <div id="annotationAssistStatus" class="muted" role="status">尚無執行紀錄。</div><progress id="annotationAssistProgress" max="100" hidden aria-label="批量找框進度"></progress>
       </div>
       <div id="annotationAssistResult" class="annotation-assist-results" hidden>
        <label for="annotationAssistRuns">批次結果</label><select id="annotationAssistRuns"></select>
        <div id="annotationAssistSummary" class="muted"></div>
+       <div id="annotationAssistGemmaHealth" class="annotation-assist-models" hidden></div>
        <div id="annotationAssistExceptions" class="annotation-assist-exceptions" role="status"></div>
-       <div id="annotationAssistCandidates" class="annotation-assist-candidates" aria-label="目前影像的候選框"></div>
+       <div id="annotationAssistLayers" class="annotation-assist-checks" hidden>
+        <label class="check-label"><input id="annotationAssistShowOriginal" type="checkbox" checked><span class="annotation-assist-swatch original" aria-hidden="true"></span>MM 原框</label>
+        <label class="check-label"><input id="annotationAssistShowSam" type="checkbox" checked><span class="annotation-assist-swatch sam" aria-hidden="true"></span>SAM 外接框</label>
+       </div>
        <div id="annotationAssistEvidence" class="muted annotation-assist-evidence"></div>
+       <div id="annotationAssistCandidateModels" class="annotation-assist-models"></div>
+       <div id="annotationAssistCandidates" class="annotation-assist-candidates" aria-label="目前影像的候選框"></div>
+       <details id="annotationAssistArchive" class="annotation-assist-archive" hidden>
+        <summary id="annotationAssistArchiveLabel">收起的候選</summary>
+        <div id="annotationAssistArchivedCandidates" class="annotation-assist-candidates" aria-label="已處理的候選框"></div>
+       </details>
        <div class="inline annotation-assist-actions"><button id="annotationAssistAdopt" class="secondary full" disabled>採用到畫布</button><button id="annotationAssistReject" class="secondary" disabled>不採用</button></div>
        <div class="inline annotation-assist-actions"><button id="annotationAssistResolve" class="secondary full" disabled>確認例外已處理</button><button id="annotationAssistNext" class="secondary" disabled>下一筆例外</button></div>
       </div>

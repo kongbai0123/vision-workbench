@@ -20,10 +20,13 @@ PHASES = {
     'task_preparation': ('整理類別文字', 2, 3),
     'scene_scan': ('Qwen 掃描原圖', 5, 10),
     'dino': ('MM 尋找候選框', 16, 25),
-    'qwen': ('Qwen 裁決候選框', 43, 28),
-    'dino_retry': ('MM 重查局部', 73, 11),
-    'qwen_retry': ('Qwen 覆核重查', 85, 11),
+    'qwen': ('Qwen 裁決候選框', 41, 25),
+    'dino_retry': ('MM 重查局部', 67, 8),
+    'qwen_retry': ('Qwen 覆核重查', 76, 6),
+    'sam': ('SAM 2.1 檢查框界', 83, 7),
+    'gemma': ('Gemma 4 觀察裁決', 91, 6),
 }
+GEMMA_SCHEMA = 'vision_workbench.annotation_assist_gemma.v1'
 
 
 def model_home():
@@ -67,7 +70,7 @@ class WorkerProgress:
     def __init__(self, work):
         self.work = work
         self.path = None
-        self.position = 0
+        self.positions = {}
         self.state = ('載入斷網推論環境與本機模型…', 1, 'initializing')
 
     def read(self):
@@ -75,13 +78,18 @@ class WorkerProgress:
             self.path = self._locate_log()
         if self.path is None:
             return self.state
+        self._read_log(self.path)
+        self._read_log(self.path.with_name('gemma-worker.log'))
+        return self.state
+
+    def _read_log(self, path):
         try:
-            with self.path.open('rb') as stream:
-                stream.seek(self.position)
+            with path.open('rb') as stream:
+                stream.seek(self.positions.get(path, 0))
                 while line := stream.readline():
                     if not line.endswith(b'\n'):
                         break
-                    self.position = stream.tell()
+                    self.positions[path] = stream.tell()
                     try:
                         event = json.loads(line)
                     except (ValueError, UnicodeError):
@@ -91,7 +99,6 @@ class WorkerProgress:
         except FileNotFoundError:
             # The launcher removes its isolated directory at the end of the run.
             pass
-        return self.state
 
     def _locate_log(self):
         try:
@@ -110,7 +117,8 @@ class WorkerProgress:
         message, initial, span = PHASES[phase]
         complete, total = event.get('completed'), event.get('total')
         if type(complete) is int and type(total) is int and 0 <= complete <= total and total:
-            message = f'{message} {complete}／{total} 張'
+            unit = '筆' if phase in {'sam', 'gemma'} else '張'
+            message = f'{message} {complete}／{total} {unit}'
             initial += int(span * complete / total)
         self.state = message, max(initial, self.state[1]), phase
 
@@ -122,6 +130,22 @@ def _last_diagnostic(path):
         stream.seek(max(0, path.stat().st_size - 8192))
         lines = stream.read().decode('utf-8', errors='replace').splitlines()
     return '\n'.join(lines[-5:])[:1500]
+
+
+def _publish_observation(work, manifest, output):
+    source = work / 'gemma-observation.json'
+    if not source.is_file():
+        return
+    try:
+        _validated_proof(work / 'gemma-isolation.json', manifest)
+        receipt = json.loads(source.read_bytes())
+        if (not isinstance(receipt, dict) or receipt.get('schema') != GEMMA_SCHEMA or receipt.get('observation_only') is not True
+                or receipt.get('inference_sha256') != _digest(output)
+                or receipt.get('manifest_sha256') != _digest(manifest)):
+            raise ValueError('Gemma 觀察結果和原始候選或影像清冊不符。')
+        source.replace(output.with_name('gemma-observation.json'))
+    except (OSError, ValueError, RuntimeError, AttributeError) as exc:
+        (work / 'gemma-error.txt').write_text(str(exc), encoding='utf-8')
 
 
 def _execute(command, work, checkpoint, cancel_file):
@@ -181,8 +205,10 @@ def run_batch(root, manifest_path, output_path, progress):
             proof = _validated_proof(work / 'isolation.json', manifest)
             checkpoint()
             (work / 'inference.json').replace(output)
+            _publish_observation(work, manifest, output)
             return proof
         finally:
-            for name in ('worker.log', 'launcher.log', 'isolation.json'):
+            for name in ('worker.log', 'launcher.log', 'isolation.json',
+                         'gemma-worker.log', 'gemma-isolation.json', 'gemma-error.txt'):
                 if (work / name).is_file():
                     shutil.copyfile(work / name, output.with_name(f'{output.stem}-{name}'))

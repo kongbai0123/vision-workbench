@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image
 
-from workbench.annotation_assist import AnnotationAssist, RESULT_SCHEMA
+from workbench.annotation_assist import AnnotationAssist, GEMMA_SCHEMA, RESULT_SCHEMA
 from workbench.server import WorkbenchService
 
 
@@ -119,6 +119,8 @@ class AnnotationAssistTests(unittest.TestCase):
         self.assertEqual(verified['asset']['shapes'][0], saved['shapes'][0])
         self.assertEqual(verified['asset']['review_state'], 'pending')
         self.assertEqual(verified['asset']['shapes'][1]['metadata']['annotation_assist']['candidate_id'], 'elsewhere')
+        self.assertEqual(verified['asset']['shapes'][1]['metadata']['source'], 'manual')
+        self.assertTrue(verified['asset']['shapes'][1]['metadata']['annotation_assist']['human_confirmed'])
 
         self.call(f'{self.base}/review', {'asset_ids': [self.aid], 'state': 'approved',
                                          'revisions': {self.aid: verified['asset']['revision']}})
@@ -151,3 +153,38 @@ class AnnotationAssistTests(unittest.TestCase):
             self.call(self.batch, {'asset_ids': ['a' * 32], 'classes': self.classes})
         self.assertEqual(failure.exception.code, 404)
         self.assertEqual(self.call(self.batch)['runs'], [])
+
+    def test_sam_evidence_and_gemma_comparison_do_not_change_primary_candidates(self):
+        self.release.set()
+
+        def optional_worker(root, manifest, output, progress):
+            proof = self.fake_worker(root, manifest, output, progress)
+            settings = json.loads(manifest.read_bytes())['config']['settings']
+            self.assertTrue(settings['sam_extent'] and settings['gemma_observation'])
+            primary = json.loads(output.read_bytes())
+            frame, = primary['frames']
+            frame['candidates'][0]['sam'] = {'status': 'mismatch', 'mask_box_xyxy': [10, 10, 24, 29], 'iou': .532}
+            output.write_text(json.dumps(primary), encoding='utf-8')
+            output.with_name('gemma-observation.json').write_text(json.dumps({
+                'schema': GEMMA_SCHEMA, 'observation_only': True, 'job_id': primary['job_id'],
+                'manifest_sha256': primary['manifest_sha256'], 'inference_sha256': sha256(output.read_bytes()).hexdigest(),
+                'health': {'status': 'failed'}, 'rows': [{
+                    'asset_id': frame['id'], 'image_sha256': frame['image_sha256'], 'candidate_id': 'match', 'label': 'hammer',
+                    'xyxy': [10, 10, 30, 35], 'verdict': 'rejected', 'qwen_comparison': 'disagreement',
+                }],
+            }), encoding='utf-8')
+            return proof
+
+        self.service.annotation_assist.runner = optional_worker
+        job = self.call(self.batch, {'asset_ids': [self.aid], 'classes': self.classes,
+                                    'model_checks': {'sam': True, 'gemma': True}})
+        self.assertEqual(self.wait(job)['state'], 'succeeded')
+        batch = self.call(f"{self.batch}/{job['run_id']}")
+        frame, = batch['frames']
+        self.assertEqual(frame['accepted_candidate_ids'], ['match'])
+        self.assertEqual([item['code'] for item in frame['exceptions']], ['uncertain_review'])
+        self.assertEqual(frame['candidates'][0]['xyxy'], [10, 10, 30, 35])
+        self.assertEqual(frame['candidates'][0]['sam']['mask_box_xyxy'], [10, 10, 24, 29])
+        self.assertEqual(frame['candidates'][0]['gemma']['qwen_comparison'], 'disagreement')
+        self.assertEqual(batch['gemma']['health']['status'], 'failed')
+        self.assertEqual(self.call(self.asset)['shapes'], [])

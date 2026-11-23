@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--hammer", type=Path, required=True)
     parser.add_argument("--second", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model-checks", action="store_true", help="Include SAM boundary and Gemma observation checks")
     parser.add_argument("--show", action="store_true", help="Keep the checked project open in one desktop window")
     args = parser.parse_args()
     if not args.show:
@@ -41,7 +42,8 @@ def main():
     service = WorkbenchService(root / "data", dialog=bridge).start()
     window = None
     try:
-        project_id = service.store.create_project("MM ＋ Qwen · 鐵鎚與例外覆核示範")["id"]
+        project_name = "AI 框界與裁決示範" if args.model_checks else "MM ＋ Qwen · 鐵鎚與例外覆核示範"
+        project_id = service.store.create_project(project_name)["id"]
         project = service.store.get_project(project_id)
         service.store.manage_classes(project_id, ["hammer", "screwdriver", "wrench"], {}, project["revision"])
         asset_ids = service.store.add_assets(project_id, [{"path": path, "shapes": []} for path in paths])["asset_ids"]
@@ -49,7 +51,8 @@ def main():
         window = MainWindow(service, bridge)
         window.resize(1440, 900)
         window.show()
-        summary = exercise_ui(window, service, project_id, hammer_id, asset_ids[1], root, (QEventLoop, QPoint, Qt, QTimer, QTest))
+        summary = exercise_ui(window, service, project_id, hammer_id, asset_ids[1], root,
+                              (QEventLoop, QPoint, Qt, QTimer, QTest), model_checks=args.model_checks)
         (root / "smoke-summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False), flush=True)
         if args.show:
@@ -63,7 +66,7 @@ def main():
         service.close()
 
 
-def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
+def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, model_checks=False):
     QEventLoop, QPoint, Qt, QTimer, QTest = qt
 
     def js(script):
@@ -109,6 +112,9 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
     wait("window.workbenchState().stage === 'annotate' && document.querySelector('#assetImage').complete")
     click("#openAnnotationAssist")
     choose("#annotationAssistScope", "visible")
+    for selector in ('#annotationAssistEnableSam', '#annotationAssistEnableGemma'):
+        if js(f"document.querySelector({json.dumps(selector)})?.checked") is not model_checks:
+            click(selector)
     started = time.monotonic()
     click("#annotationAssistStart")
     wait("document.querySelector('button[data-assist-candidate-id]') || "
@@ -120,6 +126,13 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
     assert initial["isolation"]["network_denied"] and initial["isolation"]["cuda"]
     record = next((root / "data" / "projects").glob(f"*/integrations/annotation-assist/{batch_id}/batch.json"))
     candidate_digest = sha256(record.read_bytes()).hexdigest()
+    if model_checks:
+        assert initial['model_checks'] == {'sam': True, 'gemma': True}
+        assert initial.get('gemma', {}).get('status') == 'observed', initial.get('gemma')
+        assert initial['gemma']['observation_only'] and initial['gemma']['observed_candidates'] >= 2
+        proof = json.loads((record.parent / 'inference-gemma-isolation.json').read_bytes())
+        assert proof['appcontainer_token'] and proof['network_denied'] and proof['os_network_capabilities'] == 0
+        assert any(row.get('sam', {}).get('mask_box_xyxy') for frame in initial['frames'] for row in frame['candidates'])
     print("PASS: real batch completed and proposals stayed separate", flush=True)
 
     if js("window.workbenchState().assetId") != hammer_id:
@@ -128,12 +141,26 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
     candidate = 'button[data-assist-label="hammer"][data-assist-verdict="accepted"]'
     wait(f"document.querySelector({json.dumps(candidate)})")
     click(candidate)
+    if model_checks:
+        wait("document.querySelector('#annotationAssistCandidateModels').textContent.includes('Gemma 4')")
+        wait("document.querySelector('#overlay [data-assist-preview]') && document.querySelector('#overlay [data-assist-sam-preview]')")
+        click('#annotationAssistShowOriginal')
+        wait("!document.querySelector('#overlay [data-assist-preview]') && document.querySelector('#overlay [data-assist-sam-preview]')")
+        click('#annotationAssistShowOriginal')
+        click('#annotationAssistShowSam')
+        wait("document.querySelector('#overlay [data-assist-preview]') && !document.querySelector('#overlay [data-assist-sam-preview]')")
+        click('#annotationAssistShowSam')
     window.grab().save(str(root / "01-model-evidence.png"))
     click("#annotationAssistAdopt")
     wait("document.querySelector('.shape-row')")
     save()
     first = service.store.get_asset(pid, hammer_id)
     assert len(first["shapes"]) == 1
+    origin = first['shapes'][0]['metadata']
+    assert origin['source'] == 'manual' and origin['annotation_assist']['human_confirmed']
+    archived = f'button[data-assist-candidate-id="{origin["annotation_assist"]["candidate_id"]}"]'
+    assert js(f"Boolean(document.querySelector('#annotationAssistArchivedCandidates ' + {json.dumps(archived)}))")
+    assert not js(f"Boolean(document.querySelector('#annotationAssistCandidates ' + {json.dumps(archived)}))")
     js("document.querySelector('.shape-row').click()")
     click('[data-tool="select"]')
     coords = json.loads(js("""JSON.stringify((()=>{
@@ -175,6 +202,7 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
     print("PASS: a single window preserved the saved box through the review and editor stages", flush=True)
     return {"project_id": pid, "asset_id": hammer_id, "batch_id": batch_id, "candidate_sha256": candidate_digest,
             "batch_summary": initial["summary"], "inference_seconds": initial["timing"]["inference_seconds"],
+            "sam": initial.get('sam'), "gemma": initial.get('gemma'),
             "before": first["shapes"][0], "after": shape, "saved_revision": reloaded["revision"],
             "elapsed_seconds": round(time.monotonic() - started, 2)}
 

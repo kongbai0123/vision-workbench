@@ -20,6 +20,7 @@ from .training_engine import atomic_json, read_json
 
 
 RESULT_SCHEMA = 'vision_workbench.annotation_assist.v1'
+GEMMA_SCHEMA = 'vision_workbench.annotation_assist_gemma.v1'
 HISTORY_ACTION = 'annotation_assist_review'
 REASONS = {
     'accepted': 'Qwen 建議採用，請核對類別及框界',
@@ -73,9 +74,16 @@ def _candidate(run_id, frame, source, labels):
                  'metadata': {'annotation_assist': {'run_id': run_id, 'candidate_id': candidate_id,
                                                     'generated_label': label, 'score': score}}}
     votes = source.get('votes', source.get('qwen_votes', source.get('qwen', [])))
-    return {'id': candidate_id, 'label': label, 'verdict': verdict, 'reason_code': reason,
-            'reason': source.get('reason') or REASONS.get(reason, reason), 'score': score,
-            'xyxy': raw if box else None, 'shape': shape, 'stage': source.get('stage'), 'votes': votes}
+    row = {'id': candidate_id, 'label': label, 'verdict': verdict, 'reason_code': reason,
+           'reason': source.get('reason') or REASONS.get(reason, reason), 'score': score,
+           'xyxy': raw if box else None, 'shape': shape, 'stage': source.get('stage'), 'votes': votes}
+    sam = source.get('sam')
+    if isinstance(sam, dict):
+        mask_box = sam.get('mask_box_xyxy')
+        if mask_box is not None and _rectangle(mask_box, frame['width'], frame['height']) is None:
+            raise ValueError('SAM 框界證據超出原圖範圍')
+        row['sam'] = sam
+    return row
 
 
 def _counts(frames):
@@ -107,6 +115,44 @@ def _candidate_source(shape):
     if not isinstance(metadata, dict) or not isinstance(metadata.get('annotation_assist'), dict):
         return {}
     return metadata['annotation_assist']
+
+
+def _gemma_observation(run, frames, manifest, inference):
+    """Join optional shadow evidence without changing any primary verdict or routing."""
+    failed = {'status': 'failed', 'observation_only': True, 'health': {'status': 'not_run'}}
+    sidecar = inference.with_name('gemma-observation.json')
+    if not sidecar.is_file():
+        error = inference.with_name('inference-gemma-error.txt')
+        return dict(failed, error=error.read_text(encoding='utf-8') if error.is_file() else 'Gemma 未產生觀察結果。')
+    try:
+        result = read_json(sidecar)
+        if (result.get('schema') != GEMMA_SCHEMA or result.get('observation_only') is not True
+                or result.get('job_id') != run['id'] or result.get('manifest_sha256') != _hash(manifest)
+                or result.get('inference_sha256') != _hash(inference)):
+            raise ValueError('觀察憑據和原始推論不符。')
+        candidates = {(frame['asset_id'], candidate['id']): candidate
+                      for frame in frames for candidate in frame['candidates']}
+        images = {frame['asset_id']: frame['image_sha256'] for frame in frames}
+        observed = {}
+        for row in result['rows']:
+            key = row['asset_id'], row['candidate_id']
+            target = candidates.get(key)
+            if (key in observed or target is None or target['xyxy'] is None or row['label'] != target['label']
+                    or row.get('image_sha256') != images[key[0]]
+                    or row['xyxy'] != target['xyxy'] or row['verdict'] not in {'accepted', 'rejected', 'unresolved'}):
+                raise ValueError('Gemma 觀察框與原始候選不符。')
+            observed[key] = {'status': 'observed', 'verdict': row['verdict'], 'votes': row.get('votes', []),
+                             'reason_code': row.get('reason_code'), 'reason': row.get('reason'),
+                             'qwen_comparison': row.get('qwen_comparison')}
+        health = result['health']
+        if health.get('status') not in {'passed', 'failed', 'inconclusive', 'not_run'}:
+            raise ValueError('Gemma 健全性結果無效。')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return dict(failed, error=str(exc))
+    for key, evidence in observed.items():
+        candidates[key]['gemma'] = evidence
+    return {'status': 'observed', 'observation_only': True, 'health': health, 'summary': result.get('summary', {}),
+            'timing': result.get('timing', {}), 'model': result.get('model', {}), 'observed_candidates': len(observed)}
 
 
 class AnnotationAssist:
@@ -152,12 +198,18 @@ class AnnotationAssist:
             raise FileNotFoundError('找不到 AI 標註批次')
         return read_json(record), directory
 
-    def start(self, pid, asset_ids, classes):
+    def start(self, pid, asset_ids, classes, *, model_checks=None):
         if not isinstance(asset_ids, list) or not asset_ids:
             raise ValueError('請選擇本次要處理的影像')
         requested = list(dict.fromkeys(identifier(value) for value in asset_ids))
         project = self.store.get_project(pid)
         frozen_classes = self._classes(classes, project['classes'])
+        if model_checks is None:
+            model_checks = {}
+        if not isinstance(model_checks, dict) or any(key not in {'sam', 'gemma'} or type(value) is not bool
+                                                    for key, value in model_checks.items()):
+            raise ValueError('模型檢查選項必須為 SAM 或 Gemma 的布林值。')
+        checks = {name: model_checks.get(name, False) for name in ('sam', 'gemma')}
         assets = {asset['id']: asset for asset in project['assets']}
         if any(aid not in assets for aid in requested):
             raise FileNotFoundError('有選取的影像已不在專案內')
@@ -169,7 +221,7 @@ class AnnotationAssist:
                            'status': 'pending', 'candidates': [], 'accepted_candidate_ids': [], 'exceptions': []})
         run_id = uuid.uuid4().hex
         run = {'id': run_id, 'project_id': pid, 'status': 'queued', 'created_at': timestamp(),
-               'classes': frozen_classes, 'frames': frames, 'summary': _counts(frames)}
+               'classes': frozen_classes, 'model_checks': checks, 'frames': frames, 'summary': _counts(frames)}
         atomic_json(self._path(pid, run_id, create=True) / 'batch.json', run)
         try:
             job = self.jobs.submit('annotation-assist', lambda progress: self._execute(run, progress))
@@ -217,6 +269,10 @@ class AnnotationAssist:
                 frames = self._result_frames(run, manifest, source)
                 complete = dict(run, status='complete', finished_at=timestamp(), frames=frames, summary=_counts(frames),
                                 method=source.get('method', {}), timing=source.get('timing', {}), isolation=isolation)
+                if run['model_checks']['sam']:
+                    complete['sam'] = source.get('summary', {}).get('sam', {})
+                if run['model_checks']['gemma']:
+                    complete['gemma'] = _gemma_observation(run, frames, manifest, output)
                 progress('保存候選與例外；等待人工檢視', 98, phase='save')
                 atomic_json(self._path(pid, run_id) / 'batch.json', complete)
                 return {'run_id': run_id, 'summary': complete['summary']}
@@ -229,10 +285,14 @@ class AnnotationAssist:
             finally:
                 with suppress(OSError):
                     folder = self._path(pid, run_id)
-                    for kind in ('worker.log', 'launcher.log', 'isolation.json'):
+                    for kind in ('worker.log', 'launcher.log', 'isolation.json',
+                                 'gemma-worker.log', 'gemma-isolation.json', 'gemma-error.txt'):
                         diagnostic = output.with_name(f'{output.stem}-{kind}')
                         if diagnostic.is_file():
                             shutil.copyfile(diagnostic, folder / diagnostic.name)
+                    observation = output.with_name('gemma-observation.json')
+                    if observation.is_file():
+                        shutil.copyfile(observation, folder / observation.name)
 
     def _stage(self, run, staging, progress):
         image_dir = staging / 'images'
@@ -250,8 +310,10 @@ class AnnotationAssist:
             rows.append({'id': aid, 'image': relative, 'image_sha256': frame['image_sha256'],
                          'width': frame['width'], 'height': frame['height'], 'base_revision': frame['base_revision']})
         manifest = staging / 'manifest.json'
+        checks = run['model_checks']
         atomic_json(manifest, {'job_id': run['id'], 'config': {'classes': run['classes'],
-                     'settings': {'candidate_limit': 5, 'retry_regions': 2}}, 'frames': rows})
+                     'settings': {'candidate_limit': 5, 'retry_regions': 2, 'sam_extent': checks['sam'],
+                                  'gemma_observation': checks['gemma']}}, 'frames': rows})
         return manifest
 
     @staticmethod
@@ -340,7 +402,8 @@ class AnnotationAssist:
                 if any(old['id'] == shape['id'] or _same_box(shape, old) for old in shapes):
                     skipped.append(cid)
                 else:
-                    shapes.append(shape)
+                    origin = dict(_candidate_source(shape), human_confirmed=True)
+                    shapes.append(dict(shape, metadata=dict(shape['metadata'], source='manual', annotation_assist=origin)))
                     adopted.append(cid)
             if adopted:
                 AnnotationService(self.store).commit(pid, [({'id': aid, 'revision': revision}, shapes)],

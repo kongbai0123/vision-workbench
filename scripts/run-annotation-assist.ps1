@@ -36,6 +36,32 @@ function Test-Inside([string]$Path, [string]$Root) {
     return $Path.StartsWith(($Root.TrimEnd([char[]]@('/','\')) + '\'), [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Grant-ModelRead([string[]]$Directories) {
+    foreach ($directory in $Directories) {
+        & icacls.exe $directory /grant:r "*${sid}:(OI)(CI)RX" /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Unable to grant AppContainer read access: $directory" }
+    }
+}
+
+function Invoke-IsolatedWorker([string]$Worker, [string[]]$WorkerArguments, [int]$TimeoutSeconds) {
+    if (Test-Path -LiteralPath $CancelFile) { throw [OperationCanceledException]::new('Stopped before inference.') }
+    $tokens = @($python,'-I','-B','-X','utf8',(Join-Path $work 'annotation_assist_probe.py'),(Join-Path $work $Worker)) + $WorkerArguments
+    $command = ($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' '
+    $exitCode = [AnnotationAssistProcess]::RunCancelable($profile, $python, $command, $work, $TimeoutSeconds, $CancelFile)
+    if ($exitCode -ne 0) { throw "The isolated $Worker worker exited with code $exitCode." }
+}
+
+function Assert-IsolationProof([string]$Name) {
+    $proof = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $work $Name) | ConvertFrom-Json
+    if ($proof.schema -ne 'vision_workbench.annotation_assist_isolation.v1' -or
+        $proof.profile -ne $profile -or $proof.appcontainer_token -ne $true -or
+        $null -eq $proof.os_network_capabilities -or $proof.os_network_capabilities -ne 0 -or
+        $proof.network_denied -ne $true -or $proof.host_files_denied -ne $true -or
+        $proof.cuda -ne $true -or $proof.manifest_sha256 -ne (Get-LocalSha256 $manifestSource)) {
+        throw 'Isolation proof does not validate. No model result can be published.'
+    }
+}
+
 $manifestSource = Get-RegularEntry $ManifestPath $false
 $inputRoot = Split-Path -Parent $manifestSource
 $destinationPath = Get-RegularEntry $Destination $true
@@ -70,6 +96,8 @@ try {
     $stagedManifest = Join-Path $stagedInput $stageName
     Copy-Item -LiteralPath $manifestSource -Destination $stagedManifest
     $manifest = Get-Content -Raw -Encoding utf8 -LiteralPath $stagedManifest | ConvertFrom-Json
+    $useSam = $manifest.config.settings.sam_extent -is [bool] -and $manifest.config.settings.sam_extent
+    $useGemma = $manifest.config.settings.gemma_observation -is [bool] -and $manifest.config.settings.gemma_observation
     $stagedImages = Join-Path $stagedInput 'images'
     New-Item -ItemType Directory -Path $stagedImages | Out-Null
     $imageRoot = Get-RegularEntry (Join-Path $inputRoot 'images') $true
@@ -82,15 +110,21 @@ try {
         if (-not (Test-Inside $image $imageRoot)) { throw 'Invalid inference image path.' }
         Copy-Item -LiteralPath $image -Destination (Join-Path $stagedInput $relative)
     }
-    foreach ($name in @('annotation_assist_probe.py','annotation_assist_worker.py',
-                       'annotation_assist_confidence.py','annotation_assist_grounding.py')) {
+    $workerFiles = @('annotation_assist_probe.py','annotation_assist_worker.py',
+                     'annotation_assist_confidence.py','annotation_assist_grounding.py','annotation_assist_sam.py')
+    if ($useGemma) { $workerFiles += @('annotation_assist_gemma.py','annotation_assist_gguf.py') }
+    foreach ($name in $workerFiles) {
         Copy-Item -LiteralPath (Join-Path $workerRoot $name) -Destination $work
     }
 
-    foreach ($directory in @($runtime,$dino,$qwen)) {
-        & icacls.exe $directory /grant:r "*${sid}:(OI)(CI)RX" /Q | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Unable to grant AppContainer read access: $directory" }
+    $directories = @($runtime,$dino,$qwen)
+    $samArguments = @()
+    if ($useSam) {
+        $sam = Get-RegularEntry (Join-Path $models 'sam2.1-hiera-tiny') $true
+        $directories += $sam
+        $samArguments = @('--sam-dir',$sam)
     }
+    Grant-ModelRead $directories
 
     $env:VW_ANNOTATION_ASSIST_PROFILE = $profile
     $env:TEMP = $work
@@ -101,6 +135,7 @@ try {
     $env:TRANSFORMERS_OFFLINE = '1'
     $env:HF_HUB_DISABLE_TELEMETRY = '1'
     $env:USE_HUB_KERNELS = 'NO'
+    $env:VW_ANNOTATION_ASSIST_OBSERVATION = '0'
 
     $addresses = [ordered]@{loopback_ipv4=[Net.IPAddress]::Loopback}
     if ([Net.Sockets.Socket]::OSSupportsIPv6) { $addresses['loopback_ipv6'] = [Net.IPAddress]::IPv6Loopback }
@@ -131,20 +166,25 @@ try {
     }
     $env:VW_ANNOTATION_ASSIST_PROBE = $probe | ConvertTo-Json -Compress -Depth 5
     $output = Join-Path $work 'inference.json'
-    $tokens = @($python,'-I','-B','-X','utf8',(Join-Path $work 'annotation_assist_probe.py'),
-        (Join-Path $work 'annotation_assist_worker.py'),'--manifest',$stagedManifest,
-        '--dino-dir',$dino,'--qwen-dir',$qwen,'--output',$output)
-    $command = ($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' '
-    if (Test-Path -LiteralPath $CancelFile) { throw [OperationCanceledException]::new('Stopped before inference.') }
-    $exitCode = [AnnotationAssistProcess]::RunCancelable($profile, $python, $command, $work, 7200, $CancelFile)
-    if ($exitCode -ne 0) { throw "The isolated inference worker exited with code $exitCode." }
-    $proof = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $work 'isolation.json') | ConvertFrom-Json
-    if ($proof.schema -ne 'vision_workbench.annotation_assist_isolation.v1' -or
-        $proof.profile -ne $profile -or $proof.appcontainer_token -ne $true -or
-        $null -eq $proof.os_network_capabilities -or $proof.os_network_capabilities -ne 0 -or
-        $proof.network_denied -ne $true -or $proof.host_files_denied -ne $true -or
-        $proof.cuda -ne $true -or $proof.manifest_sha256 -ne (Get-LocalSha256 $manifestSource)) {
-        throw 'Isolation proof does not validate. No model result can be published.'
+    $primaryArguments = @('--manifest',$stagedManifest,'--dino-dir',$dino,'--qwen-dir',$qwen,'--output',$output) + $samArguments
+    Invoke-IsolatedWorker 'annotation_assist_worker.py' $primaryArguments 7200
+    Assert-IsolationProof 'isolation.json'
+    if ($useGemma) {
+        try {
+            $gemma = Get-RegularEntry (Join-Path $models 'Gemma-4-E4B-it-QAT-Q4') $true
+            $gguf = Get-RegularEntry (Join-Path $models '_runtimes/llama.cpp-b12541-cuda13.5') $true
+            Grant-ModelRead @($gemma,$gguf)
+            $env:VW_ANNOTATION_ASSIST_OBSERVATION = '1'
+            $env:VW_ANNOTATION_ASSIST_GEMMA_RUNTIME = $gguf
+            $observation = Join-Path $work 'gemma-observation.json'
+            $observationArguments = @('--manifest',$stagedManifest,'--inference',$output,'--model-home',$models,'--output',$observation)
+            Invoke-IsolatedWorker 'annotation_assist_gemma.py' $observationArguments 7200
+            Assert-IsolationProof 'gemma-isolation.json'
+            Copy-Item -LiteralPath $observation -Destination $destinationPath
+        } catch {
+            if (Test-Path -LiteralPath $CancelFile) { throw [OperationCanceledException]::new('Stopped during Gemma observation.') }
+            [IO.File]::WriteAllText((Join-Path $destinationPath 'gemma-error.txt'), $_.Exception.Message)
+        }
     }
     Copy-Item -LiteralPath $output -Destination $destinationPath
 } catch {
@@ -156,7 +196,7 @@ try {
     if (-not $cancelled) { throw }
 } finally {
     foreach ($listener in $listeners) { $listener.Stop() }
-    foreach ($name in @('isolation.json','worker.log')) {
+    foreach ($name in @('isolation.json','worker.log','gemma-isolation.json','gemma-worker.log')) {
         if ($work -and (Test-Path -LiteralPath (Join-Path $work $name) -PathType Leaf)) {
             Copy-Item -LiteralPath (Join-Path $work $name) -Destination $destinationPath
         }

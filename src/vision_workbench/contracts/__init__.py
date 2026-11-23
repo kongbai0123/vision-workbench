@@ -10,7 +10,7 @@ FIELD_TYPES = {
     'asset_ids': list, 'project_ids': list, 'paths': list, 'shapes': list, 'classes': list,
     'candidate_ids': list, 'decisions': list,
     'revisions': dict, 'replacements': dict, 'config': dict, 'options': dict,
-    'ratios': dict, 'settings': dict, 'revision': int, 'history_id': int, 'delta_base': int,
+    'ratios': dict, 'settings': dict, 'model_checks': dict, 'revision': int, 'history_id': int, 'delta_base': int,
     'name': str, 'state': str, 'reason': str, 'note': str, 'batch_id': str,
     'split': str, 'project_id': str, 'asset_id': str, 'dataset_version_id': str,
     'model_version_id': str, 'request_id': str, 'format': str, 'version': str,

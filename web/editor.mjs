@@ -53,7 +53,7 @@ export class AnnotationEditor {
     this.draft = [];
     this.gesture = null;
     this.prompts = {positive: [], negative: []};
-    this.candidate = null;this.proposals=[];this.assistPreview=null;
+    this.candidate = null;this.proposals=[];this.assistPreview=null;this.assistSamPreview=null;
     this.history = history(40);
     this.maskCache = new WeakMap();
     this.zoom = 1;
@@ -75,7 +75,7 @@ export class AnnotationEditor {
     this.draft = [];
     this.gesture = null;
     this.prompts = {positive: [], negative: []};
-    this.candidate = null;this.proposals=[];this.assistPreview=null;
+    this.candidate = null;this.proposals=[];this.assistPreview=null;this.assistSamPreview=null;
     this.history = history(40);
     this.maskCache = new WeakMap();
     this.zoom = 1; this.pan = {x:0, y:0};
@@ -93,7 +93,7 @@ export class AnnotationEditor {
   }
   clear() {
     this.crosshair.hidden = true;
-    this.asset = null; this.selection.clear(); this.draft = []; this.candidate = null;this.proposals=[];this.assistPreview=null;
+    this.asset = null; this.selection.clear(); this.draft = []; this.candidate = null;this.proposals=[];this.assistPreview=null;this.assistSamPreview=null;
     this.$('imageStage').hidden = true;
     this.$('canvasEmpty').hidden = false;
     this.$('shapeList').replaceChildren();
@@ -230,7 +230,8 @@ export class AnnotationEditor {
     const url = canvas.toDataURL(); this.maskCache.set(shape,url); return url;
   }
   drawShape(shape, proposal = false, assist = false) {
-    const t = kind(shape), selected = this.selection.has(shape.id), color = proposal ? '#ffcf67' : colorFor(shape.label);
+    const t = kind(shape), selected = this.selection.has(shape.id);
+    const color = assist==='sam' ? '#79d6ff' : proposal ? '#ffcf67' : colorFor(shape.label);
     const scale = this.scale * this.zoom || 1, stroke = (selected ? 2.4 : 1.5) / scale;
     const attrs = {stroke:color, 'stroke-width':stroke, fill:'none', 'data-shape':shape.id || '', 'pointer-events':proposal?'none':'all'};
     let node;
@@ -239,7 +240,12 @@ export class AnnotationEditor {
     else if (t === 'rectangle') node = svgElement('rect',{...attrs,x:shape.x,y:shape.y,width:shape.width,height:shape.height,fill:color,'fill-opacity':selected?.12:.035});
     else node = svgElement(t === 'linestrip' ? 'polyline' : 'polygon',{...attrs,points:shape.points.map(p=>p.join(',')).join(' '),fill:t==='linestrip'?'none':color,'fill-opacity':selected?.12:.035});
     if (proposal) node.setAttribute('stroke-dasharray',`${6/scale} ${4/scale}`);
-    if (assist) node.setAttribute('data-assist-preview',shape.id);
+    if (assist==='sam') {
+      node.setAttribute('data-assist-sam-preview',shape.id);
+      node.setAttribute('stroke-dasharray',`${3/scale} ${7/scale}`);
+      node.setAttribute('stroke-dashoffset',`${3/scale}`);
+      node.setAttribute('fill','none');
+    } else if (assist) node.setAttribute('data-assist-preview',shape.id);
     this.$('overlay').append(node);
     if (!proposal && t !== 'mask' && shape.label) {
       const label = svgElement('text',{x:shape.x,y:Math.max(14/scale,shape.y-5/scale),fill:color,'font-size':12/scale,'font-family':'Segoe UI, Microsoft JhengHei, sans-serif','font-weight':600,'paint-order':'stroke','stroke':'#101820','stroke-width':2/scale,'pointer-events':'none'});
@@ -263,6 +269,7 @@ export class AnnotationEditor {
     }
     for(const proposal of this.proposals)this.drawShape(proposal,true);
     if(this.assistPreview)this.drawShape(this.assistPreview,true,true);
+    if(this.assistSamPreview)this.drawShape(this.assistSamPreview,true,'sam');
     if (this.candidate) this.drawShape(this.candidate,true);
     for (const [category,points] of Object.entries(this.prompts)) for (const [x,y] of points) {
       const scale = this.scale*this.zoom || 1;
@@ -500,10 +507,12 @@ export class AnnotationEditor {
   setProposals(shapes=[]) {
     if(!this.asset)return;this.proposals=shapes.map(shape=>validateShape({...shape},this.asset.width,this.asset.height));this.renderCanvas();
   }
-  setAssistPreview(shape = null) {
-    if(!this.asset||this.assistPreview===shape)return;
+  setAssistPreview(shape = null, sam = null) {
+    if(!this.asset||(this.assistPreview===shape&&this.assistSamPreview===sam))return;
     if(shape)validateShape(shape,this.asset.width,this.asset.height);
+    if(sam)validateShape(sam,this.asset.width,this.asset.height);
     this.assistPreview=shape;
+    this.assistSamPreview=sam;
     this.renderCanvas();
   }
   updateCandidate() {

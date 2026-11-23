@@ -64,7 +64,21 @@ def read_denied(path):
         return True
 
 
-def verify(folder):
+def native_gemma_cuda_available():
+    from annotation_assist_gemma import RUNTIME_FILES
+
+    runtime = Path(os.environ['VW_ANNOTATION_ASSIST_GEMMA_RUNTIME'])
+    library = runtime / 'cudart64_13.dll'
+    with library.open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != RUNTIME_FILES[library.name]:
+            raise ValueError('The Gemma CUDA runtime failed its integrity check.')
+    with os.add_dll_directory(str(runtime)):
+        cuda = WinDLL(str(library))
+        devices = c_int()
+        return cuda.cudaGetDeviceCount(byref(devices)) == 0 and devices.value > 0
+
+
+def verify(folder, prefix=''):
     config = json.loads(os.environ["VW_ANNOTATION_ASSIST_PROBE"])
     capability_count = token_capabilities()
     network = {target["name"]: network_test(target) for target in config["listeners"]}
@@ -91,7 +105,7 @@ def verify(folder):
             for filename in sorted(folder.glob("*.py"))
         },
     }
-    destination = folder / "isolation.json"
+    destination = folder / f"{prefix}isolation.json"
 
     def publish_proof():
         destination.write_text(json.dumps(proof, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -99,11 +113,14 @@ def verify(folder):
     publish_proof()
     if capability_count or not proof["network_denied"] or not proof["host_files_denied"]:
         raise PermissionError("AppContainer isolation could not be established.")
-    import torch
+    if prefix == 'gemma-':
+        proof["cuda"] = native_gemma_cuda_available()
+    else:
+        import torch
 
-    proof["cuda"] = bool(torch.cuda.is_available())
-    if proof["cuda"]:
-        proof["cuda"] = torch.tensor([2, 3], device="cuda").sum().item() == 5
+        proof["cuda"] = bool(torch.cuda.is_available())
+        if proof["cuda"]:
+            proof["cuda"] = torch.tensor([2, 3], device="cuda").sum().item() == 5
     publish_proof()
     if not proof["cuda"]:
         raise RuntimeError("The isolated runtime could not perform a CUDA operation.")
@@ -114,11 +131,12 @@ def verify(folder):
 def main():
     command = sys.argv[1:]
     folder = Path(__file__).resolve().parent
+    prefix = 'gemma-' if os.environ.get('VW_ANNOTATION_ASSIST_OBSERVATION') == '1' else ''
     sys.path.insert(0, str(folder))
-    with (folder / "worker.log").open("w", encoding="utf-8", buffering=1) as log:
+    with (folder / f"{prefix}worker.log").open("w", encoding="utf-8", buffering=1) as log:
         with redirect_stdout(log), redirect_stderr(log):
             try:
-                verify(folder)
+                verify(folder, prefix)
                 sys.argv = command
                 runpy.run_path(command[0], run_name="__main__")
             except SystemExit as exc:

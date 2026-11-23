@@ -111,6 +111,53 @@
   overflow-wrap: anywhere;
 }
 
+.annotation-assist-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.annotation-assist-checks .check-label {
+  font-size: 12px;
+}
+
+.annotation-assist-archive > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.annotation-assist-archive .annotation-assist-candidates {
+  margin-top: 6px;
+}
+
+.annotation-assist-swatch {
+  width: 13px;
+  border-top: 2px dashed #ffcf67;
+}
+
+.annotation-assist-swatch.sam {
+  border-top-color: #79d6ff;
+}
+
+.annotation-assist-models {
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding-left: 8px;
+}
+
+.annotation-assist-models:empty {
+  display: none;
+}
+
+.annotation-assist-models b {
+  display: block;
+  color: var(--text);
+  margin-top: 4px;
+}
+
 .annotation-assist-actions button {
   white-space: normal;
   padding-inline: 7px;

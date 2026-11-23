@@ -141,7 +141,8 @@ def action_ai(self, pid, payload, action):
 
 
 def action_annotation_assist(self, pid, payload, action):
-    return self.json(self.app.annotation_assist.start(pid, payload.get('asset_ids'), payload.get('classes')))
+    return self.json(self.app.annotation_assist.start(pid, payload.get('asset_ids'), payload.get('classes'),
+                                                    model_checks=payload.get('model_checks')))
 
 
 def action_capture(self, pid, payload, action):

@@ -584,7 +584,8 @@ def finalize_frame(row, settings=None):
     return result
 
 
-def run_inference(manifest_path, dino_dir, qwen_dir, output_path, *, engine_factory=None, judge_factory=None):
+def run_inference(manifest_path, dino_dir, qwen_dir, output_path, *, engine_factory=None, judge_factory=None,
+                  sam_dir=None, sam_factory=None):
     manifest_path = Path(manifest_path).resolve(strict=True)
     output_path = Path(output_path).resolve()
     if output_path.exists():
@@ -658,6 +659,26 @@ def run_inference(manifest_path, dino_dir, qwen_dir, output_path, *, engine_fact
         finally:
             release_model(judge)
     result_frames = [finalize_frame(row, settings) for row in frames]
+    sam_method, sam_seconds = None, None
+    if sam_dir is not None:
+        if __package__:
+            from .annotation_assist_sam import SamBoundaryEvidence, check_sam_frame
+        else:
+            from annotation_assist_sam import SamBoundaryEvidence, check_sam_frame
+
+        sam_started = perf_counter()
+        sam = (sam_factory or SamBoundaryEvidence)(sam_dir)
+        sam_method = sam.provenance
+        try:
+            emit("sam", completed=0, total=len(frames))
+            for index, (source, frame) in enumerate(zip(frames, result_frames, strict=True), 1):
+                check_sam_frame(sam, frame_image(root, source), frame)
+                frame["confidence"] = frame_confidence(frame)
+                emit("sam", completed=index, total=len(frames), frame_id=frame["id"])
+        finally:
+            sam.close()
+            release_model(None)
+        sam_seconds = round(perf_counter() - sam_started, 3)
     if file_hash(manifest_path) != manifest_hash:
         raise ValueError("工作清單在推論期間已變更。")
     result = {"schema": RESULT_SCHEMA, "job_id": manifest["job_id"], "manifest_sha256": manifest_hash,
@@ -670,6 +691,11 @@ def run_inference(manifest_path, dino_dir, qwen_dir, output_path, *, engine_fact
                           "review_frames": sum(bool(row["exceptions"]) for row in result_frames),
                           "exceptions": dict(Counter(e["code"] for row in result_frames for e in row["exceptions"]))},
               "timing": {"inference_seconds": round(perf_counter() - started, 3)}}
+    if sam_method is not None:
+        result["method"]["sam"] = sam_method
+        result["timing"]["sam_seconds"] = sam_seconds
+        result["summary"]["sam"] = dict(Counter(candidate["sam"]["status"] for row in result_frames
+                                               for candidate in row["candidates"]))
     write_result(output_path, result)
     print(json.dumps({"event": "complete", "output": str(output_path), "summary": result["summary"]},
                      ensure_ascii=False), flush=True)
@@ -681,10 +707,11 @@ def main(argv=None):
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--dino-dir", type=Path, required=True)
     parser.add_argument("--qwen-dir", type=Path, required=True)
+    parser.add_argument("--sam-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        run_inference(args.manifest, args.dino_dir, args.qwen_dir, args.output)
+        run_inference(args.manifest, args.dino_dir, args.qwen_dir, args.output, sam_dir=args.sam_dir)
     except Exception as exc:
         print(json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False), flush=True)
         return 1
