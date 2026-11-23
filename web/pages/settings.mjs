@@ -7,7 +7,7 @@ const mergedSettingsSections = new Map([
 
 // Settings and model-catalog page; dependencies are injected for browser tests.
 export function createSettingsPage(context) {
-const {$, state, api, element, button, safe, switchStage, toast, setUpdateIndicators, renderTraining, loadTraining, nativeCallbacks}=context;
+const {$, state, api, element, button, safe, switchStage, toast, setUpdateIndicators, renderTraining, loadTraining, nativeCallbacks, nativeChoose, formDialog}=context;
 const settingDefaults={scale:'1',device:'auto'};
 function settingValue(name){try{return localStorage.getItem(`vision-workbench.${name}`)||settingDefaults[name]}catch{return settingDefaults[name]}}
 function saveSetting(name,value){try{localStorage.setItem(`vision-workbench.${name}`,value)}catch{}applySettings()}
@@ -34,7 +34,9 @@ async function openSettings(page='general',modelKey=null){
   state.settingsFocus=document.activeElement;$('settingsShell').hidden=false;showSettingsPage(page);applySettings();
   if(modelKey)state.selectedCatalogModel=modelKey;
   if(!state.system)state.system=await api('/api/system');
-  await loadModelCatalog();renderSettingsSummary();$('closeSettings').focus();
+  await loadModelCatalog();renderSettingsSummary();
+  if(modelKey&&state.settingsPage==='models')$('settingsTrainingModelsTitle').scrollIntoView({block:'start'});
+  $('closeSettings').focus();
 }
 function closeSettings(){if($('settingsShell').hidden)return;$('settingsShell').hidden=true;state.settingsFocus?.focus?.();state.settingsFocus=null}
 $('goSettingsDiagnostics').onclick=()=>{
@@ -128,8 +130,51 @@ async function runDesktopUpdate(){
 nativeCallbacks.updateProgress=snapshot=>{renderDesktopUpdate(snapshot);if(snapshot?.state==='error')toast(snapshot.message||'更新未完成。',true)};
 nativeCallbacks.remoteUpdateStatus=renderRemoteUpdate;
 async function loadModelCatalog(refresh=false){
-  state.modelCatalog=await api(`/api/model-catalog${refresh?'?refresh=1':''}`);renderModelCatalog();renderSettingsSummary();return state.modelCatalog;
+  state.modelCatalog=await api(`/api/model-catalog${refresh?'?refresh=1':''}`);
+  renderAnnotationModelCatalog(state.modelCatalog.annotation_models);
+  renderModelCatalog();renderSettingsSummary();return state.modelCatalog;
 }
+function renderAnnotationModelCatalog(catalog){
+  $('settingsAnnotationModels').hidden=!catalog;
+  if(!catalog)return;
+  const location=$('settingsAnnotationModelLocation');
+  location.replaceChildren('批量找框模型的預設位置為程式資料夾下的 ',element('code',catalog.install_path));
+  if(catalog.custom_location)location.append('。目前使用自訂位置，請在該位置準備模型。');
+  else if(!catalog.installable)location.append('。目前環境無法從設定安裝。');
+  $('startAnnotationModelInstall').disabled=!catalog.installable||Boolean(state.settingsJob);
+  const states={available:['已找到檔案','ready'],missing:['未找到','warning'],incomplete:['檔案不完整','error']};
+  $('settingsAnnotationModelList').replaceChildren(...catalog.components.map(component=>{
+    const [label,tone]=states[component.state]||['尚未檢查',''];
+    const row=element('div',undefined,'settings-annotation-model-row'),details=element('div');
+    details.append(element('b',component.name));
+    const path=element('small',undefined,'muted');
+    path.append(element('code',component.install_path));
+    if(component.message)path.append(` · ${component.message}`);
+    details.append(path);row.append(details,element('span',label,'settings-state '+tone));
+    return row;
+  }));
+}
+async function chooseAnnotationModelSource(){
+  const body=element('div'),input=element('input'),row=element('div',undefined,'inline annotation-model-source-row');
+  body.append(element('p','選擇已備妥模型的 Vision Workbench 資料夾，或其 models/annotation-assist 資料夾。'));
+  const label=element('label','來源資料夾的完整路徑');
+  input.id='annotationModelSource';input.required=true;input.spellcheck=false;
+  label.htmlFor=input.id;row.append(input);
+  if(state.system?.desktop)row.append(button('瀏覽資料夾','secondary',async()=>{
+    const [source]=await nativeChoose('annotation-models');
+    if(source)input.value=source;
+  }));
+  body.append(label,row);
+  return formDialog({title:'安裝批量找框模型',body,confirm:'安裝',onSubmit:()=>{
+    const source=input.value.trim();
+    if(!source)throw Error('請輸入模型來源資料夾的完整路徑。');
+    return source;
+  }});
+}
+$('startAnnotationModelInstall').onclick=()=>safe(async()=>{
+  const source=await chooseAnnotationModelSource();
+  if(source)await installModelComponent('annotation-assist',{source});
+});
 function catalogState(model){if(model.train||model.predict)return [model.inference_only?'可匯入／推論':'可使用','ready'];if(model.integration!=='ready')return ['整合開發中','warning'];if(model.runtime_state==='broken')return ['需要修復','error'];return ['尚未安裝','warning']}
 function renderModelCatalog(){
   const catalog=state.modelCatalog;if(!catalog)return;const search=$('modelCatalogSearch').value.trim().toLowerCase(),filter=$('modelCatalogFilter').value;
@@ -147,20 +192,55 @@ function renderCatalogDetail(model){
   const root=$('settingsModelDetail');root.replaceChildren();if(!model){root.append(element('p','選擇一個模型查看詳情。'));return}
   const [statusLabel,tone]=catalogState(model),head=element('div',undefined,'model-detail-status'),title=element('div');title.append(element('span',model.family||'MODEL','eyebrow'),element('h3',model.name));head.append(title,element('span',statusLabel,'settings-state '+tone));root.append(head,element('p',model.description));
   const component=(state.modelCatalog.components||[]).find(item=>item.id===model.component),stateNames={ready:'可使用',not_installed:'尚未安裝',broken:'需要修復',planned:'整合開發中'};
-  const capability=model.inference_only&&model.predict?'可匯入外部權重 · 試跑／預標註／匯出 · 不提供續訓':model.train?`訓練可使用 · ${model.predict?'可產生預標註':'不產生物件預標註'} · 可匯出`:model.unavailable_reason||'尚未準備',facts=element('dl',undefined,'catalog-facts');for(const [label,value]of [['任務',model.task_name||model.task],['所需標註',model.annotation||'依模型說明'],['評估指標',(model.metrics||[]).join('、')||'待定'],['執行元件',component?.name||model.component],['元件狀態',stateNames[model.runtime_state]||model.runtime_state],['模型能力',capability]])facts.append(element('dt',label),element('dd',value));root.append(facts,element('p',component?.description||'','field-note'),element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
+  const capability=model.inference_only&&model.predict?'可匯入外部權重 · 試跑／預標註／匯出 · 不提供續訓':model.train?`訓練可使用 · ${model.predict?'可產生預標註':'不產生物件預標註'} · 可匯出`:model.unavailable_reason||'尚未準備';
+  const facts=element('dl',undefined,'catalog-facts');
+  for(const [label,value] of [['任務',model.task_name||model.task],['所需標註',model.annotation||'依模型說明'],['評估指標',(model.metrics||[]).join('、')||'待定'],['執行元件',component?.name||model.component],['元件狀態',stateNames[model.runtime_state]||model.runtime_state],['模型能力',capability]])facts.append(element('dt',label),element('dd',value));
+  if(component?.install_path){
+    const path=element('dd');path.append(element('code',component.install_path));
+    facts.append(element('dt','預設安裝位置'),path);
+  }
+  root.append(facts,element('p',component?.description||'','field-note'));
+  if(component?.install_path)root.append(element('p','移到新電腦後，請在新位置重新安裝此執行環境。','field-note'));
+  root.append(element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
   const actions=element('div',undefined,'catalog-actions');
   if(model.train){const use=button('回到訓練並選用','primary',()=>{if(!state.project){toast('請先開啟專案。',true);return}closeSettings();switchStage('train').then(()=>{$('trainingEngine').value=model.key;renderTraining()})});actions.append(use)}
   else if(model.integration==='ready'&&component?.installable){const install=button(component.state==='broken'?'修復必要元件':'安裝必要元件','primary',()=>safe(()=>installModelComponent(component.id)));actions.append(install)}
   else {const planned=button('查看開發狀態','secondary',()=>toast('此模型已納入交付待辦；完成資料、評估與推論 adapter 後才會開放安裝。'));actions.append(planned)}
   root.append(actions);
 }
-async function installModelComponent(componentId){
-  const component=(state.modelCatalog.components||[]).find(item=>item.id===componentId);if(!component)throw Error('找不到模型元件');
-  const job=await api(`/api/model-components/${componentId}/install`,'POST',{});state.settingsJob=job.id;$('settingsJobText').textContent=`正在準備 ${component.name}`;$('settingsJobProgress').hidden=false;$('settingsJobProgress').value=Number.isFinite(job.progress)?job.progress:0;
-  let current=job;const timing=new TaskTiming();timing.update(current.progress,current.state);
-  while(!['succeeded','failed','cancelled'].includes(current.state)){await new Promise(resolve=>setTimeout(resolve,650));current=await api(`/api/jobs/${job.id}`);timing.update(current.progress,current.state,current.progress_phase);$('settingsJobText').textContent=`${timing.text()} · ${taskStage(current.message||`正在準備 ${component.name}`)}`;$('settingsJobProgress').value=Number.isFinite(current.progress)?current.progress:0}
-  state.settingsJob=null;$('settingsJobProgress').hidden=true;if(current.state!=='succeeded')throw Error(current.error||current.message||'安裝未完成');
-  await loadModelCatalog(true);if(state.project)await loadTraining({quiet:true});$('settingsJobText').textContent=`${component.name} 已安裝並通過檢查`;toast(`${component.name} 已可使用。`);
+async function installModelComponent(componentId,payload={}){
+  if(state.settingsJob)return;
+  const isAnnotation=componentId==='annotation-assist';
+  const component=(state.modelCatalog.components||[]).find(item=>item.id===componentId);
+  if(isAnnotation&&!state.modelCatalog.annotation_models?.installable)throw Error('目前無法從設定安裝標註輔助模型。');
+  if(!isAnnotation&&!component)throw Error('找不到模型元件');
+  const name=isAnnotation?'標註輔助模型':component.name;
+  const action=$('startAnnotationModelInstall'),status=$('settingsJobText'),progress=$('settingsJobProgress');
+  state.settingsJob=true;action.disabled=true;
+  status.textContent=`正在準備 ${name}`;progress.value=0;progress.hidden=false;
+  try{
+    let current=await api(`/api/model-components/${componentId}/install`,'POST',payload);
+    const jobId=current.id,timing=new TaskTiming();
+    state.settingsJob=jobId;timing.update(current.progress,current.state);
+    progress.value=Number.isFinite(current.progress)?current.progress:0;
+    while(!['succeeded','failed','cancelled'].includes(current.state)){
+      await new Promise(resolve=>setTimeout(resolve,650));
+      current=await api(`/api/jobs/${jobId}`);
+      timing.update(current.progress,current.state,current.progress_phase);
+      status.textContent=`${timing.text()} · ${taskStage(current.message||`正在準備 ${name}`)}`;
+      progress.value=Number.isFinite(current.progress)?current.progress:0;
+    }
+    if(current.state!=='succeeded')throw Error(current.error||current.message||'安裝未完成');
+  }catch(error){
+    status.textContent=`${name} 安裝未完成`;
+    throw error;
+  }finally{
+    state.settingsJob=null;progress.hidden=true;action.disabled=!state.modelCatalog?.annotation_models?.installable;
+  }
+  status.textContent=isAnnotation?'標註輔助模型檔案已安裝':`${name} 已安裝並通過檢查`;
+  toast(isAnnotation?'標註輔助模型檔案已安裝。':`${name} 已可使用。`);
+  await loadModelCatalog(!isAnnotation);
+  if(!isAnnotation&&state.project)await loadTraining({quiet:true});
 }
 return {settingValue, saveSetting, applySettings, showSettingsPage, openSettings, closeSettings, renderSettingsSummary, parseNativeResult, invokeNativeUpdate, renderRemoteVersion, refreshRemoteVersion, runRemoteUpdate, renderDesktopUpdate, refreshDesktopUpdate, runDesktopUpdate, loadModelCatalog, catalogState, renderModelCatalog, renderCatalogDetail, installModelComponent};
 }

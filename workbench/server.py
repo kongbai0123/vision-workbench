@@ -17,6 +17,7 @@ from .routes import validate_method, MethodNotAllowed
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__
+from .annotation_model_install import annotation_model_catalog, install_annotation_models
 from .jobs import JobManager
 from .model_uploads import ModelUploadStore
 from .store import ConflictError, ProjectStore, dump
@@ -340,7 +341,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"projects":self.app.store.list_projects()})
             if path == "/api/model-catalog":
                 refresh = parse_qs(urlsplit(self.path).query).get("refresh", ["0"])[0] == "1"
-                return self.json(self.app.training.refresh_components() if refresh else self.app.training.capabilities())
+                catalog = self.app.training.refresh_components() if refresh else self.app.training.capabilities()
+                return self.json({**catalog, "annotation_models": annotation_model_catalog(APP_ROOT)})
             if parts[:2] == ['api','model-trials'] and len(parts)==5 and parts[3]=='frames':
                 image=self.app.training.model_trial_image(parts[2],parts[4])
                 return self.send_bytes(image.read_bytes(),'image/jpeg')
@@ -469,6 +471,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(self.app.store.create_project(payload.get("name")))
             if parts[:2] == ["api", "model-components"] and len(parts) == 4 and parts[3] == "install" and method == "POST":
                 component_id = parts[2]
+                if component_id == "annotation-assist":
+                    source = payload.get("source")
+                    if not isinstance(source, str) or not source.strip():
+                        raise ValueError("請提供已備妥的標註模型資料夾")
+                    return self.json(self.app.jobs.submit("model-install", lambda progress:
+                        install_annotation_models(APP_ROOT, source.strip(), progress)))
                 return self.json(self.app.jobs.submit("model-install", lambda progress:
                     self.app.training.install_component(component_id, progress)))
             if parts[:2] == ["api", "jobs"] and len(parts) == 4 and method == "POST":

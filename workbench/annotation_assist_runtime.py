@@ -29,8 +29,10 @@ PHASES = {
 GEMMA_SCHEMA = 'vision_workbench.annotation_assist_gemma.v1'
 
 
-def model_home():
-    return Path(os.environ.get(MODEL_ENV, ROOT / 'models' / 'annotation-assist')).resolve()
+def model_home(app_root=None):
+    app_root = Path(app_root).resolve() if app_root is not None else ROOT
+    directory = Path(os.environ.get(MODEL_ENV) or 'models/annotation-assist')
+    return (app_root / directory).resolve()
 
 
 def available():

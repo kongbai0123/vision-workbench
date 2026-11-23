@@ -35,6 +35,7 @@ COMPONENTS = {
         "name": "TorchVision 訓練環境", "installable": True,
         "description": "共用於 Mask R-CNN、Faster R-CNN、DeepLabV3 與 TorchVision 分類模型。",
         "requirements": "requirements-training.txt",
+        "install_path": ".venv-training",
     },
     "anomalib": {
         "name": "Anomalib 異常檢測環境", "installable": False,
@@ -44,6 +45,7 @@ COMPONENTS = {
         "name": "Ultralytics 偵測與分割環境", "installable": True,
         "description": "RT-DETR 與 YOLO26 Detect／Seg 的獨立環境；安裝前請確認 AGPL-3.0 或 Enterprise 授權。",
         "requirements": "requirements-ultralytics.txt",
+        "install_path": ".venv-models/ultralytics",
     },
 }
 
@@ -134,20 +136,27 @@ class ModelRegistry:
 
     @property
     def training_python(self) -> Path:
-        configured = os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON") or self._configured_python
-        isolated = self.app_root / ".venv-training" / "Scripts" / "python.exe"
-        return Path(configured or (isolated if isolated.is_file() else sys.executable)).resolve()
+        configured = os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON")
+        if configured:
+            return (self.app_root / configured).resolve()
+        isolated = self._installed_python("torchvision")
+        return Path(self._configured_python or (isolated if isolated.is_file() else sys.executable)).resolve()
+
+    def _installed_python(self, component_id: str) -> Path:
+        default = Path(".venv-models") / component_id
+        install_path = COMPONENTS.get(component_id, {}).get("install_path", default)
+        return self.app_root / install_path / "Scripts" / "python.exe"
 
     def component_python(self, component_id: str) -> Path:
         if component_id == "torchvision":
             return self.training_python
         if component_id == "builtin":
             return Path(sys.executable).resolve()
-        return (self.app_root / ".venv-models" / component_id / "Scripts" / "python.exe").resolve()
+        return self._installed_python(component_id).resolve()
 
     def _probe_torchvision(self):
         python = self.training_python
-        isolated = self.app_root / ".venv-training" / "Scripts" / "python.exe"
+        isolated = self._installed_python("torchvision")
         dedicated = bool(os.environ.get("VISION_WORKBENCH_TRAINING_PYTHON") or self._configured_python or isolated.is_file())
         code = ("import json,torch,torchvision,tqdm; print(json.dumps({"
                 "'torch':torch.__version__,'torchvision':torchvision.__version__,'tqdm':tqdm.__version__,"

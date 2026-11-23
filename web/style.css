@@ -341,8 +341,20 @@
 .settings-subsection{margin-top:25px;scroll-margin-block-start:16px}
 .settings-subsection h3{font-size:14px}
 .settings-section-with-action{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:5px 15px}
+.settings-model-group+.settings-model-group{margin-top:24px}
+.settings-model-group h3{font-size:14px;margin-bottom:9px}
+.settings-model-group .model-catalog-tools{grid-template-columns:minmax(0,1fr) minmax(135px,160px)}
+.settings-model-group .settings-model-detail h3{font-size:18px;margin-bottom:0}
+.settings-annotation-model-list{border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.settings-annotation-model-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px}
+.settings-annotation-model-row+.settings-annotation-model-row{border-top:1px solid var(--line)}
+.settings-annotation-model-row>div{min-width:0}
+.settings-annotation-model-row small{display:block;margin-top:3px}
+.settings-model-group code{overflow-wrap:anywhere}
+#settingsAnnotationModelLocation{margin:5px 0 12px}
+.annotation-model-source-row input{flex:1;min-width:0}
 .settings-fact b{overflow-wrap:anywhere}
-@media(max-width:720px){.settings-layout{grid-template-rows:auto minmax(0,1fr)}.settings-fact{grid-template-columns:minmax(90px,30%) minmax(0,1fr)}}
+@media(max-width:720px){.settings-layout{grid-template-rows:auto minmax(0,1fr)}.settings-fact{grid-template-columns:minmax(90px,30%) minmax(0,1fr)}.settings-model-group .model-catalog-tools{grid-template-columns:1fr}}
 .review-filter-tools{flex-wrap:wrap;justify-content:flex-end}.review-filter-tools input{width:190px}.review-filter-tools select{width:auto;min-width:125px}
 
 /* Dataset splitting is a first-class workflow stage between review and training. */

@@ -102,7 +102,7 @@ function button(text,className='secondary',click) {const b=document.createElemen
 function element(tag,text,className) {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
 
 const {settingValue, saveSetting, applySettings, showSettingsPage, openSettings, closeSettings, renderSettingsSummary, parseNativeResult, invokeNativeUpdate, renderRemoteVersion, refreshRemoteVersion, runRemoteUpdate, renderDesktopUpdate, refreshDesktopUpdate, runDesktopUpdate, loadModelCatalog, catalogState, renderModelCatalog, renderCatalogDetail, installModelComponent}=createSettingsPage({$,state,api,element,button,safe,switchStage,toast,setUpdateIndicators,nativeCallbacks,
-  renderTraining:(...args)=>renderTraining(...args),loadTraining:(...args)=>loadTraining(...args)});
+  nativeChoose,formDialog,renderTraining:(...args)=>renderTraining(...args),loadTraining:(...args)=>loadTraining(...args)});
 
 let savePhase='saved';
 function updateSaveControl() {
@@ -1092,7 +1092,7 @@ $('modelCatalogSearch').oninput=renderModelCatalog;$('modelCatalogFilter').oncha
 $('goModelUpdates').onclick=()=>showSettingsPage('models');$('openDesktopUpdater').onclick=()=>safe(runDesktopUpdate);$('checkGithubVersion').onclick=()=>safe(()=>refreshRemoteVersion(true));
 $('githubUpdateButton').onclick=()=>safe(runRemoteUpdate);
 $('copyDiagnostics').onclick=()=>safe(async()=>{await navigator.clipboard.writeText($('diagnosticSummary').textContent);toast('診斷摘要已複製。')});
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('settingsShell').hidden){event.preventDefault();closeSettings();return}if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('formDialog').open)return;if(event.key==='Escape'&&!$('settingsShell').hidden){event.preventDefault();closeSettings();return}if(event.key==='Escape'&&!$('releaseDrawer').hidden){event.preventDefault();closeReleaseDrawer();return}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(state.asset&&!state.busy)safe(()=>saver.flush())}});
 
 $('editorSelector').onchange=()=>safe(()=>switchEditor($('editorSelector').value));
 $('previousAssetTop').onclick=()=>safe(()=>navigateAsset(-1));$('nextAssetTop').onclick=()=>safe(()=>navigateAsset(1));

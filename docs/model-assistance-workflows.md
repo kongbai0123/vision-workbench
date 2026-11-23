@@ -18,9 +18,11 @@ MM 與 Qwen 使用本機權重，推論在 Windows 的斷網 AppContainer 內執
 - **SAM 2.1 框界檢查**使用候選框提示分割，最多檢查每張 6 個 Qwen 建議採用或待覆核的候選。畫布可分別顯示 MM 原始框和 SAM 遮罩外接框。兩框 IoU 低於 0.75 或無法可靠分割的候選會列出覆核原因。兩框重疊程度只衡量模型間框界一致性。
 - **Gemma 4 觀察覆核**可在批次設定另外開啟。它在同一個斷網 AppContainer 內獨立覆核抽查的原始候選，畫面顯示與 Qwen 的一致或分歧、兩次判讀與健全性檢查結果。Gemma 的輸出只供觀察。
 
-本機元件存放於專案的 `models/annotation-assist/`，需包含 `runtime/`（獨立 Python、CUDA 版 PyTorch、Transformers、Pillow 與 Safetensors）、`MM-Grounding-DINO-Tiny/`（含 `health/` 健全性檢查圖）和 `Qwen3-VL-4B-Instruct/`（含權重來源清冊）。可以用 `VISION_WORKBENCH_ANNOTATION_ASSIST_HOME` 指定另一個已備妥的本機目錄。執行時會驗證權重版本與網路隔離。這個目錄與各專案的批次資料保存在本機。
+本機元件存放在 Vision Workbench 程式根目錄下的 `models/annotation-assist/`，需包含 `runtime/`（獨立 Python、CUDA 版 PyTorch、Transformers、Pillow 與 Safetensors）、`MM-Grounding-DINO-Tiny/`（含 `health/` 健全性檢查圖）和 `Qwen3-VL-4B-Instruct/`（含權重來源清冊）。可以用 `VISION_WORKBENCH_ANNOTATION_ASSIST_HOME` 指定另一個已備妥的本機目錄，相對值以程式根目錄為基準。執行時會驗證權重版本與網路隔離。
 
 開啟框界檢查另需 `sam2.1-hiera-tiny/`。開啟觀察覆核另需 `Gemma-4-E4B-it-QAT-Q4/` 的權重和視覺投影器，以及 `_runtimes/llama.cpp-b12541-cuda13.5/` 的本機執行庫。
+
+換電腦時，把已備妥的 `models/annotation-assist` 資料夾放到新電腦可讀取的位置，例如 USB 隨身碟。在新電腦開啟「設定 → 模型與元件」，選擇「從資料夾安裝批量模型」並指定該資料夾。安裝會將該版本使用的元件複製到新 Workbench 的 `models/annotation-assist/`。若有指定自訂位置，請將已備妥的套件放到該位置。設定頁顯示檔案檢查狀態，實際推論仍需要相容的 NVIDIA GPU、驅動程式，以及通過 Workbench 的權重與執行環境檢查。
 
 ### SAM2 互動分割
 

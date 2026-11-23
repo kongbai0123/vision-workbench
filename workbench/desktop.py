@@ -31,7 +31,7 @@ class DialogBridge(QObject):
         self.requested.connect(self.choose)
 
     def __call__(self, kind):
-        if kind not in {"images", "folder", "video", "output"}:
+        if kind not in {"images", "folder", "video", "output", "annotation-models"}:
             raise ValueError("檔案選擇器類型無效")
         request = {"kind":kind, "event":threading.Event(), "paths":[]}
         self.requested.emit(request)
@@ -43,8 +43,13 @@ class DialogBridge(QObject):
     def choose(self, request):
         try:
             kind = request["kind"]
-            if kind in {"folder", "output"}:
-                value = QFileDialog.getExistingDirectory(self.parent_window, "選擇匯出位置" if kind == "output" else "匯入整份影像資料夾")
+            folder_titles = {
+                "folder": "匯入整份影像資料夾",
+                "output": "選擇匯出位置",
+                "annotation-models": "選擇已備妥的標註模型資料夾",
+            }
+            if kind in folder_titles:
+                value = QFileDialog.getExistingDirectory(self.parent_window, folder_titles[kind])
                 request["paths"] = [value] if value else []
             elif kind == "model":
                 value, _ = QFileDialog.getOpenFileName(self.parent_window, "匯入 YOLO／RT-DETR 權重", "", "PyTorch 權重 (*.pt)")

@@ -4,13 +4,14 @@
 
 ## 選配元件
 
-先依 [快速開始](../README.md#快速開始) 安裝主程式，再依工作需求準備元件。環境與權重首次安裝需網路；準備完成後可在本機執行。
+先依 [快速開始](../README.md#快速開始) 安裝主程式，再依工作需求準備元件。線上準備環境與權重需要網路，準備完成後可在本機執行。批量找框可從已備妥的本機資料夾離線安裝。
 
 | 元件 | 用途 | 準備方式 |
 | --- | --- | --- |
 | Labelme | 嵌入式標註編輯 | 隨主程式安裝 |
 | GrabCut | 傳統影像分割 | 隨主程式提供 |
 | SAM2 | AI 輔助分割 | 執行下方 AI 安裝指令 |
+| 批量找框 | MM Grounding DINO 找框、Qwen 判讀、選用 SAM 2.1 與 Gemma 4 | 設定 → 模型與元件 → 從資料夾安裝批量模型 |
 | TorchVision | Mask R-CNN、Faster R-CNN、DeepLabV3、圖片分類 | 設定中的模型與元件，或下方訓練環境指令 |
 | Ultralytics | RT-DETR、YOLO26 Detect／Seg | 設定 → 模型與元件 → 安裝必要元件 |
 | CVAT | 本機網頁標註編輯 | 在編輯器選擇 CVAT，依安裝引導準備 WSL 2 與 Docker |
@@ -27,7 +28,7 @@ TorchVision：
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Training
 ```
 
-TorchVision 使用 `.venv-training`；Ultralytics 使用 `.venv-models/ultralytics`。GPU 加速需要相容的 NVIDIA GPU 與驅動程式；是否可用以設定頁檢查結果為準。相機採集需要 Windows 可辨識的影像裝置。
+設定中心顯示以 Vision Workbench 程式根目錄為基準的安裝路徑。換電腦時，在「模型與元件」重新安裝 TorchVision 或 Ultralytics，程式會分別建立 `.venv-training` 和 `.venv-models/ultralytics`。互動 SAM 2.1 權重安裝在 `models/sam2.1-hiera-tiny`。GPU 加速需要相容的 NVIDIA GPU 與驅動程式。相機採集需要 Windows 可辨識的影像裝置。
 
 YOLO26 Detect／Seg 預設使用預訓練權重微調，也可選擇隨機初始化；首次訓練可能下載權重。Detect 將矩形或面積標註轉為緊密框，不執行 Seg 的多邊形孔洞相容檢查。RT-DETR 目前從隨機權重開始訓練。Ultralytics 元件使用 AGPL-3.0 或 Enterprise 授權，請查閱安裝頁說明。
 

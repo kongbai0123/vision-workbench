@@ -255,7 +255,20 @@
       <div id="computeSummary" class="settings-facts"></div>
      </section>
     </section>
-    <section data-settings-panel="models" hidden><div class="settings-section-heading"><h2>模型與元件</h2><p>先了解用途，再按需要準備本機元件。選取模型不會自動下載。</p></div><div class="model-catalog-tools"><input id="modelCatalogSearch" type="search" placeholder="搜尋模型或用途"><select id="modelCatalogFilter"><option value="all">全部任務</option><option value="ready">本機可用</option><option value="unavailable">尚待準備</option></select><button id="refreshModelCatalog" class="secondary">重新檢查</button></div><div class="model-catalog-layout"><div id="settingsModelList" class="settings-model-list"></div><article id="settingsModelDetail" class="settings-model-detail"><div class="report-empty"><span>◇</span><h3>選擇一個模型</h3><p>查看用途、標註需求、執行環境與授權。</p></div></article></div></section>
+    <section data-settings-panel="models" hidden>
+     <div class="settings-section-heading settings-section-with-action"><div><h2>模型與元件</h2><p>查看模型用途及本機安裝位置。</p></div><button id="refreshModelCatalog" class="secondary">重新檢查</button></div>
+     <section id="settingsAnnotationModels" class="settings-model-group" aria-labelledby="settingsAnnotationModelsTitle" hidden>
+      <div class="settings-section-with-action"><h3 id="settingsAnnotationModelsTitle">標註輔助模型</h3><button id="startAnnotationModelInstall" type="button" class="secondary" disabled>從資料夾安裝批量模型</button></div>
+      <p id="settingsAnnotationModelLocation"></p>
+      <div id="settingsAnnotationModelList" class="settings-annotation-model-list"></div>
+      <p class="field-note">搬移時請保留完整模型資料夾。開始推論時會另外檢查模型與執行環境。</p>
+     </section>
+     <section class="settings-model-group" aria-labelledby="settingsTrainingModelsTitle">
+      <h3 id="settingsTrainingModelsTitle">訓練與專案模型</h3>
+      <div class="model-catalog-tools"><input id="modelCatalogSearch" type="search" placeholder="搜尋模型或用途" aria-label="搜尋訓練與專案模型"><select id="modelCatalogFilter" aria-label="篩選訓練與專案模型"><option value="all">全部任務</option><option value="ready">本機可用</option><option value="unavailable">尚待準備</option></select></div>
+      <div class="model-catalog-layout"><div id="settingsModelList" class="settings-model-list"></div><article id="settingsModelDetail" class="settings-model-detail"><div class="report-empty"><span>◇</span><h3>選擇一個模型</h3><p>查看用途、標註需求、執行環境與授權。</p></div></article></div>
+     </section>
+    </section>
     <section data-settings-panel="editors" hidden><div class="settings-section-heading"><h2>編輯器與服務</h2><p>三種編輯器共用同一份專案修訂與審核流程。</p></div><div class="setting-row"><div><b>內建編輯器</b><small>矩形、多邊形、旋轉框與原生遮罩。</small></div><span class="settings-state ready">可使用</span></div><div class="setting-row"><div><b>Labelme</b><small>桌面版內嵌；存檔後同步回工作台。</small></div><span id="settingsLabelmeState" class="settings-state">依桌面環境</span></div><div class="setting-row"><div><b>CVAT</b><small>本機服務；修改讀回後建立待審修訂。</small></div><span class="settings-state">按使用時檢查</span></div></section>
     <section data-settings-panel="updates" hidden>
      <div class="settings-section-heading settings-section-with-action">
