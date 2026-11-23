@@ -1,4 +1,10 @@
 import {TaskTiming, taskStage} from '../task-timing.mjs';
+
+const mergedSettingsSections = new Map([
+  ['compute', ['general', 'settingsComputeSection']],
+  ['diagnostics', ['updates', 'settingsDiagnosticsSection']],
+]);
+
 // Settings and model-catalog page; dependencies are injected for browser tests.
 export function createSettingsPage(context) {
 const {$, state, api, element, button, safe, switchStage, toast, setUpdateIndicators, renderTraining, loadTraining, nativeCallbacks}=context;
@@ -7,10 +13,19 @@ function settingValue(name){try{return localStorage.getItem(`vision-workbench.${
 function saveSetting(name,value){try{localStorage.setItem(`vision-workbench.${name}`,value)}catch{}applySettings()}
 function applySettings(){document.body.style.zoom=settingValue('scale');if($('settingScale'))$('settingScale').value=settingValue('scale');if($('settingDevice'))$('settingDevice').value=settingValue('device')}
 
-function showSettingsPage(page='general'){
-  state.settingsPage=page;document.querySelectorAll('[data-settings-page]').forEach(item=>item.classList.toggle('active',item.dataset.settingsPage===page));
+function showSettingsPage(requestedPage='general'){
+  const [page, section] = mergedSettingsSections.get(requestedPage) || [requestedPage];
+  state.settingsPage=page;
+  for(const item of document.querySelectorAll('[data-settings-page]')){
+    const active=item.dataset.settingsPage===page;
+    item.classList.toggle('active',active);
+    if(active)item.setAttribute('aria-current','page');
+    else item.removeAttribute('aria-current');
+  }
   document.querySelectorAll('[data-settings-panel]').forEach(item=>item.hidden=item.dataset.settingsPanel!==page);
-  if(page==='updates'){
+  $('settingsContent').scrollTop=0;
+  if(section)$(section).scrollIntoView({block:'start'});
+  if(requestedPage==='updates'){
     void refreshDesktopUpdate().catch(error=>renderDesktopUpdate({state:'unavailable',count:null,changes:[],message:error.message}));
     void refreshRemoteVersion().catch(error=>renderRemoteVersion({state:'unavailable',message:error.message}));
   }
@@ -22,6 +37,10 @@ async function openSettings(page='general',modelKey=null){
   await loadModelCatalog();renderSettingsSummary();$('closeSettings').focus();
 }
 function closeSettings(){if($('settingsShell').hidden)return;$('settingsShell').hidden=true;state.settingsFocus?.focus?.();state.settingsFocus=null}
+$('goSettingsDiagnostics').onclick=()=>{
+  showSettingsPage('diagnostics');
+  $('settingsDiagnosticsTitle').focus({preventScroll:true});
+};
 function renderSettingsSummary(){
   if(!state.system)return;
   $('settingsVersion').textContent=`Vision Workbench ${state.system.version||'—'}`;

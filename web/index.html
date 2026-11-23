@@ -240,20 +240,28 @@
   <header class="settings-heading"><div><span class="eyebrow">WORKBENCH SETTINGS</span><h1 id="settingsTitle">設定中心</h1></div><button id="closeSettings" class="icon-button" aria-label="關閉設定">×</button></header>
   <div class="settings-layout">
    <nav class="settings-nav" aria-label="設定分類">
-    <button data-settings-page="general" class="active">一般</button>
+    <button data-settings-page="general" class="active" aria-current="page">一般與環境</button>
     <button data-settings-page="models">模型與元件</button>
-    <button data-settings-page="compute">運算與儲存</button>
     <button data-settings-page="editors">編輯器與服務</button>
-    <button data-settings-page="updates" class="settings-nav-alert">更新與版本<span id="settingsUpdateNavDot" class="update-inline-dot" hidden aria-label="有程式更新"></span></button>
-    <button data-settings-page="diagnostics">診斷與關於</button>
+    <button data-settings-page="updates" class="settings-nav-alert">更新與診斷<span id="settingsUpdateNavDot" class="update-inline-dot" hidden aria-label="有程式更新"></span></button>
    </nav>
-   <div class="settings-content">
-    <section data-settings-panel="general"><div class="settings-section-heading"><h2>一般</h2><p>這些偏好保存在這台電腦，只套用新的操作。</p></div><div class="setting-row"><div><b>介面縮放</b><small>調整工作台內容大小。</small></div><select id="settingScale"><option value="0.9">90%</option><option value="1">100%</option><option value="1.1">110%</option><option value="1.2">120%</option></select></div><div class="setting-row"><div><b>預設訓練裝置</b><small>新建 Run 時使用；仍可在訓練頁個別修改。</small></div><select id="settingDevice"><option value="auto">自動</option><option value="cuda">NVIDIA CUDA</option><option value="cpu">CPU</option></select></div></section>
+   <div id="settingsContent" class="settings-content">
+    <section data-settings-panel="general">
+     <div class="settings-section-heading"><h2>一般與環境</h2><p>偏好設定保存在這台電腦。</p></div>
+     <div class="setting-row"><div><b>介面縮放</b><small>調整工作台內容大小。</small></div><select id="settingScale" aria-label="介面縮放"><option value="0.9">90%</option><option value="1">100%</option><option value="1.1">110%</option><option value="1.2">120%</option></select></div>
+     <section id="settingsComputeSection" class="settings-subsection" aria-labelledby="settingsComputeTitle">
+      <h3 id="settingsComputeTitle">運算與儲存</h3>
+      <div class="setting-row"><div><b>預設訓練裝置</b><small>新建 Run 時使用，可在訓練頁個別修改。</small></div><select id="settingDevice" aria-label="預設訓練裝置"><option value="auto">自動</option><option value="cuda">NVIDIA CUDA</option><option value="cpu">CPU</option></select></div>
+      <div id="computeSummary" class="settings-facts"></div>
+     </section>
+    </section>
     <section data-settings-panel="models" hidden><div class="settings-section-heading"><h2>模型與元件</h2><p>先了解用途，再按需要準備本機元件。選取模型不會自動下載。</p></div><div class="model-catalog-tools"><input id="modelCatalogSearch" type="search" placeholder="搜尋模型或用途"><select id="modelCatalogFilter"><option value="all">全部任務</option><option value="ready">本機可用</option><option value="unavailable">尚待準備</option></select><button id="refreshModelCatalog" class="secondary">重新檢查</button></div><div class="model-catalog-layout"><div id="settingsModelList" class="settings-model-list"></div><article id="settingsModelDetail" class="settings-model-detail"><div class="report-empty"><span>◇</span><h3>選擇一個模型</h3><p>查看用途、標註需求、執行環境與授權。</p></div></article></div></section>
-    <section data-settings-panel="compute" hidden><div class="settings-section-heading"><h2>運算與儲存</h2><p>模型環境和專案資料保存在本機。</p></div><div id="computeSummary" class="settings-facts"></div></section>
     <section data-settings-panel="editors" hidden><div class="settings-section-heading"><h2>編輯器與服務</h2><p>三種編輯器共用同一份專案修訂與審核流程。</p></div><div class="setting-row"><div><b>內建編輯器</b><small>矩形、多邊形、旋轉框與原生遮罩。</small></div><span class="settings-state ready">可使用</span></div><div class="setting-row"><div><b>Labelme</b><small>桌面版內嵌；存檔後同步回工作台。</small></div><span id="settingsLabelmeState" class="settings-state">依桌面環境</span></div><div class="setting-row"><div><b>CVAT</b><small>本機服務；修改讀回後建立待審修訂。</small></div><span class="settings-state">按使用時檢查</span></div></section>
     <section data-settings-panel="updates" hidden>
-     <div class="settings-section-heading"><h2>更新與版本</h2><p>追蹤 GitHub 版本標籤；本機檔案變更可另外驗證並重新啟動。</p></div>
+     <div class="settings-section-heading settings-section-with-action">
+      <div><h2>更新與診斷</h2><p>查看 GitHub 版本與本機程式檔案變更。</p></div>
+      <button id="goSettingsDiagnostics" type="button" class="text-button" aria-controls="settingsDiagnosticsSection">查看診斷摘要</button>
+     </div>
      <div class="setting-row"><div><b>目前版本</b><small id="settingsVersion">讀取中</small></div><span class="settings-state ready">本機版</span></div>
      <article id="githubVersionCard" class="settings-callout update-card">
       <div class="update-card-heading"><div><b>GitHub 版本</b><p id="githubVersionStatus" role="status">正在檢查 GitHub 版本標籤…</p></div><span id="githubVersionBadge" class="settings-state">檢查中</span></div>
@@ -263,8 +271,12 @@
      </article>
      <article id="desktopUpdateCard" class="settings-callout update-card"><div class="update-card-heading"><div><span class="update-card-title"><i id="settingsUpdateCardDot" class="update-inline-dot" hidden></i><b>本機程式檔案</b></span><p id="desktopUpdateStatus" role="status">進入此頁後會讀取本機變更。</p></div><span id="desktopUpdateBadge" class="settings-state">尚未檢查</span></div><div id="desktopUpdateDetails" class="update-details" hidden><b id="desktopUpdateCount"></b><ul id="desktopUpdateFiles" class="update-file-list"></ul></div><div id="desktopUpdateBlockers" class="update-blockers" hidden></div><div class="update-actions"><button id="openDesktopUpdater" class="primary">檢查本機變更</button><small>本機檔案已更新時，可保存工作內容並重新啟動以套用。</small></div></article>
      <article class="settings-callout"><div class="update-card-heading"><div><b>模型與執行元件</b><p>模型套件與權重依需求安裝，不會隨程式更新覆蓋，也不會中斷進行中的訓練。</p></div><span class="settings-state">獨立管理</span></div><button id="goModelUpdates" class="secondary">前往模型與元件</button></article>
+     <section id="settingsDiagnosticsSection" class="settings-subsection" aria-labelledby="settingsDiagnosticsTitle">
+      <h3 id="settingsDiagnosticsTitle" tabindex="-1">診斷摘要</h3>
+      <pre id="diagnosticSummary" class="diagnostic-summary"></pre>
+      <button id="copyDiagnostics" class="secondary">複製診斷摘要</button>
+     </section>
     </section>
-    <section data-settings-panel="diagnostics" hidden><div class="settings-section-heading"><h2>診斷與關於</h2><p>顯示可安全提供給維護人員的本機摘要。</p></div><pre id="diagnosticSummary" class="diagnostic-summary"></pre><button id="copyDiagnostics" class="secondary">複製診斷摘要</button></section>
    </div>
   </div>
   <footer class="settings-footer"><span id="settingsJobText">模型安裝只在使用者按下安裝後開始。</span><progress id="settingsJobProgress" max="100" hidden></progress></footer>
