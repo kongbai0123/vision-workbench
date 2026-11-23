@@ -99,10 +99,11 @@
     <aside id="propertiesSidebar" class="properties-sidebar" aria-label="標註側欄">
      <div class="annotation-new-class">
       <div class="annotation-class-heading">
-       <label for="shapeLabel">新物件類別</label>
+       <span id="annotationClassTitle">新物件類別</span>
        <button id="manageClasses" type="button" class="text-button">管理類別</button>
       </div>
-      <select id="shapeLabel"><option value="">尚未選擇</option></select>
+      <select id="shapeLabel" hidden><option value="">尚未選擇</option></select>
+      <div id="annotationClassChoices" class="annotation-class-choices" role="group" aria-labelledby="annotationClassTitle"></div>
      </div>
      <div id="annotationSidebarTabs" class="annotation-sidebar-tabs" role="tablist" aria-label="標註側欄">
       <button id="annotationObjectsTab" type="button" role="tab" data-editor-tab="objects" aria-controls="annotationObjectsPanel" aria-selected="true" tabindex="0">物件 <span id="shapeCount" class="badge">0 個</span></button>

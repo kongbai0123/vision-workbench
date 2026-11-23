@@ -37,7 +37,7 @@ class Page(QWebEnginePage):
             self.errors.append(f"{source}:{line}: {message}")
 
 
-def check_object_selection(view, js, wait, click, fill):
+def check_object_selection(view, js, wait, click):
     def mouse_click(selector):
         x, y = json.loads(js(f"""JSON.stringify((() => {{
             const rect = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
@@ -71,9 +71,13 @@ def check_object_selection(view, js, wait, click, fill):
         assert js("""(() => {
             const sidebar = document.querySelector('#propertiesSidebar');
             const tabs = document.querySelector('#annotationSidebarTabs');
-            const controls = ['#shapeLabel', '#manageClasses'].map(selector => document.querySelector(selector));
+            const group = document.querySelector('#annotationClassChoices');
+            const choices = [...group.querySelectorAll('button[data-class-name]')];
+            const controls = [group, document.querySelector('#manageClasses'), ...choices];
             const header = [...sidebar.children].find(child => controls.every(control => child.contains(control)));
-            return header && (header.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+            return !document.querySelector('#shapeLabel').getClientRects().length &&
+                choices.map(choice => choice.dataset.className).join() === 'part,spare' &&
+                header && (header.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING) &&
                 controls.every(control => {
                     const rect = control.getBoundingClientRect();
                     return !control.closest('[role=tabpanel]') && rect.width > 0 && rect.height > 0 &&
@@ -90,7 +94,9 @@ def check_object_selection(view, js, wait, click, fill):
     assert_shared_class_controls()
     wait("[...document.querySelectorAll('#shapeList, #annotationObjectsPanel')].some(panel => panel.scrollHeight > panel.clientHeight)")
     js(reset_scroll)
-    fill('#shapeLabel', 'spare')
+    spare_selected = "[...document.querySelectorAll('#annotationClassChoices button[aria-pressed=true]')].map(choice => choice.dataset.className).join() === 'spare'"
+    mouse_click('#annotationClassChoices button[data-class-name="spare"]')
+    wait(spare_selected)
     last = '#shapeList .shape-row[data-shape-id="object-19"]'
     previous = '#shapeList .shape-row[data-shape-id="object-18"]'
     canvas_last = '#overlay [data-shape="object-19"]'
@@ -110,7 +116,7 @@ def check_object_selection(view, js, wait, click, fill):
     mouse_click(previous)
     wait("document.querySelectorAll('#overlay [data-owner=\"object-18\"]').length === 4")
     assert js("document.querySelector('#overlay [data-owner=\"object-19\"]') === null")
-    assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
+    assert js(f"document.querySelector('#selectedShapeLabel').value === 'part' && {spare_selected}")
 
     click('#annotationAiTab')
     wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAiPanel').hidden")
@@ -128,7 +134,7 @@ def check_object_selection(view, js, wait, click, fill):
         assert js(f"[...document.querySelectorAll('#annotationAiContent > [role=tabpanel]')].filter(tab => !tab.hidden).map(tab => tab.id).join() === '{panel}'")
         assert_box_tools()
         assert_shared_class_controls()
-        assert js("document.querySelector('#shapeLabel').value === 'spare'")
+        assert js(spare_selected)
     click('#addBoundingBox')
     assert js("document.querySelector('#addBoundingBox').classList.contains('active')")
     click('#editBoundingBox')
@@ -136,7 +142,7 @@ def check_object_selection(view, js, wait, click, fill):
     click('#annotationObjectsTab')
     wait(f"document.querySelector({json.dumps(previous)}).getAttribute('aria-pressed') === 'true' && {row_visible(previous)}")
     assert_shared_class_controls()
-    assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
+    assert js(f"document.querySelector('#selectedShapeLabel').value === 'part' && {spare_selected}")
     assert not js('window.workbenchState().dirty')
     view.resize(1440, 1000)
 
@@ -258,7 +264,7 @@ def main():
             click('[data-stage=split]');fill('#augmentationExpansion',3)
             click('#continueToTraining');wait("document.querySelector('#trainingSetupReport').textContent.includes('草稿與 D001 不同')")
             assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').read_bytes()==old
-            click('#home');open_project('Setup B');check_object_selection(view, js, wait, click, fill)
+            click('#home');open_project('Setup B');check_object_selection(view, js, wait, click)
             print('OBJECT_SELECTION_OK: selection and labels persist, with Bounding Box tools available across all tabs.', flush=True)
             click('[data-stage=review]')
             wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")

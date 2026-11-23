@@ -107,21 +107,23 @@ def main():
             wait("document.querySelector('#assetList .asset-row:first-child').classList.contains('active') && !document.querySelector('#home').disabled")
             js("document.querySelector('#assetList').removeAttribute('style')")
             capture("03-annotation-workspace")
-            assert js("document.querySelector('#shapeLabel').getClientRects().length>0 && [...document.querySelector('#shapeLabel').options].some(option=>option.value==='工件')")
+            assert js("document.querySelector('#annotationClassChoices button[data-class-name=工件]').getClientRects().length > 0")
             # Category management must produce an immediate, persisted UI change.
             click("#manageClasses");wait("document.querySelector('#formDialog').open")
             fill("#dialogBody textarea","工件\n已修正工件\n暫存類別")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && [...document.querySelector('#shapeLabel').options].some(option=>option.value==='暫存類別')")
+            wait("!document.querySelector('#formDialog').open && !!document.querySelector('#annotationClassChoices button[data-class-name=暫存類別]')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件','暫存類別']
             click("#manageClasses");wait("document.querySelector('#formDialog').open")
             fill("#dialogBody textarea","工件\n已修正工件")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && ![...document.querySelector('#shapeLabel').options].some(option=>option.value==='暫存類別')")
+            wait("!document.querySelector('#formDialog').open && !document.querySelector('#annotationClassChoices button[data-class-name=暫存類別]')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件']
-            fill("#shapeLabel","已修正工件")
+            class_choice = '#annotationClassChoices button[data-class-name="已修正工件"]'
+            class_selected = f"document.querySelector({json.dumps(class_choice)}).getAttribute('aria-pressed') === 'true'"
+            click(class_choice)
             click("#shapeList .shape-row")
-            assert js("document.querySelector('#shapeLabel').value==='已修正工件' && document.querySelector('#selectedShapeLabel').value==='工件'")
+            assert js(f"{class_selected} && document.querySelector('#selectedShapeLabel').value==='工件'")
             fill("#selectedShapeLabel","已修正工件")
             wait("window.workbenchState().dirty")
             click("#saveNow")
@@ -150,7 +152,7 @@ def main():
             assert service.store.get_asset(pid,changed_id)['shape_count']==2
             click("#shapeList .shape-row")
             fill("#selectedShapeLabel","工件")
-            assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Existing-object class changed the new-object default"
+            assert js(class_selected),"Existing-object class changed the new-object default"
             wait("window.workbenchState().dirty")
             click("#saveNow");wait("!window.workbenchState().dirty")
             labels=[shape['label'] for shape in service.store.get_asset(pid,changed_id)['shapes']]
@@ -162,7 +164,7 @@ def main():
             wait("!!document.querySelector('#dialogBody .requires-replacement select')")
             fill("#dialogBody .requires-replacement select","已修正工件")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && ![...document.querySelector('#shapeLabel').options].some(option=>option.value==='工件')")
+            wait("!document.querySelector('#formDialog').open && !document.querySelector('#annotationClassChoices button[data-class-name=工件]')")
             snapshot=service.store.snapshot(pid)
             assert snapshot['classes']==['已修正工件']
             assert not any(shape['label']=='工件' for asset in snapshot['assets'] for shape in asset['shapes'])
@@ -175,9 +177,9 @@ def main():
             assert service.store.get_asset(pid,changed_id)['shape_count']==2,"AI silently committed its candidate"
             click("#acceptAI");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==3
-            assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Default class must persist after creation"
+            assert js(class_selected),"Default class must persist after creation"
             # Native Qt pointer events draw a rectangle without leaving AI assistance.
-            fill("#shapeLabel","已修正工件")
+            click(class_choice)
             click("#addBoundingBox")
             coords=json.loads(js("JSON.stringify((()=>{const r=document.querySelector('#overlay').getBoundingClientRect();return [r.left+45/640*r.width,r.top+40/480*r.height,r.left+100/640*r.width,r.top+75/480*r.height]})())"))
             start=QPoint(round(coords[0]),round(coords[1]));end=QPoint(round(coords[2]),round(coords[3]))

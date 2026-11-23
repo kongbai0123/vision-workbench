@@ -173,6 +173,7 @@ function updateNavigation() {
   $('openProjectFolder').disabled=!state.project||state.busy;
   $('dataExport').disabled=!state.project||state.busy||state.transitioning;
   $('shapeLabel').disabled=$('manageClasses').disabled=!state.project||state.busy||state.transitioning;
+  updateAnnotationClassButtons();
   $('selectedShapeLabel').disabled=state.busy||state.transitioning;
   $('runAI').disabled=!state.asset||state.busy||state.transitioning;
   updateAcquisitionControls();
@@ -414,6 +415,30 @@ function updateClassList() {
     const previous = select.value;
     select.replaceChildren(new Option(classes.length ? '選擇類別' : '請先建立類別',''), ...classes.map(name => new Option(name,name)));
     if (classes.includes(previous)) select.value = previous;
+  }
+  const select = $('shapeLabel'), choices = $('annotationClassChoices');
+  choices.replaceChildren(...classes.map(name => {
+    const choice = button('', 'annotation-class-choice', () => {
+      if (select.disabled) return;
+      select.value = name;
+      updateAnnotationClassButtons();
+    });
+    choice.dataset.className = name;
+    choice.title = name;
+    const dot = element('span', undefined, 'annotation-class-dot');
+    dot.style.backgroundColor = colorFor(name);
+    dot.setAttribute('aria-hidden', 'true');
+    choice.append(dot, element('span', name, 'annotation-class-label'));
+    return choice;
+  }));
+  if (!classes.length) choices.append(element('span', '尚無類別', 'muted'));
+  updateAnnotationClassButtons();
+}
+function updateAnnotationClassButtons() {
+  const select = $('shapeLabel');
+  for (const choice of $('annotationClassChoices').querySelectorAll('[data-class-name]')) {
+    choice.disabled = select.disabled;
+    choice.setAttribute('aria-pressed', String(choice.dataset.className === select.value));
   }
 }
 async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPACE',wide=false}) {
