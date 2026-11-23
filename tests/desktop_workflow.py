@@ -107,23 +107,22 @@ def main():
             wait("document.querySelector('#assetList .asset-row:first-child').classList.contains('active') && !document.querySelector('#home').disabled")
             js("document.querySelector('#assetList').removeAttribute('style')")
             capture("03-annotation-workspace")
-            assert js("document.querySelectorAll('#classQuickList .class-choice').length>0")
+            assert js("document.querySelector('#shapeLabel').getClientRects().length>0 && [...document.querySelector('#shapeLabel').options].some(option=>option.value==='工件')")
             # Category management must produce an immediate, persisted UI change.
             click("#manageClasses");wait("document.querySelector('#formDialog').open")
             fill("#dialogBody textarea","工件\n已修正工件\n暫存類別")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && [...document.querySelectorAll('#classQuickList .class-choice')].some(e=>e.innerText==='暫存類別')")
+            wait("!document.querySelector('#formDialog').open && [...document.querySelector('#shapeLabel').options].some(option=>option.value==='暫存類別')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件','暫存類別']
             click("#manageClasses");wait("document.querySelector('#formDialog').open")
             fill("#dialogBody textarea","工件\n已修正工件")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && ![...document.querySelectorAll('#classQuickList .class-choice')].some(e=>e.innerText==='暫存類別')")
+            wait("!document.querySelector('#formDialog').open && ![...document.querySelector('#shapeLabel').options].some(option=>option.value==='暫存類別')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件']
-            click("#classQuickList [data-class-name='已修正工件']")
-            wait("document.querySelector('#classSelectionHint').innerText.includes('目前標註類別：已修正工件')")
-            click("#selectAllShapes")
-            assert js("document.querySelector('#classSelectionHint').innerText.includes('目前標註類別：已修正工件')")
-            fill("#shapeList .shape-class-select","已修正工件")
+            fill("#shapeLabel","已修正工件")
+            click("#shapeList .shape-row")
+            assert js("document.querySelector('#shapeLabel').value==='已修正工件' && document.querySelector('#selectedShapeLabel').value==='工件'")
+            fill("#selectedShapeLabel","已修正工件")
             wait("window.workbenchState().dirty")
             click("#saveNow")
             wait("document.querySelector('#shapeList .shape-name').innerText==='已修正工件'")
@@ -149,7 +148,8 @@ def main():
             assert service.store.get_asset(pid,changed_id)['shape_count']==1
             click("#redo");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==2
-            fill("#shapeList .shape-class-select","工件")
+            click("#shapeList .shape-row")
+            fill("#selectedShapeLabel","工件")
             assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Existing-object class changed the new-object default"
             wait("window.workbenchState().dirty")
             click("#saveNow");wait("!window.workbenchState().dirty")
@@ -162,21 +162,22 @@ def main():
             wait("!!document.querySelector('#dialogBody .requires-replacement select')")
             fill("#dialogBody .requires-replacement select","已修正工件")
             js("document.querySelector('#dialogForm').requestSubmit()")
-            wait("!document.querySelector('#formDialog').open && ![...document.querySelectorAll('#classQuickList .class-choice')].some(e=>e.innerText==='工件')")
+            wait("!document.querySelector('#formDialog').open && ![...document.querySelector('#shapeLabel').options].some(option=>option.value==='工件')")
             snapshot=service.store.snapshot(pid)
             assert snapshot['classes']==['已修正工件']
             assert not any(shape['label']=='工件' for asset in snapshot['assets'] for shape in asset['shapes'])
             # Request an actual local segmentation through the UI and accept it.
-            js("document.querySelector('.ai-section').open=true")
-            click("#selectAllShapes");fill("#aiEngine","grabcut");click("#runAI")
+            click("#selectAllShapes");click("#annotationAiTab")
+            js("document.querySelector('#segmentationPanel').open=true")
+            fill("#aiEngine","grabcut");click("#runAI")
             wait("!document.querySelector('#acceptAI').disabled")
             assert service.store.get_asset(pid,changed_id)['shape_count']==2,"AI silently committed its candidate"
             click("#acceptAI");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==3
             assert js("document.querySelector('#shapeLabel').value==='已修正工件'"),"Default class must persist after creation"
-            js("document.querySelector('.ai-section').open=false")
+            click("#annotationObjectsTab")
             # Native Qt pointer events draw a rectangle on the actual SVG canvas.
-            click("#classQuickList [data-class-name='已修正工件']")
+            fill("#shapeLabel","已修正工件")
             click("[data-tool='rectangle']")
             coords=json.loads(js("JSON.stringify((()=>{const r=document.querySelector('#overlay').getBoundingClientRect();return [r.left+45/640*r.width,r.top+40/480*r.height,r.left+100/640*r.width,r.top+75/480*r.height]})())"))
             start=QPoint(round(coords[0]),round(coords[1]));end=QPoint(round(coords[2]),round(coords[3]))
@@ -261,7 +262,8 @@ def main():
             capture("05c-model-version-filters")
             click("[data-stage='annotate']")
             wait("document.querySelector('#annotationModel').value==='M001'")
-            js("document.querySelector('.ai-section').open=true")
+            click("#annotationAiTab")
+            js("document.querySelector('#annotationPredictionPanel').open=true")
             click("#generateCurrentPrediction")
             wait("document.querySelector('#annotationPredictionList').textContent.includes('M001')",seconds=60)
             generated_candidate=service.training.list_predictions(pid)[0]

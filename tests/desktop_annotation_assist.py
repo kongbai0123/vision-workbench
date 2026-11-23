@@ -105,12 +105,19 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
         js("document.querySelector('#saveNow').click()")
         wait("!window.workbenchState().dirty && !window.workbenchState().saving")
 
+    def open_assist():
+        click('#annotationAiTab')
+        wait("!document.querySelector('#annotationAiPanel').hidden")
+        if not js("document.querySelector('#annotationAssistPanel').open"):
+            click('#annotationAssistPanel > summary')
+        wait("document.querySelector('#annotationAssistPanel').open")
+
     wait("document.querySelector('.project-card-open')")
     click(".project-card-open")
     wait(f"window.workbenchState?.().projectId === {json.dumps(pid)}")
     click('[data-stage="annotate"]')
     wait("window.workbenchState().stage === 'annotate' && document.querySelector('#assetImage').complete")
-    click("#openAnnotationAssist")
+    open_assist()
     choose("#annotationAssistScope", "visible")
     for selector in ('#annotationAssistEnableSam', '#annotationAssistEnableGemma'):
         if js(f"document.querySelector({json.dumps(selector)})?.checked") is not model_checks:
@@ -161,7 +168,8 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     archived = f'button[data-assist-candidate-id="{origin["annotation_assist"]["candidate_id"]}"]'
     assert js(f"Boolean(document.querySelector('#annotationAssistArchivedCandidates ' + {json.dumps(archived)}))")
     assert not js(f"Boolean(document.querySelector('#annotationAssistCandidates ' + {json.dumps(archived)}))")
-    js("document.querySelector('.shape-row').click()")
+    click('#annotationObjectsTab')
+    click('#shapeList .shape-row')
     click('[data-tool="select"]')
     coords = json.loads(js("""JSON.stringify((()=>{
         const h=document.querySelector('#overlay [data-handle="0"]').getBoundingClientRect();
@@ -182,13 +190,16 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     window.grab().save(str(root / "02-saved-correction.png"))
     print("PASS: dragged a native SVG box handle, saved geometry, kept the original candidate", flush=True)
 
+    open_assist()
     click("#annotationAssistResolve")
     wait("document.querySelector('#annotationAssistExceptions').textContent.includes('已完成人工覆核')")
     click('[data-stage="review"]')
     wait("window.workbenchState().stage === 'review' && document.querySelector('.review-card')")
     window.grab().save(str(root / "03-review.png"))
+    wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
     click("#annotationAssistReviewLink")
     wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_id)}")
+    wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationAssistPanel').open")
     wait("document.querySelector('#annotationAssistExceptions').textContent.includes('待人工覆核')")
     assert service.store.get_asset(pid, exception_id)["shapes"] == []
     window.grab().save(str(root / "04-exception.png"))

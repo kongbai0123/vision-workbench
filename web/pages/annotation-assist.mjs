@@ -520,12 +520,12 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
 
   function openPanel() {
     if($('propertiesSidebar').hidden)$('toggleProperties').click();
+    editor.setSidebarTab('ai');
     panel.open=true;
     panel.scrollIntoView({block:'nearest'});
     renderFrame();
   }
 
-  $('openAnnotationAssist').onclick=()=>{openPanel();void safe(()=>refresh());};
   panel.ontoggle=()=>{renderFrame();if(panel.open)void safe(()=>refresh());};
   $('annotationAssistScope').onchange=renderControls;
   $('annotationAssistStart').onclick=()=>safe(start);

@@ -325,9 +325,14 @@ function renderTrialSource(){
   if(summary.mismatch)root.append(element('span',summary.mismatch,'trial-source-mismatch'));
 }
 function renderAnnotationModels(){
-  const select=$('annotationModel'),root=$('annotationPredictionList');if(!select||!root||!state.training)return;const models=state.training.models||[],predictable=models.filter(model=>state.training.capabilities?.engines?.find(item=>item.key===model.engine)?.predict),previous=select.value;select.replaceChildren();
+  const select=$('annotationModel'),root=$('annotationPredictionList');
+  if(!select||!root)return;
+  const previous=select.value;
+  select.replaceChildren();root.replaceChildren();
+  if(!state.training){select.append(new Option('尚未載入專案模型',''));$('generateCurrentPrediction').disabled=true;return;}
+  const models=state.training.models||[],predictable=models.filter(model=>state.training.capabilities?.engines?.find(item=>item.key===model.engine)?.predict);
   if(!predictable.length)select.append(new Option('尚無可用的專案模型',''));else for(const model of predictable)select.append(new Option(`${model.model_version_id} · ${model.engine_name}`,model.model_version_id));if(predictable.some(m=>m.model_version_id===previous))select.value=previous;
-  $('generateCurrentPrediction').disabled=!predictable.length||!state.asset;root.replaceChildren();
+  $('generateCurrentPrediction').disabled=!predictable.length||!state.asset;
   for(const candidate of state.training.predictions||[]){
     const row=candidate.assets.find(asset=>asset.asset_id===state.asset?.id);if(!row)continue;
     const item=element('article',undefined,'prediction-row');item.append(element('b',`${candidate.model_version_id} · ${date(candidate.created_at)}`));

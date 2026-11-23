@@ -37,7 +37,7 @@ class Page(QWebEnginePage):
             self.errors.append(f"{source}:{line}: {message}")
 
 
-def check_object_selection(view, js, wait):
+def check_object_selection(view, js, wait, click, fill):
     def mouse_click(selector):
         x, y = json.loads(js(f"""JSON.stringify((() => {{
             const rect = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
@@ -50,21 +50,20 @@ def check_object_selection(view, js, wait):
     def row_visible(selector):
         return f"""(() => {{
             const row = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
-            return ['#shapeList', '.properties-scroll'].every(selector => {{
+            return ['#shapeList', '#annotationObjectsPanel'].every(selector => {{
                 const viewport = document.querySelector(selector).getBoundingClientRect();
                 return row.top >= viewport.top - 1 && row.bottom <= viewport.bottom + 1;
             }});
         }})()"""
 
+    reset_scroll = "document.querySelector('#shapeList').scrollTop = 0; document.querySelector('#annotationObjectsPanel').scrollTop = 0"
     view.resize(1440, 720)
     wait("document.querySelectorAll('#shapeList .shape-row').length === 20")
-    js("document.querySelector('.ai-section').open = true; document.querySelector('#annotationAssistPanel').open = true")
-    wait("document.querySelector('.properties-scroll').scrollHeight > document.querySelector('.properties-scroll').clientHeight")
-    js("""(() => {
-        const sidebar = document.querySelector('.properties-scroll');
-        sidebar.scrollTop = sidebar.scrollHeight;
-        document.querySelector('#shapeList').scrollTop = 0;
-    })()""")
+    assert js("document.querySelector('#annotationObjectsTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationObjectsPanel').hidden")
+    assert js("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'false' && document.querySelector('#annotationAiPanel').hidden")
+    wait("[...document.querySelectorAll('#shapeList, #annotationObjectsPanel')].some(panel => panel.scrollHeight > panel.clientHeight)")
+    js(reset_scroll)
+    fill('#shapeLabel', 'spare')
     last = '#shapeList .shape-row[data-shape-id="object-19"]'
     previous = '#shapeList .shape-row[data-shape-id="object-18"]'
     canvas_last = '#overlay [data-shape="object-19"]'
@@ -73,8 +72,8 @@ def check_object_selection(view, js, wait):
     mouse_click(canvas_last)
     wait(f"document.querySelector({json.dumps(last)}).classList.contains('active') && {row_visible(last)}")
     assert js("document.querySelectorAll('#shapeList .shape-row.active').length === 1")
-    assert js("document.querySelector('#shapeList').scrollTop > 0")
-    js("document.querySelector('#shapeList').scrollTop = 0")
+    assert js("[...document.querySelectorAll('#shapeList, #annotationObjectsPanel')].some(panel => panel.scrollTop > 0)")
+    js(reset_scroll)
     assert not js(row_visible(last))
     mouse_click(canvas_last)
     wait(row_visible(last))
@@ -84,8 +83,17 @@ def check_object_selection(view, js, wait):
     mouse_click(previous)
     wait("document.querySelectorAll('#overlay [data-owner=\"object-18\"]').length === 4")
     assert js("document.querySelector('#overlay [data-owner=\"object-19\"]') === null")
+    assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
+
+    click('#annotationAiTab')
+    wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAiPanel').hidden")
+    assert js("document.querySelector('#annotationObjectsPanel').hidden")
+    for panel in ('segmentationPanel', 'annotationAssistPanel', 'annotationPredictionPanel'):
+        assert js(f"document.querySelector('#annotationAiPanel #{panel} > summary').getClientRects().length > 0")
+    click('#annotationObjectsTab')
+    wait(f"document.querySelector({json.dumps(previous)}).getAttribute('aria-pressed') === 'true' && {row_visible(previous)}")
+    assert js("document.querySelector('#selectedShapeLabel').value === 'part' && document.querySelector('#shapeLabel').value === 'spare'")
     assert not js('window.workbenchState().dirty')
-    js("document.querySelector('.ai-section').open = false; document.querySelector('#annotationAssistPanel').open = false")
     view.resize(1440, 1000)
 
 
@@ -113,6 +121,8 @@ def main():
              'x': 35 + 120 * (i % 5), 'y': 30 + 105 * (i // 5), 'width': 45, 'height': 42}
             for i in range(20)
         ]}])
+        project = service.store.get_project(other)
+        service.store.manage_classes(other, ['part', 'spare'], {}, project['revision'])
         view=QWebEngineView();page=Page(view);view.setPage(page)
         view.resize(1440,1000);view.show();page.setVisible(True);view.setUrl(QUrl(service.entry_url))
         def js(script):
@@ -185,8 +195,8 @@ def main():
             click('[data-stage=split]');fill('#augmentationExpansion',3)
             click('#continueToTraining');wait("document.querySelector('#trainingSetupReport').textContent.includes('草稿與 D001 不同')")
             assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').read_bytes()==old
-            click('#home');open_project('Setup B');check_object_selection(view, js, wait)
-            print('OBJECT_SELECTION_OK: canvas and list select the same object, reveal its row, and leave edits clean.', flush=True)
+            click('#home');open_project('Setup B');check_object_selection(view, js, wait, click, fill)
+            print('OBJECT_SELECTION_OK: canvas and list stay synchronized, tabs preserve selection, and labels stay independent.', flush=True)
             click('[data-stage=split]')
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             assert js("document.querySelector('#augmentationExpansion').value")=='0', js("JSON.stringify({state:window.workbenchState(),value:document.querySelector('#augmentationExpansion').value,text:document.body.innerText.slice(-4000)})")

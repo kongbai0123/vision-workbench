@@ -135,8 +135,7 @@ const saver = new SaveQueue((id,payload)=>api(projectPath(`/assets/${id}`),'PUT'
   },
 });
 const editor = new AnnotationEditor({
-  onChange:()=>{saver.changed();updateAssetHeader();assistPage.renderFrame();},onNotice:toast,onSelection:selected=>updateObjectClassUI(selected),
-  onCreated:()=>updateObjectClassUI(),
+  onChange:()=>{saver.changed();updateAssetHeader();assistPage.renderFrame();},onNotice:toast,
   onAssetNavigation:direction=>safe(()=>navigateAsset(direction)),
 });
 const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element,safe,toast,filteredAssets,selectAsset,switchStage,flushAllEdits,date});
@@ -144,7 +143,7 @@ const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element
 async function flushAllEdits() {
   if(editor.gesture)throw Error('請先完成畫布上的拖曳操作。');
   if(editor.draft.length)throw Error('目前仍有尚未完成的頂點。請按 Enter 完成，或按 Esc 取消。');
-  if(editor.candidate)throw Error('目前仍有 AI 候選遮罩。請先接受或捨棄，再切換工作或關閉。');
+  if(editor.candidate)throw Error('請先在「AI 輔助 → 互動分割」接受或捨棄候選遮罩，再切換工作或關閉。');
   await saver.flush();
   await workflowDraft.flush();
 }
@@ -168,6 +167,8 @@ function updateNavigation() {
   $('projectName').disabled=!state.project||state.busy||state.transitioning;
   $('openProjectFolder').disabled=!state.project||state.busy;
   $('dataExport').disabled=!state.project||state.busy||state.transitioning;
+  $('shapeLabel').disabled=$('manageClasses').disabled=!state.project||state.busy||state.transitioning;
+  $('selectedShapeLabel').disabled=state.busy||state.transitioning;
   $('runAI').disabled=!state.asset||state.busy||state.transitioning;
   updateAcquisitionControls();
 }
@@ -357,7 +358,7 @@ async function openProject(id) {
     const project=await api(`/api/projects/${id}`);
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;state.reviewYoloCompatibilityLoading=false;trainingMonitor.reset();trainingParameters.reset();
     await workflowDraft.load(id);
-    state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();state.reviewSelection.clear();state.acquireSelection.clear();
+    state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();editor.setSidebarTab('objects');$('annotationPredictionPanel').open=false;state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -403,31 +404,12 @@ function renderProjects() {
   else $('libraryEmpty').querySelector('h2').textContent='建立第一個視覺資料專案';
 }
 function updateClassList() {
-  const selectors=[$('shapeLabel'),$('cameraTargetLabel')],current=selectors.map(select=>select.value);
-  for(const select of selectors)select.replaceChildren(new Option('請先建立並選擇類別',''));
-  $('classQuickList').replaceChildren();
-  for(const name of state.project?.classes||[]) {
-    for(const select of selectors)select.append(new Option(name,name));
-    const choice=button(name,'class-choice',()=>{
-      if(editor.locked)return;
-      $('shapeLabel').value=name;updateObjectClassUI();
-    });
-    choice.dataset.className=name;choice.title=`選擇類別「${name}」`;
-    $('classQuickList').append(choice);
+  const classes = state.project?.classes || [];
+  for (const select of [$('shapeLabel'),$('cameraTargetLabel')]) {
+    const previous = select.value;
+    select.replaceChildren(new Option(classes.length ? '選擇類別' : '請先建立類別',''), ...classes.map(name => new Option(name,name)));
+    if (classes.includes(previous)) select.value = previous;
   }
-  selectors.forEach((select,index)=>{if((state.project?.classes||[]).includes(current[index]))select.value=current[index]});
-  if(!$('classQuickList').children.length)$('classQuickList').append(element('span','尚無類別，請按「新增／刪除」建立第一個類別。','class-empty'));
-  updateObjectClassUI();
-}
-function updateObjectClassUI(selected=editor.selected()) {
-  const label=$('shapeLabel').value.trim();
-  $('classSelectionHint').textContent=label?`目前標註類別：${label}`:'請選擇標註類別';
-  $('classActionHint').textContent='新增物件與切換圖片會沿用目前類別；既有物件可在下方該列修改。';
-  document.querySelectorAll('.class-choice').forEach(choice=>{
-    const active=choice.dataset.className===label;choice.classList.toggle('active',active);
-    choice.setAttribute('aria-pressed',String(active));
-    choice.title=`後續新物件使用「${choice.dataset.className}」`;
-  });
 }
 async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPACE',wide=false}) {
   return new Promise(resolve=>{
@@ -899,7 +881,6 @@ const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, que
 
 const {renderExport, openReleaseDrawer, closeReleaseDrawer, renderBatchTable, autoSplitProject, resetValidation, renderValidation, renderValidationView, validateProject, exportProject}=createExportPage({$,state,formatDescriptions,element,formatNames,date,button,safe,api,number,flushAllEdits,projectPath,toast,readable,pollJob,refreshProject,openSplitManager:(...args)=>openSplitManager(...args)});
 async function runAI() {
-  document.querySelector('.ai-section').open=true;
   if(!state.asset)throw Error('請先選取一張圖片。');
   if(!editor.label())throw Error('請先新增並選擇 AI 候選要使用的物件類別。');
   await saver.flush();if(editor.draft.length||editor.gesture)throw Error('請先完成目前的繪圖操作。');
@@ -919,6 +900,9 @@ const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentatio
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
 const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
+$('annotationPredictionPanel').ontoggle=()=>{
+  if ($('annotationPredictionPanel').open && state.stage==='annotate' && !state.training) void safe(()=>loadTraining());
+};
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);

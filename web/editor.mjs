@@ -41,11 +41,9 @@ function closestEdge(points, point, closed) {
 }
 
 export class AnnotationEditor {
-  constructor({onChange, onSelection, onCreated, onNotice, onAssetNavigation}) {
+  constructor({onChange, onNotice, onAssetNavigation}) {
     this.$ = id => document.getElementById(id);
     this.onChange = onChange;
-    this.onSelection = onSelection;
-    this.onCreated = onCreated;
     this.notice = onNotice;
     this.onAssetNavigation = onAssetNavigation;
     this.asset = null;
@@ -62,8 +60,8 @@ export class AnnotationEditor {
     this.scale = 1;
     this.locked = false;
     this.active = false;
-    this.propertiesScroll = document.querySelector('.properties-scroll');
-    this.propertiesScroll.insertBefore(document.querySelector('.object-section'), this.propertiesScroll.children[1]);
+    this.propertiesScroll = this.$('annotationObjectsPanel');
+    this.sidebarTabs = [this.$('annotationObjectsTab'), this.$('annotationAiTab')];
     this.installEvents();
     this.resizeObserver = new ResizeObserver(() => this.fit(false));
     this.resizeObserver.observe(this.$('canvasArea'));
@@ -99,9 +97,20 @@ export class AnnotationEditor {
     this.$('canvasEmpty').hidden = false;
     this.$('shapeList').replaceChildren();
     this.$('shapeCount').textContent = '0 個';
+    this.$('selectedObjectDetails').hidden = true;
     this.$('imageDimensions').textContent = '— × — px';
   }
   get hasUncommittedWork() { return !!this.draft.length || !!this.gesture || !!this.candidate; }
+  setSidebarTab(view) {
+    const active = view === 'ai' ? this.sidebarTabs[1] : this.sidebarTabs[0];
+    for (const tab of this.sidebarTabs) {
+      const selected = tab === active;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      this.$(tab.getAttribute('aria-controls')).hidden = !selected;
+    }
+    if (view === 'objects' && this.selection.size) this.revealShapeInList([...this.selection].at(-1));
+  }
   setTool(tool) {
     if (this.locked) return;
     if (this.draft.length && !['polygon','linestrip'].includes(tool)) {
@@ -111,7 +120,7 @@ export class AnnotationEditor {
     document.querySelectorAll('[data-tool]').forEach(button => button.classList.toggle('active', button.dataset.tool === tool));
     const hints = {
       select:'拖曳物件移動 · Shift 多選 · 拖曳控制點調整 · 雙擊邊線插入頂點 · Alt 點頂點刪除',
-      rectangle:'拖曳建立矩形 · 類別取自右側物件類別 · Esc 取消操作',
+      rectangle:'拖曳建立矩形 · 使用工具列的新物件類別 · Esc 取消操作',
       obb:'拖曳建立旋轉框 · 選取後可使用右側角度旋轉',
       polygon:'逐點建立多邊形 · Enter 或雙擊完成 · Backspace 撤回頂點 · Esc 取消',
       linestrip:'逐點建立折線 · Enter 或雙擊完成 · Backspace 撤回頂點 · Esc 取消',
@@ -125,7 +134,10 @@ export class AnnotationEditor {
     const hint = document.getElementById('toolHint');
     if (hint) hint.textContent = hints[tool] || '';
     this.$('overlay').style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
-    if(tool.startsWith('ai-'))document.querySelector('.ai-section').open=true;
+    if (tool.startsWith('ai-')) {
+      this.setSidebarTab('ai');
+      this.$('segmentationPanel').open = true;
+    }
     this.updateToolPanels();
   }
   label() { return this.$('shapeLabel').value.trim(); }
@@ -190,7 +202,6 @@ export class AnnotationEditor {
       const next = validateShape({...shape, id:crypto.randomUUID()}, this.asset.width, this.asset.height);
       this.asset.shapes.push(next); this.selection = new Set([next.id]);created=next;
     });
-    if(created)this.onCreated?.(created);
     return created;
   }
   choose(id, multi = false) {
@@ -301,49 +312,77 @@ export class AnnotationEditor {
     this.renderCanvas();
     const list = this.$('shapeList');
     const listScrollTop = list.scrollTop, propertiesScrollTop = this.propertiesScroll.scrollTop;
+    const focusedShape = list.contains(document.activeElement) ? document.activeElement.dataset.shapeId : null;
     const items = document.createDocumentFragment();
     const shapes = this.asset?.shapes || [];
+    const counts = new Map(), occurrences = new Map(), names = new Map();
+    for (const shape of shapes) counts.set(shape.label, (counts.get(shape.label) || 0) + 1);
     this.$('shapeCount').textContent = `${shapes.length} 個`;
     for (const shape of shapes) {
+      const occurrence = (occurrences.get(shape.label) || 0) + 1;
+      occurrences.set(shape.label, occurrence);
+      const displayName = counts.get(shape.label) > 1 ? `${shape.label} #${occurrence}` : shape.label;
+      names.set(shape.id, displayName);
       const item = document.createElement('div');item.className='shape-item';
       const selected = this.selection.has(shape.id);
       const row = document.createElement('button'); row.className = 'shape-row' + (selected?' active':'');
       row.dataset.shapeId = shape.id;
       row.setAttribute('aria-pressed', String(selected));
       const dot = document.createElement('span'); dot.className='shape-dot';dot.style.background=colorFor(shape.label);
-      const name = document.createElement('span');name.className='shape-name';name.textContent=shape.label;name.title=shape.label;
+      const name = document.createElement('span');name.className='shape-name';name.textContent=displayName;name.title=displayName;
       const type = document.createElement('small');type.textContent=(shape.hidden?'隱藏 · ':'')+(shapeNames[kind(shape)]||kind(shape));
       row.append(dot,name,type);row.onclick=event=>{if(!this.locked)this.choose(shape.id,event.shiftKey||event.ctrlKey)};
-      const select=document.createElement('select');select.className='shape-class-select';select.setAttribute('aria-label',`${shape.label} 的物件類別`);
-      for(const option of this.$('shapeLabel').options)if(option.value)select.append(new Option(option.textContent,option.value));
-      if(![...select.options].some(option=>option.value===shape.label))select.append(new Option(shape.label,shape.label));
-      select.value=shape.label;select.disabled=this.locked;
-      select.onchange=()=>this.mutate(()=>{shape.label=select.value;this.selection=new Set([shape.id])});
-      item.append(row,select);items.append(item);
+      item.append(row);items.append(item);
     }
     if (!shapes.length) { const p=document.createElement('p');p.textContent='目前圖片尚無標註物件';items.append(p); }
     list.replaceChildren(items);
     const selected = this.selected(), shape = selected[0];
-    this.$('shapeGeometry').textContent = selected.length > 1 ? `已選取 ${selected.length} 個物件` : shape ? `${shapeNames[kind(shape)]}  x ${shape.x.toFixed(1)} / y ${shape.y.toFixed(1)}\nw ${shape.width.toFixed(1)} / h ${shape.height.toFixed(1)}` : '選取物件可檢視幾何資訊';
+    const single = selected.length === 1;
+    this.$('selectedObjectDetails').hidden = !selected.length;
+    this.$('selectedObjectTitle').textContent = single ? names.get(shape.id) : `已選取 ${selected.length} 個物件`;
+    this.$('shapeGeometry').hidden = !single;
+    this.$('selectedObjectClassField').hidden = !single;
+    if (single) {
+      this.$('shapeGeometry').textContent = `${shapeNames[kind(shape)]}  x ${shape.x.toFixed(1)} / y ${shape.y.toFixed(1)}\nw ${shape.width.toFixed(1)} / h ${shape.height.toFixed(1)}`;
+      const select = this.$('selectedShapeLabel');
+      const options = [...this.$('shapeLabel').options].filter(option => option.value);
+      select.replaceChildren(...options.map(option => new Option(option.text, option.value)));
+      if (!options.some(option => option.value === shape.label)) select.append(new Option(shape.label, shape.label));
+      select.value = shape.label;
+      select.disabled = this.locked;
+    }
     this.$('undo').disabled=!this.history.canUndo||this.locked;
     this.$('redo').disabled=!this.history.canRedo||this.locked;
     for (const id of ['copyShapes','hideShapes','deleteShapes']) this.$(id).disabled=!selected.length||this.locked;
-    this.$('rotateShape').disabled=!shape||!['rectangle','obb'].includes(kind(shape))||this.locked;
+    const hiddenCount = selected.filter(item => item.hidden).length;
+    this.$('hideShapes').textContent = !hiddenCount ? '隱藏' : hiddenCount === selected.length ? '顯示' : '切換顯示';
     this.$('finishShape').disabled=!this.draft.length||this.locked;
     this.updateToolPanels();
-    this.onSelection?.(selected);
     list.scrollTop = listScrollTop;
     this.propertiesScroll.scrollTop = propertiesScrollTop;
+    if (focusedShape) list.querySelector(`[data-shape-id="${CSS.escape(focusedShape)}"]`)?.focus({preventScroll:true});
   }
   updateToolPanels() {
     const brush=['mask','erase'].includes(this.tool);
     const rotate=this.selected().some(s=>['rectangle','obb'].includes(kind(s)));
     const finish=['polygon','linestrip'].includes(this.tool)||!!this.draft.length;
     this.$('brushSettings').hidden=!brush;this.$('rotateSettings').hidden=!rotate;
-    this.$('finishSettings').hidden=!finish;this.$('toolSettings').hidden=!(brush||rotate||finish);
+    this.$('rotateShape').disabled=!rotate||this.locked;
+    this.$('finishSettings').hidden=!finish;this.$('toolSettings').hidden=!(brush||finish);
   }
   installEvents() {
     const svg = this.$('overlay'), area = this.$('canvasArea');
+    this.sidebarTabs.forEach((tab,index) => {
+      const activate = next => this.setSidebarTab(next === 0 ? 'objects' : 'ai');
+      tab.onclick = () => activate(index);
+      tab.onkeydown = event => {
+        if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : 1 - index;
+        activate(next);
+        this.sidebarTabs[next].focus();
+      };
+    });
     // Screen-space guides stay one pixel wide at every image zoom level.
     const guides = document.createElement('div');
     guides.setAttribute('aria-hidden', 'true');
@@ -395,6 +434,10 @@ export class AnnotationEditor {
       this.asset.shapes.push(...copies);this.selection=new Set(copies.map(s=>s.id));
     });
     this.$('hideShapes').onclick=()=>this.mutate(()=>{for(const shape of this.selected())shape.hidden=!shape.hidden});
+    this.$('selectedShapeLabel').onchange=()=>this.mutate(()=>{
+      const [shape, other] = this.selected();
+      if (shape && !other) shape.label = this.$('selectedShapeLabel').value;
+    });
     this.$('deleteShapes').onclick=()=>this.removeSelected();
     this.$('selectAllShapes').onclick=()=>{if(!this.locked&&this.asset){this.selection=new Set(this.asset.shapes.map(s=>s.id));this.render()}};
     this.$('rotateShape').onclick=()=>this.mutate(()=>{for(const shape of this.selected())if(['rectangle','obb'].includes(kind(shape)))Object.assign(shape,rotated(shape,Number(this.$('rotateDegrees').value)||0,this.asset.width,this.asset.height))});
@@ -413,7 +456,7 @@ export class AnnotationEditor {
     event.preventDefault();
     if(event.detail>1&&['polygon','linestrip'].includes(this.tool))return;
     const creates=['rectangle','obb','polygon','linestrip','point'].includes(this.tool)||(this.tool==='mask'&&!this.selected().some(shape=>kind(shape)==='mask'));
-    if(creates&&!this.label()){this.notice('請先按「新增／刪除」建立類別，並選擇這個物件的類別。',true);return;}
+    if(creates&&!this.label()){this.notice('請先在工具列選擇新物件類別。沒有類別時，可使用「管理類別」新增。',true);return;}
     const point=this.point(event), shape=this.asset.shapes.find(s=>s.id===event.target.dataset.shape);
     if(this.tool==='pan'||event.altKey&&event.target.dataset.handle===undefined&&event.shiftKey) {
       this.gesture={kind:'pan',start:{x:event.clientX,y:event.clientY},pan:{...this.pan}};
@@ -510,7 +553,7 @@ export class AnnotationEditor {
   }
   removeSelected() {this.mutate(()=>{this.asset.shapes=this.asset.shapes.filter(shape=>!this.selection.has(shape.id));this.selection.clear()});}
   keyDown(event) {
-    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true]'))return;
+    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true],#annotationSidebarTabs'))return;
     const key=event.key.toLowerCase();
     if(event.ctrlKey||event.metaKey) {
       if(key==='z'){event.preventDefault();this.travel(event.shiftKey?'redo':'undo');}
@@ -519,7 +562,7 @@ export class AnnotationEditor {
       return;
     }
     if(key==='escape'){event.preventDefault();this.cancel();return;}
-    if(key==='enter'){event.preventDefault();this.finish();return;}
+    if(key==='enter'&&!event.target.closest?.('button,summary')){event.preventDefault();this.finish();return;}
     if(key==='backspace'&&this.draft.length){event.preventDefault();this.draft.pop();this.render();return;}
     if(key==='delete'){event.preventDefault();this.removeSelected();return;}
     if(['arrowright','arrowleft','a','d'].includes(key)){event.preventDefault();this.onAssetNavigation(['arrowright','d'].includes(key)?1:-1);return;}
