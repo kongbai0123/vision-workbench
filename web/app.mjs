@@ -12,6 +12,7 @@ import {createReviewPage} from './pages/review.mjs';
 import {createExportPage} from './pages/export.mjs';
 import {createPreparationPage} from './pages/preparation.mjs';
 import {createCameraPage} from './pages/camera.mjs';
+import {createAnnotationAssistPage} from './pages/annotation-assist.mjs';
 import {state, mergeProjectDelta} from './state.mjs';
 import {nativeCallbacks, installNativeCallbacks, connectNative} from './native-bridge.mjs';
 import {nearestVisibleScrollTop} from './scroll-position.mjs';
@@ -129,14 +130,16 @@ const saver = new SaveQueue((id,payload)=>api(projectPath(`/assets/${id}`),'PUT'
       toast(`已自動填補 ${number(saved.mask_cleanup.holes_filled)} 個微小孔洞（共 ${number(saved.mask_cleanup.pixels_filled)} px）。`);
     }
     updateAssetHeader();renderAssetList();
+    assistPage.onSaved(asset);
     status(`已儲存 ${asset.name} · 修訂 ${String(saved.revision).slice(0,8)}`);
   },
 });
 const editor = new AnnotationEditor({
-  onChange:()=>{saver.changed();updateAssetHeader();},onNotice:toast,onSelection:selected=>updateObjectClassUI(selected),
+  onChange:()=>{saver.changed();updateAssetHeader();assistPage.renderFrame();},onNotice:toast,onSelection:selected=>updateObjectClassUI(selected),
   onCreated:()=>updateObjectClassUI(),
   onAssetNavigation:direction=>safe(()=>navigateAsset(direction)),
 });
+const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element,safe,toast,filteredAssets,selectAsset,switchStage,flushAllEdits,date});
 
 async function flushAllEdits() {
   if(editor.gesture)throw Error('請先完成畫布上的拖曳操作。');
@@ -336,7 +339,7 @@ async function switchStage(stage) {
     if(stage==='library')await loadProjects();
     if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await cameraStatus();}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
-    if(stage==='review'){await refreshProject();const ids=new Set(state.project.assets.map(a=>a.id));state.reviewSelection=new Set([...state.reviewSelection].filter(id=>ids.has(id)));renderReview();$('review').scrollTop=state.reviewScroll||0;void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
+    if(stage==='review'){await refreshProject();const ids=new Set(state.project.assets.map(a=>a.id));state.reviewSelection=new Set([...state.reviewSelection].filter(id=>ids.has(id)));renderReview();$('review').scrollTop=state.reviewScroll||0;void safe(()=>assistPage.refresh());void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
     if(stage==='split'){await refreshProject();await loadTraining();await renderSplitPage();}
     if(stage==='train'||stage==='models')await loadTraining();
     if(stage==='export'){
@@ -364,6 +367,7 @@ async function openProject(id) {
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
     renderAssetList();renderMergeList();renderExport();
     if(project.assets.length)await loadAsset(project.assets[0].id);else await cameraStatus();
+    if(project.assets.length)void safe(()=>assistPage.refresh());
     status(`已開啟 ${project.name} · ${number(project.assets.length)} 張影像`);
   } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
 }
@@ -569,7 +573,7 @@ function renderAssetList() {
       itemTop:list.scrollTop+rect.top-bounds.top,itemHeight:rect.height,
     });
   });
-  updateAssetHeader();renderAcquisitionAssets();
+  updateAssetHeader();renderAcquisitionAssets();assistPage.onContextChange();
 }
 function updateAssetHeader() {
   const asset=state.asset,items=filteredAssets(),index=items.findIndex(a=>a.id===asset?.id);

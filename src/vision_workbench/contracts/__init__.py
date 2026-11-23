@@ -8,6 +8,7 @@ ACTIVE_STATES = frozenset({'queued', 'preparing', 'running', 'stopping'})
 
 FIELD_TYPES = {
     'asset_ids': list, 'project_ids': list, 'paths': list, 'shapes': list, 'classes': list,
+    'candidate_ids': list, 'decisions': list,
     'revisions': dict, 'replacements': dict, 'config': dict, 'options': dict,
     'ratios': dict, 'settings': dict, 'revision': int, 'history_id': int, 'delta_base': int,
     'name': str, 'state': str, 'reason': str, 'note': str, 'batch_id': str,
@@ -21,6 +22,8 @@ REQUIRED = (
     (r'/api/projects', 'POST', ('name',)),
     (r'/api/projects/[^/]+/assets/[^/]+', 'PUT', ('shapes', 'revision')),
     (r'/api/projects/[^/]+/review', 'POST', ('asset_ids', 'state', 'revisions')),
+    (r'/api/projects/[^/]+/annotation-assist', 'POST', ('asset_ids', 'classes')),
+    (r'/api/projects/[^/]+/annotation-assist/[^/]+/review', 'POST', ('asset_id', 'revision')),
     (r'/api/projects/[^/]+/training-runs', 'POST', ('dataset_version_id',)),
 )
 
@@ -36,7 +39,9 @@ def validate_request(path, method, payload):
     for name, expected in FIELD_TYPES.items():
         if name in payload and type(payload[name]) is not expected:
             raise ValueError(f'{name} 的資料型別無效')
-    for name in ('asset_ids', 'project_ids', 'paths', 'classes'):
+    for name in ('asset_ids', 'project_ids', 'paths', 'classes', 'candidate_ids'):
+        if name == 'classes' and method == 'POST' and re.fullmatch(r'/api/projects/[^/]+/annotation-assist', path):
+            continue  # Batch classes carry per-class prompt and review instructions.
         if name in payload and any(not isinstance(item, str) for item in payload[name]):
             raise ValueError(f'{name} 必須為文字陣列')
     def finite(value):

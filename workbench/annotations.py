@@ -1,4 +1,5 @@
 """Shared annotation validation and atomic commit for every editor."""
+from contextlib import nullcontext
 import json
 
 
@@ -6,11 +7,12 @@ class AnnotationService:
     def __init__(self, store):
         self.store = store
 
-    def commit(self, pid, updates, *, source='builtin', register_classes=False):
+    def commit(self, pid, updates, *, source='builtin', register_classes=False, db=None):
         from .store import ConflictError, clean_shapes, dump, identifier, timestamp, repair_saved_mask_holes
         prepared = []
         repairs = []
-        with self.store.connection(pid, write=True) as db:
+        transaction = self.store.connection(pid, write=True) if db is None else nullcontext(db)
+        with transaction as db:
             classes = json.loads(db.execute('SELECT classes FROM project').fetchone()[0])
             for original, shapes in updates:
                 row = db.execute('SELECT * FROM assets WHERE id=?', (identifier(original['id']),)).fetchone()

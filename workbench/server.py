@@ -38,6 +38,8 @@ class WorkbenchService:
         self.incoming.mkdir(exist_ok=True)
         self.model_uploads = ModelUploadStore(self.data_root)
         self.jobs = JobManager()
+        from .annotation_assist import AnnotationAssist
+        self.annotation_assist = AnnotationAssist(self.data_root, self.store, self.jobs)
         self.training = TrainingWorkspace(self.data_root, self.store)
         self.dialog = dialog
         self._camera = None
@@ -365,6 +367,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json(self.app.store.get_project(pid))
                 if len(parts) == 4 and parts[3] == "classes":
                     return self.json(self.app.store.class_usage(pid))
+                if parts[3:4] == ['annotation-assist']:
+                    if len(parts) == 4:
+                        return self.json(self.app.annotation_assist.list_runs(pid))
+                    if len(parts) == 5:
+                        return self.json(self.app.annotation_assist.detail(pid, parts[4]))
                 if len(parts) == 4 and parts[3] == "training":
                     self.app.store.get_project(pid, include_assets=False)
                     return self.json(self.app.training.overview(pid))
@@ -581,6 +588,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise FileNotFoundError("找不到訓練操作")
             if len(parts) == 6 and parts[3] == "training-runs" and parts[5] == "stop" and method == "POST":
                 return self.json(self.app.training.stop_run(pid, parts[4]))
+            if len(parts) == 6 and parts[3] == 'annotation-assist' and parts[5] == 'review':
+                return self.json(self.app.annotation_assist.review(pid, parts[4], payload))
             if len(parts) != 4:
                 raise FileNotFoundError("找不到 API")
             from .api_actions import dispatch_project_action

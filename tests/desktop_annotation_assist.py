@@ -1,0 +1,183 @@
+"""Opt-in native desktop smoke using the installed offline MM and Qwen runtime."""
+
+import argparse
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--hammer", type=Path, required=True)
+    parser.add_argument("--second", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--show", action="store_true", help="Keep the checked project open in one desktop window")
+    args = parser.parse_args()
+    if not args.show:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-background-timer-throttling --disable-renderer-backgrounding")
+
+    from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from workbench.desktop import DialogBridge, MainWindow
+    from workbench.server import WorkbenchService
+
+    root = args.output.resolve()
+    root.mkdir(parents=True)
+    paths = [root / f"{name}{source.suffix.lower()}" for name, source in
+             [("01-hammer", args.hammer), ("02-review", args.second)]]
+    for original, copy in zip((args.hammer, args.second), paths):
+        shutil.copyfile(original, copy)
+    app = QApplication([])
+    app.setApplicationName("Vision Workbench")
+    bridge = DialogBridge()
+    service = WorkbenchService(root / "data", dialog=bridge).start()
+    window = None
+    try:
+        project_id = service.store.create_project("MM ＋ Qwen · 鐵鎚與例外覆核示範")["id"]
+        project = service.store.get_project(project_id)
+        service.store.manage_classes(project_id, ["hammer", "screwdriver", "wrench"], {}, project["revision"])
+        asset_ids = service.store.add_assets(project_id, [{"path": path, "shapes": []} for path in paths])["asset_ids"]
+        hammer_id = asset_ids[0]
+        window = MainWindow(service, bridge)
+        window.resize(1440, 900)
+        window.show()
+        summary = exercise_ui(window, service, project_id, hammer_id, asset_ids[1], root, (QEventLoop, QPoint, Qt, QTimer, QTest))
+        (root / "smoke-summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(summary, ensure_ascii=False), flush=True)
+        if args.show:
+            print("READY: desktop demonstration remains open", flush=True)
+            return app.exec()
+        return 0
+    finally:
+        if window is not None:
+            window.allow_close = True
+            window.close()
+        service.close()
+
+
+def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt):
+    QEventLoop, QPoint, Qt, QTimer, QTest = qt
+
+    def js(script):
+        result = []
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        window.page.runJavaScript(script, lambda value: (result.append(value), loop.quit()))
+        timer.start(10000)
+        if not result:
+            loop.exec()
+        timer.stop()
+        if not result:
+            raise AssertionError("Qt JavaScript callback timed out")
+        return result[0]
+
+    def wait(expression, seconds=25):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if js(f"Boolean({expression})"):
+                return
+            QTest.qWait(150)
+        raise AssertionError(expression + "\n" + js("document.body.innerText.slice(-3500)"))
+
+    def click(selector):
+        selector = json.dumps(selector)
+        wait(f"document.querySelector({selector}) && !document.querySelector({selector}).disabled")
+        js(f"document.querySelector({selector}).click()")
+
+    def choose(selector, value):
+        js(f"{{const el=document.querySelector({json.dumps(selector)});el.value={json.dumps(value)};"
+           "el.dispatchEvent(new Event('change',{bubbles:true}));}")
+
+    def save():
+        js("document.querySelector('#saveNow').click()")
+        wait("!window.workbenchState().dirty && !window.workbenchState().saving")
+
+    wait("document.querySelector('.project-card-open')")
+    click(".project-card-open")
+    wait(f"window.workbenchState?.().projectId === {json.dumps(pid)}")
+    click('[data-stage="annotate"]')
+    wait("window.workbenchState().stage === 'annotate' && document.querySelector('#assetImage').complete")
+    click("#openAnnotationAssist")
+    choose("#annotationAssistScope", "visible")
+    started = time.monotonic()
+    click("#annotationAssistStart")
+    wait("document.querySelector('button[data-assist-candidate-id]') || "
+         "document.querySelector('#annotationAssistStatus')?.textContent.includes('失敗')", 600)
+    wait("document.querySelector('button[data-assist-candidate-id]')")
+    assert service.store.get_asset(pid, hammer_id)["shapes"] == [], "AI silently wrote formal labels"
+    batch_id = js("document.querySelector('#annotationAssistRuns').value")
+    initial = service.annotation_assist.detail(pid, batch_id)
+    assert initial["isolation"]["network_denied"] and initial["isolation"]["cuda"]
+    record = next((root / "data" / "projects").glob(f"*/integrations/annotation-assist/{batch_id}/batch.json"))
+    candidate_digest = sha256(record.read_bytes()).hexdigest()
+    print("PASS: real batch completed and proposals stayed separate", flush=True)
+
+    if js("window.workbenchState().assetId") != hammer_id:
+        js("[...document.querySelectorAll('.asset-row')].find(row=>row.innerText.includes('01-hammer'))?.click()")
+        wait(f"window.workbenchState().assetId === {json.dumps(hammer_id)}")
+    candidate = 'button[data-assist-label="hammer"][data-assist-verdict="accepted"]'
+    wait(f"document.querySelector({json.dumps(candidate)})")
+    click(candidate)
+    window.grab().save(str(root / "01-model-evidence.png"))
+    click("#annotationAssistAdopt")
+    wait("document.querySelector('.shape-row')")
+    save()
+    first = service.store.get_asset(pid, hammer_id)
+    assert len(first["shapes"]) == 1
+    js("document.querySelector('.shape-row').click()")
+    click('[data-tool="select"]')
+    coords = json.loads(js("""JSON.stringify((()=>{
+        const h=document.querySelector('#overlay [data-handle="0"]').getBoundingClientRect();
+        return [h.left+h.width/2,h.top+h.height/2];
+    })())"""))
+    start = QPoint(round(coords[0]), round(coords[1]))
+    end = start + QPoint(-12, -8)
+    target = window.view.focusProxy() or window.view
+    button, modifier = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(target, button, modifier, target.mapFrom(window.view, start))
+    QTest.mouseMove(target, target.mapFrom(window.view, end), 80)
+    QTest.mouseRelease(target, button, modifier, target.mapFrom(window.view, end))
+    save()
+    corrected = service.store.get_asset(pid, hammer_id)
+    assert len(corrected["shapes"]) == 1 and corrected["revision"] > first["revision"]
+    shape = corrected["shapes"][0]
+    assert shape["label"] == "hammer" and shape["x"] < first["shapes"][0]["x"]
+    window.grab().save(str(root / "02-saved-correction.png"))
+    print("PASS: dragged a native SVG box handle, saved geometry, kept the original candidate", flush=True)
+
+    click("#annotationAssistResolve")
+    wait("document.querySelector('#annotationAssistExceptions').textContent.includes('已完成人工覆核')")
+    click('[data-stage="review"]')
+    wait("window.workbenchState().stage === 'review' && document.querySelector('.review-card')")
+    window.grab().save(str(root / "03-review.png"))
+    click("#annotationAssistReviewLink")
+    wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_id)}")
+    wait("document.querySelector('#annotationAssistExceptions').textContent.includes('待人工覆核')")
+    assert service.store.get_asset(pid, exception_id)["shapes"] == []
+    window.grab().save(str(root / "04-exception.png"))
+    js("[...document.querySelectorAll('.asset-row')].find(row=>row.innerText.includes('01-hammer'))?.click()")
+    wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(hammer_id)}")
+    wait(f"document.querySelector('[data-shape={json.dumps(shape['id'])}]')")
+    reloaded = service.store.get_asset(pid, hammer_id)
+    assert reloaded["shapes"] == corrected["shapes"]
+    assert sha256(record.read_bytes()).hexdigest() == candidate_digest
+    window.grab().save(str(root / "05-annotation-workbench.png"))
+    print("PASS: a single window preserved the saved box through the review and editor stages", flush=True)
+    return {"project_id": pid, "asset_id": hammer_id, "batch_id": batch_id, "candidate_sha256": candidate_digest,
+            "batch_summary": initial["summary"], "inference_seconds": initial["timing"]["inference_seconds"],
+            "before": first["shapes"][0], "after": shape, "saved_revision": reloaded["revision"],
+            "elapsed_seconds": round(time.monotonic() - started, 2)}
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

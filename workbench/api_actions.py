@@ -140,6 +140,10 @@ def action_ai(self, pid, payload, action):
     return self.json(self.app.ai_job(pid,payload))
 
 
+def action_annotation_assist(self, pid, payload, action):
+    return self.json(self.app.annotation_assist.start(pid, payload.get('asset_ids'), payload.get('classes')))
+
+
 def action_capture(self, pid, payload, action):
     from .acquisition import capture_screen
     self.app.store.get_project(pid, include_assets=False)
@@ -200,6 +204,7 @@ PROJECT_ACTIONS = {
     'predictions': action_predictions,
     'model-trials': action_model_trials,
     'model-comparisons': action_model_comparisons,
+    'annotation-assist': action_annotation_assist,
     'ai': action_ai,
     'capture': action_capture,
     'screen': action_capture,
