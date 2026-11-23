@@ -1,4 +1,5 @@
 import {kind, bounds, vector, validateShape, decodeMask, encodeMask, brush, moved, rotated, resizeOBB, history} from './shapes.mjs';
+import {nearestVisibleScrollTop} from './scroll-position.mjs';
 
 export const shapeNames = {rectangle:'矩形', obb:'旋轉框', polygon:'多邊形', linestrip:'折線', point:'關鍵點', mask:'遮罩'};
 export function colorFor(label) {
@@ -61,8 +62,8 @@ export class AnnotationEditor {
     this.scale = 1;
     this.locked = false;
     this.active = false;
-    const properties=document.querySelector('.properties-scroll');
-    properties.insertBefore(document.querySelector('.object-section'),properties.children[1]);
+    this.propertiesScroll = document.querySelector('.properties-scroll');
+    this.propertiesScroll.insertBefore(document.querySelector('.object-section'), this.propertiesScroll.children[1]);
     this.installEvents();
     this.resizeObserver = new ResizeObserver(() => this.fit(false));
     this.resizeObserver.observe(this.$('canvasArea'));
@@ -197,6 +198,24 @@ export class AnnotationEditor {
     if (multi && this.selection.has(id)) this.selection.delete(id); else this.selection.add(id);
     this.render();
   }
+  revealShapeInList(id) {
+    const list = this.$('shapeList');
+    const row = list.querySelector(`.shape-row.active[data-shape-id="${CSS.escape(id)}"]`);
+    if (!row || !list.clientHeight) return;
+    const item = row.parentElement;
+    for (const container of [list, this.propertiesScroll]) {
+      if (container.scrollHeight <= container.clientHeight) continue;
+      const viewport = container.getBoundingClientRect();
+      const rect = item.getBoundingClientRect();
+      container.scrollTop = nearestVisibleScrollTop({
+        scrollTop: container.scrollTop,
+        viewportHeight: container.clientHeight,
+        contentHeight: container.scrollHeight,
+        itemTop: container.scrollTop + rect.top - viewport.top - container.clientTop,
+        itemHeight: rect.height,
+      });
+    }
+  }
   travel(direction) {
     if (this.locked || this.gesture || !this.asset) return;
     const shapes = this.history[direction](this.asset.shapes);
@@ -280,12 +299,17 @@ export class AnnotationEditor {
   }
   render() {
     this.renderCanvas();
-    const list = this.$('shapeList'); list.replaceChildren();
+    const list = this.$('shapeList');
+    const listScrollTop = list.scrollTop, propertiesScrollTop = this.propertiesScroll.scrollTop;
+    const items = document.createDocumentFragment();
     const shapes = this.asset?.shapes || [];
     this.$('shapeCount').textContent = `${shapes.length} 個`;
     for (const shape of shapes) {
       const item = document.createElement('div');item.className='shape-item';
-      const row = document.createElement('button'); row.className = 'shape-row' + (this.selection.has(shape.id)?' active':'');
+      const selected = this.selection.has(shape.id);
+      const row = document.createElement('button'); row.className = 'shape-row' + (selected?' active':'');
+      row.dataset.shapeId = shape.id;
+      row.setAttribute('aria-pressed', String(selected));
       const dot = document.createElement('span'); dot.className='shape-dot';dot.style.background=colorFor(shape.label);
       const name = document.createElement('span');name.className='shape-name';name.textContent=shape.label;name.title=shape.label;
       const type = document.createElement('small');type.textContent=(shape.hidden?'隱藏 · ':'')+(shapeNames[kind(shape)]||kind(shape));
@@ -295,9 +319,10 @@ export class AnnotationEditor {
       if(![...select.options].some(option=>option.value===shape.label))select.append(new Option(shape.label,shape.label));
       select.value=shape.label;select.disabled=this.locked;
       select.onchange=()=>this.mutate(()=>{shape.label=select.value;this.selection=new Set([shape.id])});
-      item.append(row,select);list.append(item);
+      item.append(row,select);items.append(item);
     }
-    if (!shapes.length) { const p=document.createElement('p');p.textContent='目前圖片尚無標註物件';list.append(p); }
+    if (!shapes.length) { const p=document.createElement('p');p.textContent='目前圖片尚無標註物件';items.append(p); }
+    list.replaceChildren(items);
     const selected = this.selected(), shape = selected[0];
     this.$('shapeGeometry').textContent = selected.length > 1 ? `已選取 ${selected.length} 個物件` : shape ? `${shapeNames[kind(shape)]}  x ${shape.x.toFixed(1)} / y ${shape.y.toFixed(1)}\nw ${shape.width.toFixed(1)} / h ${shape.height.toFixed(1)}` : '選取物件可檢視幾何資訊';
     this.$('undo').disabled=!this.history.canUndo||this.locked;
@@ -307,6 +332,8 @@ export class AnnotationEditor {
     this.$('finishShape').disabled=!this.draft.length||this.locked;
     this.updateToolPanels();
     this.onSelection?.(selected);
+    list.scrollTop = listScrollTop;
+    this.propertiesScroll.scrollTop = propertiesScrollTop;
   }
   updateToolPanels() {
     const brush=['mask','erase'].includes(this.tool);
@@ -402,10 +429,13 @@ export class AnnotationEditor {
           if(owner.points.length<=min){this.notice('刪除後頂點不足。');return;}
           this.mutate(()=>{owner.points.splice(handle,1);Object.assign(owner,bounds(owner.points))});return;
         }
+        this.revealShapeInList(owner.id);
         this.gesture={kind:'handle',before:structuredClone(this.asset.shapes),owner:owner.id,handle,start:point};
       } else if(shape) {
-        if(event.shiftKey||event.ctrlKey){this.choose(shape.id,true);return;}
-        if(!this.selection.has(shape.id))this.choose(shape.id);
+        const multi = event.shiftKey || event.ctrlKey;
+        if (multi || !this.selection.has(shape.id)) this.choose(shape.id, multi);
+        this.revealShapeInList(shape.id);
+        if (multi) return;
         this.gesture={kind:'move',before:structuredClone(this.asset.shapes),start:point};
       } else if(this.selected().some(s=>kind(s)==='mask')) {
         this.gesture={kind:'move',before:structuredClone(this.asset.shapes),start:point};

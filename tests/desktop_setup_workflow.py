@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image
 import numpy as np
-from PySide6.QtCore import QEventLoop, QTimer, QUrl
+from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer, QUrl
 from PySide6.QtTest import QTest
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -37,6 +37,58 @@ class Page(QWebEnginePage):
             self.errors.append(f"{source}:{line}: {message}")
 
 
+def check_object_selection(view, js, wait):
+    def mouse_click(selector):
+        x, y = json.loads(js(f"""JSON.stringify((() => {{
+            const rect = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
+            return [rect.left + rect.width / 2, rect.top + rect.height / 2];
+        }})())"""))
+        target = view.focusProxy() or view
+        point = target.mapFrom(view, QPoint(round(x), round(y)))
+        QTest.mouseClick(target, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+
+    def row_visible(selector):
+        return f"""(() => {{
+            const row = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
+            return ['#shapeList', '.properties-scroll'].every(selector => {{
+                const viewport = document.querySelector(selector).getBoundingClientRect();
+                return row.top >= viewport.top - 1 && row.bottom <= viewport.bottom + 1;
+            }});
+        }})()"""
+
+    view.resize(1440, 720)
+    wait("document.querySelectorAll('#shapeList .shape-row').length === 20")
+    js("document.querySelector('.ai-section').open = true; document.querySelector('#annotationAssistPanel').open = true")
+    wait("document.querySelector('.properties-scroll').scrollHeight > document.querySelector('.properties-scroll').clientHeight")
+    js("""(() => {
+        const sidebar = document.querySelector('.properties-scroll');
+        sidebar.scrollTop = sidebar.scrollHeight;
+        document.querySelector('#shapeList').scrollTop = 0;
+    })()""")
+    last = '#shapeList .shape-row[data-shape-id="object-19"]'
+    previous = '#shapeList .shape-row[data-shape-id="object-18"]'
+    canvas_last = '#overlay [data-shape="object-19"]'
+    assert not js(row_visible(last)), 'The target row must begin outside the scrollable viewport'
+
+    mouse_click(canvas_last)
+    wait(f"document.querySelector({json.dumps(last)}).classList.contains('active') && {row_visible(last)}")
+    assert js("document.querySelectorAll('#shapeList .shape-row.active').length === 1")
+    assert js("document.querySelector('#shapeList').scrollTop > 0")
+    js("document.querySelector('#shapeList').scrollTop = 0")
+    assert not js(row_visible(last))
+    mouse_click(canvas_last)
+    wait(row_visible(last))
+
+    js(f"document.querySelector({json.dumps(previous)}).scrollIntoView({{block:'nearest'}})")
+    wait(row_visible(previous))
+    mouse_click(previous)
+    wait("document.querySelectorAll('#overlay [data-owner=\"object-18\"]').length === 4")
+    assert js("document.querySelector('#overlay [data-owner=\"object-19\"]') === null")
+    assert not js('window.workbenchState().dirty')
+    js("document.querySelector('.ai-section').open = false; document.querySelector('#annotationAssistPanel').open = false")
+    view.resize(1440, 1000)
+
+
 def main():
     from unittest.mock import patch
     from workbench.training import TrainingWorkspace
@@ -54,6 +106,13 @@ def main():
             Image.new('RGB', (160,120), (20+i*10,80,120)).save(path)
             service.store.add_assets(pid,[{'path':str(path),'batch_id':f'source-{i}', 'shapes':[
                 {'id':f'shape-{i}','type':'rectangle','label':'part','x':10,'y':10,'width':30,'height':30}]}])
+        object_image = root / 'object-selection.png'
+        Image.new('RGB', (640, 480), (80, 95, 110)).save(object_image)
+        service.store.add_assets(other, [{'path': str(object_image), 'shapes': [
+            {'id': f'object-{i}', 'type': 'rectangle', 'label': 'part',
+             'x': 35 + 120 * (i % 5), 'y': 30 + 105 * (i // 5), 'width': 45, 'height': 42}
+            for i in range(20)
+        ]}])
         view=QWebEngineView();page=Page(view);view.setPage(page)
         view.resize(1440,1000);view.show();page.setVisible(True);view.setUrl(QUrl(service.entry_url))
         def js(script):
@@ -126,7 +185,9 @@ def main():
             click('[data-stage=split]');fill('#augmentationExpansion',3)
             click('#continueToTraining');wait("document.querySelector('#trainingSetupReport').textContent.includes('草稿與 D001 不同')")
             assert (service.training.datasets_dir(pid)/'D001'/'manifest.json').read_bytes()==old
-            click('#home');open_project('Setup B');click('[data-stage=split]')
+            click('#home');open_project('Setup B');check_object_selection(view, js, wait)
+            print('OBJECT_SELECTION_OK: canvas and list select the same object, reveal its row, and leave edits clean.', flush=True)
+            click('[data-stage=split]')
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             assert js("document.querySelector('#augmentationExpansion').value")=='0', js("JSON.stringify({state:window.workbenchState(),value:document.querySelector('#augmentationExpansion').value,text:document.body.innerText.slice(-4000)})")
             click('#home');open_project('Setup A');click('[data-stage=split]')
