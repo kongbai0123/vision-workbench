@@ -74,12 +74,7 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核、資
 
 支援 Windows 10／11（64 位元）。新安裝使用 64 位元 Python 3.13，首次安裝需連線下載套件。
 
-以下數字供規劃參考。實際需求會隨影像解析度、批次大小及啟用的模型而變。
-
-| 工作方式 | 硬體與空間規劃 |
-| --- | --- |
-| 手動標註與資料審核 | 建議從 4 核心 CPU、8 GB RAM 與 SSD 上 10 GB 可用空間起步，專案資料另計。可使用內建顯示晶片。 |
-| 本機 AI 批量找框 | 需要 NVIDIA GPU 及相容驅動程式。批量流程以 16 GB VRAM 的 GPU 實測。含選配模型建議預留約 30 GB 可用空間，專案資料另計。 |
+手動標註與審核建議 8 GB RAM，可使用內建顯示晶片。本機 AI 批量找框需要 NVIDIA GPU 與相容驅動程式。 [完整系統需求](docs/system-requirements.md)
 
 ```powershell
 git clone https://github.com/kongbai0123/vision-workbench.git
@@ -111,6 +106,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launch.ps1 -Repair
 ### 更新既有安裝
 
 工作台「設定 → 更新與診斷」會追蹤 GitHub 的版本標籤並提示新版。按一次「從 GitHub 更新」即可保存工作內容、自動備份本機程式修改、下載並驗證新版，再自動重新啟動。訓練或匯入尚在進行時，更新會等待工作完成後繼續。下載失敗時保留原內容並可重試。
+
+使用私人 repo 時，先在每台電腦完成 Git 驗證並確認分支追蹤來源。 [私人 repo 更新條件](docs/usage.md#私人-github-儲存庫)
 
 必要的主程式依賴會在舊程序退出後自動同步，自訂資料位置也會沿用。專案資料、模型與虛擬環境不會被 Git 更新覆蓋。本機程式修改保存在 `.git/workbench-update-backups/` 的復原紀錄與 Git 備份物件，不會自動套回並覆蓋新版。
 

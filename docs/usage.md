@@ -113,6 +113,19 @@ Ultralytics 的 YOLO／RT-DETR 使用亮度、翻轉、旋轉、平移、縮放�
 
 同頁的「本機程式檔案」另外每 2.5 秒比對執行中程式與磁碟上的原始碼；若原始碼已從外部更新，可驗證並重新啟動套用。這項本機操作不會從 GitHub 下載新版。
 
+### 私人 GitHub 儲存庫
+
+私人 repo 也可提供版本檢查與一鍵更新。每台電腦都需要保留 `.git` 的安裝副本、Git for Windows，以及可在背景讀取該 repo 的授權。HTTPS 可先在終端機透過 Git Credential Manager 登入；SSH 可使用已設定的金鑰及代理程式。工作台的背景 Git 作業會沿用這些憑證，登入應先在終端機完成。 [GitHub 憑證設定](https://docs.github.com/en/get-started/git-basics/caching-your-github-credentials-in-git?platform=windows)
+
+在安裝資料夾執行下列指令，第一行應列出版本標籤，第二行應顯示預期的追蹤分支，例如 `origin/main`。
+
+```powershell
+git ls-remote --exit-code --tags origin 'refs/tags/v*'
+git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
+```
+
+版本提示讀取 `origin` 的標籤，安裝更新則快轉目前分支的遠端追蹤版本。發布新版時要將程式提交及對應的 `vX.Y.Z` 標籤推到遠端。GitHub 的原始碼 ZIP 解壓後缺少 `.git`，需以可追蹤遠端的 Git clone 使用這套更新流程。
+
 標註頁切換圖片或儲存修改時會保留左側影像清單的捲動位置，並讓目前選取的圖片維持在可視範圍；使用鍵盤操作時也會把焦點留在選取項目。
 
 

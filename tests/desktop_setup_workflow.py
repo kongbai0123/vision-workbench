@@ -339,9 +339,16 @@ def main():
             wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
             click('#annotationAssistReviewLink')
             wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_asset)}")
-            wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationBatchTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAssistPanel').hidden")
-            assert js("document.querySelector('#annotationAssistExceptions').textContent.includes('Desktop fixture needs review')")
-            print('ANNOTATION_REVIEW_LINK_OK: review opens the saved exception in the AI batch tab.', flush=True)
+            wait("document.querySelector('#annotate').dataset.messageSource === 'batch' && "
+                 "document.querySelector('#annotationBatchMessagesTab').getAttribute('aria-selected') === 'true' && "
+                 "document.querySelector('#annotationBatchMessages').getClientRects().length > 0 && "
+                 "document.querySelector('#annotationAssistExceptions').textContent.includes('Desktop fixture needs review')")
+            assert not js("document.querySelector('#annotationAssistPanel').getClientRects().length")
+            click('#returnAnnotationEditor')
+            wait("document.querySelector('#annotationMessagesPanel').hidden && "
+                 "document.querySelector('#editBoundingBox').getClientRects().length > 0")
+            assert js(f"window.workbenchState().assetId === {json.dumps(exception_asset)}")
+            print('ANNOTATION_REVIEW_LINK_OK: review opens the saved exception in AI messages and returns to the same image.', flush=True)
             click('[data-stage=split]')
             wait("window.workbenchState().stage==='split'&&!window.workbenchState().transitioning")
             assert js("document.querySelector('#augmentationExpansion').value")=='0', js("JSON.stringify({state:window.workbenchState(),value:document.querySelector('#augmentationExpansion').value,text:document.body.innerText.slice(-4000)})")
