@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {groupAssistCandidates} from '../web/pages/annotation-assist.mjs';
+import {groupAssistCandidates, manualBoxRequests} from '../web/pages/annotation-assist.mjs';
 
 const candidate = (id,x,label='tool') => ({id,label,shape:{x,y:0,width:100,height:50,type:'rectangle',label}});
 const confirmation = (item,run_id='batch') =>
@@ -34,4 +34,34 @@ test('editing or undoing a human box recomputes archived candidates using native
   assert.deepEqual(groupAssistCandidates(all,[],'batch',new Map([['first','rejected']])).archived,[
     {candidate:first,reason:'rejected'},
   ]);
+});
+
+test('uncertainty requests the affected CLS, with a single fallback for unseen classes',()=>{
+  const first={asset_id:'first',candidates:[{label:'visible',verdict:'accepted'}]};
+  const second={asset_id:'second',candidates:[{label:'weak',verdict:'unresolved'}],exceptions:[
+    {label:'weak',code:'low_recommendation_score'},{label:'visible',code:'unmatched_scene_target'},
+  ]};
+  const third={asset_id:'third',available:false,exceptions:[{label:'unseen',code:'uncertain_review'}]};
+  const run={status:'complete',classes:['visible','weak','unseen'].map(label=>({label})),frames:[first,second,third]};
+  assert.deepEqual(manualBoxRequests(run),new Map([
+    ['second',[{label:'weak',reason:'evidence'},{label:'visible',reason:'evidence'}]],
+    ['first',[{label:'unseen',reason:'missing'}]],
+  ]));
+  assert.deepEqual(manualBoxRequests({...run,status:'queued'}),new Map());
+  first.review=second.review={status:'resolved'};
+  assert.deepEqual(manualBoxRequests(run),new Map());
+});
+
+test('a manual box in a reference rerun does not archive a different, overlapping CLS',()=>{
+  const first=candidate('hand',0,'hand'), same=candidate('same-hand',1,'hand'), different=candidate('grip',0,'grip');
+  const result=groupAssistCandidates([first,same,different],[confirmation(first)],'batch',new Map(),{sameClassOnly:true});
+  assert.deepEqual(result.active,[different]);
+  assert.deepEqual(result.archived.map(item=>item.candidate.id),['hand','same-hand']);
+});
+
+test('proposals below the model review floor are only shown in history',()=>{
+  const weak={...candidate('weak',0),reason_code:'low_score_proposal'}, review=candidate('review',100);
+  assert.deepEqual(groupAssistCandidates([weak,review],[],'batch'),{
+    active:[review],archived:[{candidate:weak,reason:'below_floor'}],
+  });
 });

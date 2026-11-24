@@ -64,7 +64,7 @@ const modelParameterDefinitions={
 function parameterText(value){if(value===undefined||value===null||value==='')return '—';if(typeof value==='boolean')return value?'啟用':'停用';if(typeof value==='number')return Number.isInteger(value)?String(value):String(Number(value.toPrecision(7)));return String(value)}
 // Training and model pages share state through an explicit application context.
 export function createTrainingPage(context) {
-  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor} = context;
+  const {$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor, openAnnotationMessages} = context;
 const activeRunStates=new Set(['queued','preparing','running','stopping']);
 
 function invalidateYoloCompatibility(){state.trainingTimeEstimate=null;state.trainingPreflight=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';if(state.stage==='train'&&state.training)renderTraining()}
@@ -426,7 +426,21 @@ async function importExternalModel(){
   if(result){$('modelDatasetFilter').value='';$('modelEngineFilter').value='';$('modelSearch').value='';state.selectedModel=result.model_version_id;await loadTraining();toast(`${result.model_version_id} 已匯入，可開始圖片／影片試跑。`)}
 }
 async function exportSelectedModel(modelId){const job=await api(projectPath('/model-exports'),'POST',{model_version_id:modelId}),result=await pollJob(job);await loadTraining();toast(`${result.model_version_id} 已匯出為 ${result.export_id}。`);await api('/api/open-folder','POST',{project_id:state.project.id,model_export_id:result.export_id})}
-async function generatePredictions(){if(!state.asset)throw Error('請先在標註頁選擇圖片。');const modelId=$('annotationModel').value;if(!modelId)throw Error('尚無可用的專案模型。');const job=await api(projectPath('/predictions'),'POST',{model_version_id:modelId,asset_ids:[state.asset.id]});await pollJob(job);await loadTraining();toast('目前圖片的模型候選已產生，請預覽後再接受。')}
+async function generatePredictions(){
+  if(!state.asset)throw Error('請先在標註頁選擇圖片。');
+  const modelId=$('annotationModel').value;
+  if(!modelId)throw Error('尚無可用的專案模型。');
+  await flushAllEdits();
+  const status=$('annotationPredictionStatus');
+  status.textContent=`${modelId} 正在產生候選…`;
+  if(!openAnnotationMessages('prediction'))return;
+  try{
+    const job=await api(projectPath('/predictions'),'POST',{model_version_id:modelId,asset_ids:[state.asset.id]});
+    await pollJob(job);await loadTraining();
+    status.textContent='候選處理完成，可預覽後接受。';
+    toast('目前圖片的模型候選已產生，請預覽後再接受。');
+  }catch(error){status.textContent=error.message;throw error;}
+}
 async function acceptPredictions(candidateId,assetIds){const result=await api(`/api/predictions/${candidateId}/accept`,'POST',{asset_ids:assetIds});editor.setProposals();state.project=result.project;if(state.asset&&result.accepted.includes(state.asset.id))await loadAsset(state.asset.id);await loadTraining();renderAssetList();toast('候選已寫入待審標註。')}
 function confidence(shape){return Number(shape.metadata?.confidence??shape.confidence??1)}
 function shapeBox(shape,frame){

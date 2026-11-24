@@ -94,7 +94,7 @@ class AnnotationAssistTests(unittest.TestCase):
         self.assertTrue(self.started.wait(5))
         run_path = f"{self.batch}/{job['run_id']}"
         self.assertEqual(self.call(run_path)['frames'][0]['base_revision'], original['revision'])
-        saved = self.call(self.asset, {'shapes': [rectangle('user-box', 'tool', 10)],
+        saved = self.call(self.asset, {'shapes': [rectangle('user-box', 'hammer', 10)],
                                        'revision': original['revision']}, method='PUT')
         self.release.set()
         self.assertEqual(self.wait(job)['state'], 'succeeded')
@@ -152,6 +152,101 @@ class AnnotationAssistTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as failure:
             self.call(self.batch, {'asset_ids': ['a' * 32], 'classes': self.classes})
         self.assertEqual(failure.exception.code, 404)
+        self.assertEqual(self.call(self.batch)['runs'], [])
+
+    def test_reference_rerun_stages_only_confirmed_independent_crops(self):
+        from workbench.annotation_assist_worker import read_manifest
+
+        store = self.service.store
+
+        def donor(index, batch, *, reviewed=False, metadata=None):
+            path = self.root / f'reference-{index}.png'
+            Image.new('RGB', (105, 71), (index, 0, 0)).save(path)
+            asset_id, = store.add_assets(self.pid, [{'path': path, 'batch_id': batch}])['asset_ids']
+            shape = rectangle(f'reference-{index}', 'hammer', 12)
+            if metadata:
+                shape['metadata'] = metadata
+            asset = store.get_asset(self.pid, asset_id)
+            saved = store.save_asset(self.pid, asset_id, [shape], asset['revision'])
+            if reviewed:
+                store.review(self.pid, [asset_id], 'approved', {asset_id: saved['revision']})
+            return asset_id
+
+        reviewed = donor(1, 'reviewed-source', reviewed=True, metadata={'source': 'model_candidate'})
+        manual = donor(2, 'manual-source')
+        same_source = donor(3, 'targets', reviewed=True)
+        raw = donor(4, 'automatic-source', metadata={'source': 'model_candidate'})
+        evaluation = donor(5, 'evaluation-source', reviewed=True)
+        evaluation_neighbour = donor(6, 'evaluation-source', reviewed=True)
+        store.assign(self.pid, [self.aid], batch_id='targets')
+        store.assign(self.pid, [evaluation], split='test')
+        target = store.get_asset(self.pid, self.aid)
+        anchor = rectangle('protected-tool', 'tool', 10)
+        saved = store.save_asset(self.pid, self.aid, [anchor], target['revision'])
+
+        def fake_reference_worker(_root, input_path, output, _progress):
+            manifest, _, manifest_hash = read_manifest(input_path)
+            frame, = manifest['frames']
+            self.assertEqual(frame['protected_boxes'], [{'id': 'protected-tool', 'label': 'tool', 'xyxy': [10, 10, 30, 35]}])
+            self.assertEqual(manifest['config']['reference_labels'], {'hammer': 'ready', 'tool': 'insufficient'})
+            self.assertEqual(len(manifest['references']), 2)
+            crop_colors = set()
+            for item in manifest['references']:
+                path = input_path.parent / item['image']
+                self.assertEqual(path.parent.name, 'references')
+                self.assertEqual(item['image_sha256'], sha256(path.read_bytes()).hexdigest())
+                self.assertEqual(item['label'], 'hammer')
+                with Image.open(path) as crop:
+                    self.assertEqual((item['width'], item['height']), crop.size)
+                    crop_colors.add(crop.getpixel((0, 0)))
+            self.assertEqual(crop_colors, {(1, 0, 0), (2, 0, 0)})
+            self.assertFalse((input_path.parent / 'project.sqlite3').exists())
+            preparation = {'classes': [{'label': 'hammer', 'status': 'applied',
+                                        'reference_ids': [item['id'] for item in manifest['references']]}]}
+            candidate = {'id': 'overlap', 'label': 'hammer', 'xyxy': [10, 10, 30, 35],
+                         'score': .9, 'verdict': 'accepted', 'query_source': 'reference'}
+            output.write_text(json.dumps({
+                'schema': RESULT_SCHEMA, 'job_id': manifest['job_id'], 'status': 'complete',
+                'manifest_sha256': manifest_hash,
+                'method': {'reference_preparation': preparation},
+                'frames': [{'id': frame['id'], 'image_sha256': frame['image_sha256'], 'status': 'ready',
+                            'candidates': [candidate], 'boxes': [{'candidate_id': 'overlap'}], 'exceptions': []}],
+            }), encoding='utf-8')
+            return {'fixture': True}
+
+        self.service.annotation_assist.runner = fake_reference_worker
+        job = self.call(self.batch, {'asset_ids': [self.aid], 'classes': [*self.classes, {'label': 'tool'}],
+                                     'use_human_references': True})
+        result = self.wait(job)
+        self.assertEqual(result['state'], 'succeeded', result)
+        route = f"{self.batch}/{job['run_id']}"
+        run = self.call(route)
+        source_ids = {item['asset_id'] for item in run['reference_sources']}
+        self.assertEqual(source_ids, {reviewed, manual})
+        self.assertTrue(source_ids.isdisjoint({self.aid, same_source, raw, evaluation, evaluation_neighbour}))
+        self.assertEqual(run['reference_summary']['hammer'],
+                         {'eligible': 2, 'independent_groups': 2, 'selected': 2, 'status': 'ready'})
+        self.assertEqual(run['reference_summary']['tool']['status'], 'insufficient')
+        self.assertEqual(run['reference_preparation'], run['method']['reference_preparation'])
+        self.assertEqual(run['frames'][0]['candidates'][0]['query_source'], 'reference')
+        self.assertEqual(store.get_asset(self.pid, self.aid)['shapes'], [anchor])
+        confirmed = self.call(route + '/review', {'asset_id': self.aid, 'revision': saved['revision'],
+                                                   'candidate_ids': ['overlap']})
+        self.assertEqual([shape['label'] for shape in confirmed['asset']['shapes']], ['tool', 'hammer'])
+        self.assertEqual(confirmed['asset']['shapes'][1]['metadata']['annotation_assist']['query_source'], 'reference')
+
+    def test_reference_rerun_rejects_a_historical_evaluation_source_group(self):
+        store = self.service.store
+        store.assign(self.pid, [self.aid], batch_id='held-out-camera')
+        datasets = self.service.annotation_assist.storage.area(self.pid, 'datasets', create=True)
+        manifest = datasets / 'D001' / 'manifest.json'
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps({'assets': [dict(asset_id='a' * 32, sha256='c' * 64,
+                                                        split='val', batch_id='held-out-camera')]}), encoding='utf-8')
+        with self.assertRaises(HTTPError) as error:
+            self.call(self.batch, {'asset_ids': [self.aid], 'classes': self.classes, 'use_human_references': True})
+        self.assertEqual(error.exception.code, 400)
+        self.assertIn('Validation／Test', error.exception.read().decode('utf-8'))
         self.assertEqual(self.call(self.batch)['runs'], [])
 
     def test_sam_evidence_and_gemma_comparison_do_not_change_primary_candidates(self):

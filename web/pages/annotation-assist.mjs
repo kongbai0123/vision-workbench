@@ -4,11 +4,14 @@ const runNames = {queued:'等待', running:'執行中', complete:'完成', faile
 const voteNames = {A:'符合類別與框界', B:'框界或併框問題', C:'其他物件或類別', D:'證據不足'};
 const terminalJobStates = new Set(['succeeded','failed','cancelled']);
 const candidatePriority = {unresolved:0, accepted:1, rejected:2};
-const archiveNames = {adopted:'已成為人工標註', alternative:'同一物件已有人工標註', rejected:'人工不採用'};
+const archiveNames = {adopted:'已成為人工標註', alternative:'同一物件已有人工標註', rejected:'人工不採用',
+  below_floor:'低於候選門檻'};
 const samNames = {aligned:'框界一致', mismatch:'框界差異', unavailable:'未取得可靠遮罩框',
   skipped_budget:'超出檢查額度', not_eligible:'未列入框界檢查'};
 const healthNames = {passed:'控制案例通過', failed:'控制案例有誤判', inconclusive:'控制案例不足', not_run:'未執行健全性檢查'};
 const comparisonNames = {agreement:'與 Qwen 判讀一致', disagreement:'與 Qwen 判讀不同'};
+const manualBoxReasons = new Set(['unmatched_scene_target','bad_extent','uncertain_review','low_recommendation_score',
+  'competing_extents','conflicting_classes','reference_manual']);
 
 function origin(shape) {
   return shape.metadata?.annotation_assist;
@@ -25,11 +28,11 @@ function alreadyOnCanvas(shapes, runId, candidate) {
   return shapes.some(shape => {
     const source = origin(shape);
     if(source?.run_id===runId && source.candidate_id===candidate.id)return true;
-    return shape.type!=='mask' && overlaps(shape,candidate.shape)>=.85;
+    return shape.type!=='mask' && shape.label===candidate.label && overlaps(shape,candidate.shape)>=.85;
   });
 }
 
-export function groupAssistCandidates(candidates, shapes, runId, decisions = new Map()) {
+export function groupAssistCandidates(candidates, shapes, runId, decisions = new Map(), {sameClassOnly=false}={}) {
   const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
   const confirmed = new Set();
   const anchors = [];
@@ -45,8 +48,10 @@ export function groupAssistCandidates(candidates, shapes, runId, decisions = new
     let reason;
     if(confirmed.has(candidate.id))reason='adopted';
     else if(decisions.has(candidate.id))reason='rejected';
+    else if(candidate.reason_code==='low_score_proposal')reason='below_floor';
     // Each alternative must directly match an adopted origin. An alternative never masks another object.
-    else if(candidate.shape && anchors.some(anchor => overlaps(anchor,candidate.shape)>=.85))reason='alternative';
+    else if(candidate.shape && anchors.some(anchor => (!sameClassOnly || anchor.label===candidate.label)
+      && overlaps(anchor,candidate.shape)>=.85))reason='alternative';
     if(reason)archived.push({candidate,reason});
     else active.push(candidate);
   }
@@ -65,9 +70,43 @@ function modelScore(value) {
   return typeof value==='number' && Number.isFinite(value) ? value.toFixed(3) : '—';
 }
 
+export function manualBoxRequests(run) {
+  const requests=new Map();
+  if(run?.status!=='complete')return requests;
+  const labels=new Set((run.classes||[]).map(item=>item.label));
+  const accepted=new Set(), requested=new Set();
+  const usable=(run.frames||[]).filter(item=>item.available!==false);
+  for(const frame of usable){
+    for(const box of frame.protected_boxes||[])accepted.add(box.label);
+    for(const candidate of frame.candidates||[]){
+      if(candidate.verdict==='accepted')accepted.add(candidate.label);
+    }
+    const evidence=new Set((frame.exceptions||[]).filter(issue=>labels.has(issue.label) && manualBoxReasons.has(issue.code)).map(issue=>issue.label));
+    for(const label of evidence)requested.add(label);
+    if(evidence.size && frame.review?.status!=='resolved'){
+      requests.set(frame.asset_id,[...evidence].map(label=>({label,reason:'evidence'})));
+    }
+  }
+  const fallback=usable[0];
+  if(!fallback || fallback.review?.status==='resolved')return requests;
+  const missing=requests.get(fallback.asset_id)||[];
+  for(const label of labels){
+    if(!accepted.has(label) && !requested.has(label))missing.push({label,reason:'missing'});
+  }
+  if(missing.length)requests.set(fallback.asset_id,missing);
+  return requests;
+}
+
 export function createAnnotationAssistPage({$, state, editor, api, button, element, safe, toast, filteredAssets,
-  selectAsset, switchStage, flushAllEdits, date}) {
-  const panel = $('annotationAssistPanel');
+  selectAsset, switchStage, flushAllEdits, date, openAnnotationMessages, returnToAnnotationEditor}) {
+  const humanRequests = element('section',undefined,'annotation-assist-human-requests');
+  humanRequests.hidden=true;
+  $('annotationAssistCandidates').before(humanRequests);
+  const useReferences=element('input');
+  useReferences.type='checkbox';
+  const referenceOption=element('label',undefined,'check-label');
+  referenceOption.append(useReferences,document.createTextNode(' 使用已確認的人工範例'));
+  $('annotationAssistEnableSam').closest('.annotation-assist-checks').append(referenceOption);
   const jobs = new Map();
   let projectId = null;
   let runs = [];
@@ -79,6 +118,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
   let fetchSequence = 0;
   let refreshing = null;
   let statusText = '';
+  let requestsByAsset = new Map();
   const draftDecisions = new Map();
 
   const endpoint = pid => `/api/projects/${encodeURIComponent(pid)}/annotation-assist`;
@@ -89,8 +129,10 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
   const assetFor = id => state.project?.assets.find(asset => asset.id===id);
   const revisionFor = frame => state.asset?.id===frame.asset_id ? state.asset.revision : assetFor(frame.asset_id)?.revision;
   const isResolved = frame => frame.review?.status==='resolved';
-  const pendingFrames = () => (run?.frames || []).filter(frame => frame.available!==false && frame.exceptions?.length && assetFor(frame.asset_id) && !isResolved(frame));
-  const groupsFor = (frame, candidates) => groupAssistCandidates(candidates,state.asset?.shapes||[],run.id,decisionsFor(run.id,frame));
+  const pendingFrames = () => (run?.frames || []).filter(frame => frame.available!==false &&
+    (frame.exceptions?.length || requestsByAsset.has(frame.asset_id)) && assetFor(frame.asset_id) && !isResolved(frame));
+  const groupsFor = (frame, candidates) => groupAssistCandidates(candidates,state.asset?.shapes||[],run.id,
+    decisionsFor(run.id,frame),{sameClassOnly:run.use_human_references===true});
 
   function nextPendingFrame() {
     const pending = new Set(pendingFrames().map(frame => frame.asset_id));
@@ -161,8 +203,10 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     $('annotationAssistStop').disabled=!!job?.stopping;
     $('annotationAssistEnableSam').disabled=!!job;
     $('annotationAssistEnableGemma').disabled=!!job;
+    useReferences.disabled=!!job;
     $('annotationAssistStatus').textContent=job?.message||statusText||run?.error||run?.message||
       (run ? `批次${runNames[run.status]||run.status}。` : '尚無執行紀錄。');
+    $('annotationAssistResult').hidden=!!job||!runs.length;
     const progress=$('annotationAssistProgress');
     progress.hidden=!job;
     progress.value=Number(job?.progress)||0;
@@ -177,13 +221,65 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
       select.append(new Option(title,item.id));
     }
     if(runs.some(item=>item.id===activeId))select.value=activeId;
-    $('annotationAssistResult').hidden=!runs.length;
+    $('annotationAssistResult').hidden=jobs.has(projectId)||!runs.length;
   }
 
   function renderReviewLink() {
     const count=pendingFrames().length;
     $('annotationAssistReviewEntry').hidden=!count;
     $('annotationAssistReviewCount').textContent=`目前 AI 批次有 ${count} 張影像待覆核`;
+  }
+
+  function renderMessageFrames() {
+    const root=$('annotationMessageBatchFrames');
+    if(!root)return;
+    const assetNames=new Map((state.project?.assets||[]).map(asset=>[asset.id,asset.name]));
+    const running=jobs.get(projectId);
+    const requested=running ? running.imageIds.map(asset_id=>({asset_id})) : run?.frames||[];
+    const frames=requested.filter(frame=>frame.available!==false && assetNames.has(frame.asset_id));
+    const scroll=root.scrollTop;
+    root.replaceChildren();
+    for(const frame of frames){
+      const pending=!running && frame.review?.status!=='resolved' && (frame.exceptions?.length || requestsByAsset.has(frame.asset_id));
+      const row=button('', 'asset-row annotation-message-frame',()=>safe(()=>selectAsset(frame.asset_id)));
+      row.dataset.assetId=frame.asset_id;
+      if(frame.asset_id===state.asset?.id){row.classList.add('active');row.setAttribute('aria-current','true');}
+      row.append(element('b',frame.name||assetNames.get(frame.asset_id)));
+      if(pending)row.append(element('small','待人工處理'));
+      root.append(row);
+    }
+    root.scrollTop=scroll;
+  }
+
+  function renderHumanRequests(frame) {
+    const requests=(requestsByAsset.get(frame?.asset_id)||[]).filter(item=>state.project?.classes.includes(item.label));
+    const preparation=frame ? run?.reference_preparation?.classes||[] : [];
+    humanRequests.replaceChildren();
+    humanRequests.hidden=!requests.length && !preparation.length;
+    if(humanRequests.hidden)return;
+    humanRequests.append(element('b',requests.length?'待人工確認類別':'人工範例'));
+    for(const {label,status} of preparation){
+      const message = status==='applied' ? '已使用獨立來源的人工範例' : '人工範例不足或描述無法確認，需人工處理';
+      humanRequests.append(element('p',`${label} · ${message}`,'field-note'));
+    }
+    for(const {label,reason} of requests){
+      const line=element('div',undefined,'annotation-assist-human-request');
+      const text=reason==='missing' ? `這批未找到可靠的「${label}」。若圖中有這個類別，請先框一個範例。`
+        : `「${label}」的類別或框界無法確認。請在人眼確認後補框或修框。`;
+      line.append(element('p',text));
+      const actions=element('div',undefined,'inline');
+      const draw=button(`框選 ${label}`,'secondary',()=>safe(()=>returnToAnnotationEditor(label)));
+      draw.dataset.assistManualLabel=label;
+      actions.append(draw);
+      const repeat=button('以人工範例重跑','secondary',()=>safe(()=>{
+        const definition=run.classes.find(item=>item.label===label);
+        return start({classes:[definition],imageIds:[frame.asset_id],modelChecks:run.model_checks,useHumanReferences:true});
+      }));
+      repeat.disabled=jobs.has(projectId);
+      actions.append(repeat);
+      line.append(actions);
+      humanRequests.append(line);
+    }
   }
 
   function showRunHealth() {
@@ -236,7 +332,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     layers.hidden=!candidate?.shape && !sam;
     $('annotationAssistShowOriginal').disabled=!candidate?.shape;
     $('annotationAssistShowSam').disabled=!sam;
-    const showing=editor.activeAiTool==='batch' && state.stage==='annotate';
+    const showing=editor.activeAiTool==='batch' && state.stage==='annotate' && !jobs.has(projectId);
     editor.setAssistPreview(
       showing && $('annotationAssistShowOriginal').checked ? candidate?.shape ?? null : null,
       showing && $('annotationAssistShowSam').checked ? sam : null,
@@ -263,6 +359,8 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
   }
 
   function renderFrame() {
+    requestsByAsset=manualBoxRequests(run);
+    renderMessageFrames();
     renderReviewLink();
     const frame=frameForAsset();
     const summary=run?.summary;
@@ -278,6 +376,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     list.replaceChildren();
     archivedList.replaceChildren();
     archive.hidden=true;
+    renderHumanRequests(frame);
     showRunHealth();
     $('annotationAssistSummary').textContent=summary
       ? `已處理 ${summary.completed_images ?? 0}／${summary.images ?? 0} 張 · 待覆核 ${pendingFrames().length} 張`
@@ -302,7 +401,8 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
       candidatePriority[first.verdict]-candidatePriority[second.verdict]);
     const {active,archived}=groupsFor(frame,candidates);
     if(!candidates.some(candidate=>candidate.id===selectedId)){
-      selectedId=active[0]?.id??null;
+      selectedId=active.find(item=>item.verdict==='accepted')?.id??active.find(item=>
+        item.verdict==='unresolved' && item.reason_code!=='low_recommendation_score')?.id??null;
     }
     if(isResolved(frame))exceptions.append(element('div','已完成人工覆核'));
     else if(frame.exceptions?.length){
@@ -332,16 +432,18 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
       const present=candidate.shape && alreadyOnCanvas(state.asset.shapes||[],run.id,candidate);
       const verdict=verdictNames[candidate.verdict]||verdictNames.unresolved;
       const decision=candidate.reason_code==='low_score_proposal' ? '低於門檻，未送 Qwen'
+        : candidate.reason_code==='low_recommendation_score' ? '低於建議採用門檻'
         : candidate.votes?.length ? `Qwen ${verdict}` : verdict;
-      row.append(element('b',candidate.label),element('small',`MM ${modelScore(candidate.score)} · ${decision}`));
-      if(archivedReason||present)row.append(element('small',archiveNames[archivedReason]||'畫布已有標註'));
+      const source=candidate.query_source==='reference'?' · 人工範例':'';
+      row.append(element('b',candidate.label),element('small',`MM ${modelScore(candidate.score)} · ${decision}${source}`));
+      if(archivedReason!=='below_floor' && (archivedReason||present))row.append(element('small',archiveNames[archivedReason]||'畫布已有標註'));
       target.append(row);
     }
     for(const candidate of active)appendCandidate(candidate,list);
     for(const {candidate,reason} of archived)appendCandidate(candidate,archivedList,reason);
     archive.hidden=!archived.length;
-    $('annotationAssistArchiveLabel').textContent=`已處理的候選（${archived.length}）`;
-    if(candidates.length&&!active.length)list.append(element('div','這張影像的候選已處理。','muted'));
+    $('annotationAssistArchiveLabel').textContent=`候選紀錄（${archived.length}）`;
+    if(candidates.length&&!active.length)list.append(element('div','這張影像沒有待處理的候選框。','muted'));
     list.scrollTop=previousScroll;
     renderEvidence(frame,currentCandidate());
   }
@@ -408,21 +510,25 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     try{await task;}finally{if(refreshing===task)refreshing=null;}
   }
 
-  async function start() {
+  async function start({classes=selectedClasses(),imageIds=scopeAssets().map(asset=>asset.id),modelChecks,
+    useHumanReferences=useReferences.checked}={}) {
     if(!projectId||jobs.has(projectId))return;
     const pid=projectId;
-    const classes=selectedClasses();
-    const imageIds=scopeAssets().map(asset=>asset.id);
     if(!classes.length||!imageIds.length)throw Error('請選取影像及至少一個類別。');
     if(classes.some(item=>!item.prompt))throw Error('已選取的類別都需要 MM 提示詞。');
-    const modelChecks={sam:$('annotationAssistEnableSam').checked,gemma:$('annotationAssistEnableGemma').checked};
-    const active={id:null,progress:0,message:'準備批次…'};
+    modelChecks??={sam:$('annotationAssistEnableSam').checked,gemma:$('annotationAssistEnableGemma').checked};
+    const active={id:null,progress:0,message:'準備批次…',imageIds};
     jobs.set(pid,active);
     renderControls();
+    renderFrame();
     try{
       await flushAllEdits();
       if(projectId!==pid)return;
-      let job=await api(endpoint(pid),'POST',{asset_ids:imageIds,classes,model_checks:modelChecks});
+      if(!imageIds.includes(state.asset?.id))await selectAsset(imageIds[0]);
+      if(projectId!==pid)return;
+      if(!openAnnotationMessages('batch'))return;
+      let job=await api(endpoint(pid),'POST',{asset_ids:imageIds,classes,model_checks:modelChecks,
+        ...(useHumanReferences && {use_human_references:true})});
       active.id=job.id||job.job_id;
       const runId=job.run_id;
       if(!active.id)throw Error('背景作業未回傳識別碼。');
@@ -442,7 +548,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
       if(projectId===pid){statusText=`批量找框失敗 · ${error.message}`;throw error;}
     }finally{
       jobs.delete(pid);
-      if(projectId===pid)renderControls();
+      if(projectId===pid){renderControls();renderFrame();}
     }
   }
 
@@ -519,9 +625,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
   }
 
   function openPanel() {
-    if($('propertiesSidebar').hidden)$('toggleProperties').click();
-    editor.setSidebarTab('ai','batch');
-    panel.scrollIntoView({block:'nearest'});
+    openAnnotationMessages('batch');
     renderFrame();
   }
 

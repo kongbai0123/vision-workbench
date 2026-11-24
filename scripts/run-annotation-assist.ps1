@@ -110,6 +110,21 @@ try {
         if (-not (Test-Inside $image $imageRoot)) { throw 'Invalid inference image path.' }
         Copy-Item -LiteralPath $image -Destination (Join-Path $stagedInput $relative)
     }
+    if ($manifest.references) {
+        if (@($manifest.references).Count -gt 12) { throw 'Too many staged annotation reference images.' }
+        $stagedReferences = Join-Path $stagedInput 'references'
+        New-Item -ItemType Directory -Path $stagedReferences | Out-Null
+        $referenceRoot = Get-RegularEntry (Join-Path $inputRoot 'references') $true
+        foreach ($reference in $manifest.references) {
+            $relative = [string]$reference.image
+            if ($relative -cnotmatch '^references/[a-f0-9]{32}\.png$') {
+                throw 'The worker input manifest may reference only flat, staged PNG reference images.'
+            }
+            $image = Get-RegularEntry (Join-Path $inputRoot $relative) $false
+            if (-not (Test-Inside $image $referenceRoot)) { throw 'Invalid annotation reference image path.' }
+            Copy-Item -LiteralPath $image -Destination (Join-Path $stagedInput $relative)
+        }
+    }
     $workerFiles = @('annotation_assist_probe.py','annotation_assist_worker.py',
                      'annotation_assist_confidence.py','annotation_assist_grounding.py','annotation_assist_sam.py')
     if ($useGemma) { $workerFiles += @('annotation_assist_gemma.py','annotation_assist_gguf.py') }

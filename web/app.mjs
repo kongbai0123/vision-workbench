@@ -143,12 +143,70 @@ const editor = new AnnotationEditor({
     if (active==='prediction'&&!state.training) void safe(()=>loadTraining());
   },
 });
-const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element,safe,toast,filteredAssets,selectAsset,switchStage,flushAllEdits,date});
+const assistPage = createAnnotationAssistPage({$,state,editor,api,button,element,safe,toast,filteredAssets,selectAsset,switchStage,flushAllEdits,date,
+  openAnnotationMessages,returnToAnnotationEditor});
+const annotationMessageTabs = [...$('annotationMessageTabs').querySelectorAll('[role="tab"]')];
+let annotationEditorAssetsHidden = false;
+
+function setAnnotationMessageView(source) {
+  const previous = editor.messageSource;
+  if (source && !previous) {
+    annotationEditorAssetsHidden = $('assetSidebar').hidden;
+    $('assetSidebar').hidden = false;
+  } else if (!source && previous) $('assetSidebar').hidden = annotationEditorAssetsHidden;
+  $('annotate').classList.toggle('annotation-messages-view', Boolean(source));
+  $('annotate').dataset.messageSource = source || '';
+  for (const id of ['annotationMessagesTitle','annotationMessagesPanel','returnAnnotationEditor']) $(id).hidden = !source;
+  for (const id of ['annotationMessageBatchHeading','annotationMessageBatchFrames']) $(id).hidden = source !== 'batch';
+  if (source) {
+    for (const tab of annotationMessageTabs) {
+      const selected = tab.dataset.editorTab === source;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      $(tab.getAttribute('aria-controls')).hidden = !selected;
+    }
+    if (source !== previous) $('annotationMessagesPanel').querySelector('.properties-scroll').scrollTop = 0;
+  }
+  editor.setMessageSource(source);
+}
+
+function openAnnotationMessages(source = editor.messageSource || (editor.candidate ? 'segmentation' : editor.aiTool)) {
+  if (state.stage !== 'annotate' || state.editorMode !== 'builtin') return false;
+  if (editor.gesture || editor.draft.length) {
+    toast('請先完成目前的繪圖操作，再查看 AI 訊息。',true);
+    return false;
+  }
+  const entering = !editor.messageSource;
+  setAnnotationMessageView(source);
+  if (entering) $('annotationMessagesTitle').focus({preventScroll:true});
+  return true;
+}
+
+function returnToAnnotationEditor(label) {
+  if (label && editor.candidate) {
+    openAnnotationMessages('segmentation');
+    toast('請先接受或捨棄候選遮罩。',true);
+    return;
+  }
+  setAnnotationMessageView(null);
+  if (label && state.project?.classes.includes(label)) {
+    if ($('propertiesSidebar').hidden) $('toggleProperties').click();
+    $('shapeLabel').value = label;
+    updateAnnotationClassButtons();
+    editor.setSidebarTab('objects');
+    editor.setTool('rectangle');
+    $('canvasArea').focus({preventScroll:true});
+  } else $('openAnnotationMessages').focus({preventScroll:true});
+}
+
+editor.installTabEvents(annotationMessageTabs, openAnnotationMessages);
+$('openAnnotationMessages').onclick = () => openAnnotationMessages();
+$('returnAnnotationEditor').onclick = () => returnToAnnotationEditor();
 
 async function flushAllEdits() {
   if(editor.gesture)throw Error('請先完成畫布上的拖曳操作。');
   if(editor.draft.length)throw Error('目前仍有尚未完成的頂點。請按 Enter 完成，或按 Esc 取消。');
-  if(editor.candidate)throw Error('請先在「AI 輔助 → 互動分割」接受或捨棄候選遮罩，再切換工作或關閉。');
+  if(editor.candidate)throw Error('請先在 AI 訊息的「互動分割」接受或捨棄候選遮罩，再切換工作或關閉。');
   await saver.flush();
   await workflowDraft.flush();
 }
@@ -176,6 +234,7 @@ function updateNavigation() {
   updateAnnotationClassButtons();
   $('selectedShapeLabel').disabled=state.busy||state.transitioning;
   $('runAI').disabled=!state.asset||state.busy||state.transitioning;
+  $('openAnnotationMessages').disabled=!state.project||state.transitioning||state.editorMode!=='builtin';
   updateAcquisitionControls();
 }
 function updateAcquisitionControls() {
@@ -340,7 +399,10 @@ async function switchStage(stage) {
   state.transitioning=true;editor.locked=true;updateNavigation();
   try {
     await flushAllEdits();
-    if(stage!=='annotate'&&state.editorMode==='cvat')await switchEditor('builtin');
+    if(stage!=='annotate'){
+      if(editor.messageSource)setAnnotationMessageView(null);
+      if(state.editorMode==='cvat')await switchEditor('builtin');
+    }
     for(const id of ['library','acquire','annotate','review','split','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
@@ -364,6 +426,7 @@ async function openProject(id) {
     const project=await api(`/api/projects/${id}`);
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;state.reviewYoloCompatibilityLoading=false;trainingMonitor.reset();trainingParameters.reset();
     await workflowDraft.load(id);
+    if(editor.messageSource)setAnnotationMessageView(null);
     state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();editor.setSidebarTab('objects','segmentation');state.reviewSelection.clear();state.acquireSelection.clear();
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
@@ -597,7 +660,9 @@ function updateAssetHeader() {
   updateSaveControl();
 }
 async function loadAsset(id) {
-  const asset=await api(projectPath(`/assets/${id}`));asset.url=imageURL(asset);state.asset=asset;saver.load(asset);editor.load(asset);
+  const asset=await api(projectPath(`/assets/${id}`));
+  if(state.asset?.id!==id)$('annotationPredictionStatus').textContent='';
+  asset.url=imageURL(asset);state.asset=asset;saver.load(asset);editor.load(asset);
   updateAssetHeader();renderAssetList();if(typeof renderAnnotationModels==='function')renderAnnotationModels();
 }
 async function selectAsset(id) {
@@ -744,17 +809,17 @@ async function switchEditor(mode) {
     clearInterval(state.cvatElapsedTimer);state.cvatElapsedTimer=null;
     state.editorMode='builtin';$('editorSelector').value='builtin';
     $('cvatSetup').hidden=true;document.querySelector('#annotate>.editor-layout').hidden=false;editor.active=state.stage==='annotate';
-    requestAnimationFrame(()=>editor.fit(false));return;
+    updateNavigation();requestAnimationFrame(()=>editor.fit(false));return;
   }
   if(mode==='labelme') {
     await flushAllEdits();
     if(!state.nativeBridge?.openLabelme){$('editorSelector').value=state.editorMode;throw Error('Labelme 整合需要更新後的 Windows 桌面版。');}
     const error=await new Promise(resolve=>state.nativeBridge.openLabelme(state.project.id,state.asset?.id||'',resolve));
     if(error){$('editorSelector').value=state.editorMode;throw Error(`Labelme 無法開啟：${error}`);}
-    state.editorMode='labelme';$('editorSelector').value='labelme';editor.active=false;
+    state.editorMode='labelme';$('editorSelector').value='labelme';editor.active=false;updateNavigation();
     return;
   }
-  await flushAllEdits();state.editorMode='cvat';$('editorSelector').value='cvat';editor.active=false;
+  await flushAllEdits();state.editorMode='cvat';$('editorSelector').value='cvat';editor.active=false;updateNavigation();
   document.querySelector('#annotate>.editor-layout').hidden=true;$('cvatSetup').hidden=false;
   const snapshot=await api('/api/cvat/status');renderCvatStatus(snapshot);
   if(snapshot.ready)await openCvat();
@@ -913,12 +978,15 @@ const {renderExport, openReleaseDrawer, closeReleaseDrawer, renderBatchTable, au
 async function runAI() {
   if(!state.asset)throw Error('請先選取一張圖片。');
   if(!editor.label())throw Error('請先在右側欄選擇新物件類別，再產生候選遮罩。');
-  await saver.flush();if(editor.draft.length||editor.gesture)throw Error('請先完成目前的繪圖操作。');
+  if(editor.draft.length||editor.gesture)throw Error('請先完成目前的繪圖操作。');
   if(editor.candidate)throw Error('請先接受或捨棄現有候選遮罩。');
+  await saver.flush();
   const assetId=state.asset.id,revision=state.asset.revision;
+  const payload={asset_id:assetId,revision,engine:$('aiEngine').value,label:editor.label(),...editor.aiInput()};
   $('aiMessage').textContent='正在本機執行分割…';
+  if(!openAnnotationMessages('segmentation'))return;
   try {
-    const result=await pollJob(await api(projectPath('/ai'),'POST',{asset_id:assetId,revision,engine:$('aiEngine').value,label:editor.label(),...editor.aiInput()}));
+    const result=await pollJob(await api(projectPath('/ai'),'POST',payload));
     if(state.asset?.id!==assetId||state.asset.revision!==revision)throw Error('圖片修訂已變更，未套用 AI 候選。');
     const shape=result?.shape||result?.candidate;if(!shape)throw Error('AI 未回傳可用的候選形狀。');
     editor.setCandidate(shape);$('aiMessage').textContent='候選已產生。黃色區域為預覽，接受後才會加入標註。';
@@ -929,7 +997,7 @@ async function runAI() {
 const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentationPreparation,renderAugmentationError,createPreparedDatasetVersion}=createPreparationPage({$,state,SplitManager,api,renderBatchTable,renderReview,resetValidation,toast,flushAllEdits,projectPath,number,element,thumbnailURL,drawReviewOverlay,
   createDatasetVersion:(...args)=>createDatasetVersion(...args),loadTraining:(...args)=>loadTraining(...args)});
 
-const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor});
+const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor, openAnnotationMessages});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
 document.querySelectorAll('[data-source]').forEach(tab=>{
   tab.onclick=()=>switchSource(tab.dataset.source);

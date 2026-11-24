@@ -172,11 +172,31 @@ def main():
             click("#selectAllShapes");click("#annotationAiTab")
             click("#annotationSegmentationTab")
             wait("!document.querySelector('#segmentationPanel').hidden")
+            assert js("!document.querySelector('#segmentationPanel #aiMessage')")
+            js("""{
+                const fetchOriginal=window.fetch.bind(window);
+                window.testAiRequests=[];
+                window.fetch=(url,options)=>{
+                    if(options?.method==='POST' && /\\/(ai|predictions)$/.test(new URL(url,location.href).pathname)){
+                        window.testAiRequests.push({source:document.querySelector('#annotate').dataset.messageSource,asset:window.workbenchState().assetId});
+                    }
+                    return fetchOriginal(url,options);
+                };
+                window.testAiCanvas=document.querySelector('#canvasArea');
+            }""")
             fill("#aiEngine","grabcut");click("#runAI")
+            wait("document.querySelector('#annotate').dataset.messageSource==='segmentation'")
+            assert js("document.querySelector('#canvasArea')===window.testAiCanvas && !document.querySelector('#propertiesSidebar').getClientRects().length")
             wait("!document.querySelector('#acceptAI').disabled")
+            assert json.loads(js("JSON.stringify(window.testAiRequests[0])")) == {"source": "segmentation", "asset": changed_id}
+            js("document.querySelector('#canvasArea').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}))")
+            assert js("document.querySelectorAll('#shapeList .shape-row').length===2")
             assert service.store.get_asset(pid,changed_id)['shape_count']==2,"AI silently committed its candidate"
+            capture("03-ai-messages-segmentation")
             click("#acceptAI");click("#saveNow");wait("!window.workbenchState().dirty")
             assert service.store.get_asset(pid,changed_id)['shape_count']==3
+            click("#returnAnnotationEditor")
+            assert js(f"document.querySelector('#annotationMessagesPanel').hidden && window.workbenchState().assetId==={json.dumps(changed_id)} && document.querySelector('#aiEngine').value==='grabcut'")
             assert js(class_selected),"Default class must persist after creation"
             # Native Qt pointer events draw a rectangle without leaving AI assistance.
             click(class_choice)
@@ -270,8 +290,11 @@ def main():
             click("#annotationAiTab")
             click("#annotationPredictionTab")
             wait("!document.querySelector('#annotationPredictionPanel').hidden")
+            assert js("!document.querySelector('#annotationPredictionPanel #annotationPredictionList')")
             click("#generateCurrentPrediction")
+            wait("document.querySelector('#annotate').dataset.messageSource==='prediction'")
             wait("document.querySelector('#annotationPredictionList').textContent.includes('M001')",seconds=60)
+            assert json.loads(js("JSON.stringify(window.testAiRequests.at(-1))")) == {"source": "prediction", "asset": training_asset}
             generated_candidate=service.training.list_predictions(pid)[0]
             assert generated_candidate['assets'][0]['status'] in {'candidate','empty'}
             if generated_candidate['assets'][0]['status']=='candidate':
@@ -281,6 +304,8 @@ def main():
                 pending_after_prediction=service.store.get_project(pid)['stats']['pending']
                 assert pending_after_prediction==1,pending_after_prediction
             capture("06-model-and-prediction")
+            click("#returnAnnotationEditor")
+            assert js(f"document.querySelector('#annotationMessagesPanel').hidden && window.workbenchState().assetId==={json.dumps(training_asset)}")
             if service.store.get_project(pid)['stats']['pending']:
                 click("[data-stage='review']");click("#reviewSelectAll");click("#reviewApprove")
                 wait("[...document.querySelectorAll('#reviewStats .stat-chip')].some(x=>x.querySelector('span').textContent==='已核准' && x.querySelector('b').textContent==='4')")

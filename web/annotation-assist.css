@@ -75,6 +75,31 @@
   padding-inline-start: 18px;
 }
 
+.annotation-assist-human-requests {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  border-radius: 5px;
+}
+
+.annotation-assist-human-request {
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.annotation-assist-human-request + .annotation-assist-human-request {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.annotation-assist-human-request .inline {flex-wrap: wrap}
+.annotation-assist-human-requests p {margin: 0}
+.annotation-message-frame {width: 100%; overflow-wrap: anywhere}
+.annotation-message-frame small {color: var(--warn)}
+
 .annotation-assist-candidates {
   display: grid;
   gap: 4px;

@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 import uuid
 
 from .annotations import AnnotationService
+from .annotation_assist_references import build_reference_plan, stage_reference_crops
 from .jobs import JobCancelled
 from .project_storage import ProjectStorage
 from .store import ConflictError, dump, identifier, timestamp
@@ -29,6 +30,7 @@ REASONS = {
     'uncertain_review': '證據不足或兩次覆核的結果不一致',
     'invalid_proposal': '候選分數或座標無效',
     'low_score_proposal': 'MM 分數低於候選門檻',
+    'low_recommendation_score': 'MM 分數低於建議採用門檻，請人工確認',
     'duplicate_proposal': '同一位置已有重疊候選',
     'better_supported_extent': '另一個候選獲得較強的框界支持',
     'competing_extents': '同一物件有多個框界，需確認範圍',
@@ -77,6 +79,13 @@ def _candidate(run_id, frame, source, labels):
     row = {'id': candidate_id, 'label': label, 'verdict': verdict, 'reason_code': reason,
            'reason': source.get('reason') or REASONS.get(reason, reason), 'score': score,
            'xyxy': raw if box else None, 'shape': shape, 'stage': source.get('stage'), 'votes': votes}
+    if 'query_source' in source:
+        query_source = source['query_source']
+        if query_source not in ('text', 'reference'):
+            raise ValueError('推論候選的找框來源無效')
+        row['query_source'] = query_source
+        if shape:
+            shape['metadata']['annotation_assist']['query_source'] = query_source
     sam = source.get('sam')
     if isinstance(sam, dict):
         mask_box = sam.get('mask_box_xyxy')
@@ -100,7 +109,7 @@ def _counts(frames):
 
 
 def _same_box(first, second):
-    if second['type'] == 'mask':
+    if first['label'] != second['label'] or second['type'] == 'mask':
         return False
     x, y = max(first['x'], second['x']), max(first['y'], second['y'])
     right = min(first['x'] + first['width'], second['x'] + second['width'])
@@ -198,11 +207,13 @@ class AnnotationAssist:
             raise FileNotFoundError('找不到 AI 標註批次')
         return read_json(record), directory
 
-    def start(self, pid, asset_ids, classes, *, model_checks=None):
+    def start(self, pid, asset_ids, classes, *, model_checks=None, use_human_references=False):
         if not isinstance(asset_ids, list) or not asset_ids:
             raise ValueError('請選擇本次要處理的影像')
+        if type(use_human_references) is not bool:
+            raise ValueError('參考人工標註選項必須為布林值。')
         requested = list(dict.fromkeys(identifier(value) for value in asset_ids))
-        project = self.store.get_project(pid)
+        project = self.store.snapshot(pid) if use_human_references else self.store.get_project(pid)
         frozen_classes = self._classes(classes, project['classes'])
         if model_checks is None:
             model_checks = {}
@@ -222,6 +233,13 @@ class AnnotationAssist:
         run_id = uuid.uuid4().hex
         run = {'id': run_id, 'project_id': pid, 'status': 'queued', 'created_at': timestamp(),
                'classes': frozen_classes, 'model_checks': checks, 'frames': frames, 'summary': _counts(frames)}
+        if use_human_references:
+            labels = [entry['label'] for entry in frozen_classes]
+            summary, references, protected = build_reference_plan(
+                self.store, project, self.storage.area(pid, 'datasets'), requested, labels)
+            run.update(use_human_references=True, reference_summary=summary, reference_sources=references)
+            for frame in frames:
+                frame['protected_boxes'] = protected.get(frame['asset_id'], [])
         atomic_json(self._path(pid, run_id, create=True) / 'batch.json', run)
         try:
             job = self.jobs.submit('annotation-assist', lambda progress: self._execute(run, progress))
@@ -269,6 +287,8 @@ class AnnotationAssist:
                 frames = self._result_frames(run, manifest, source)
                 complete = dict(run, status='complete', finished_at=timestamp(), frames=frames, summary=_counts(frames),
                                 method=source.get('method', {}), timing=source.get('timing', {}), isolation=isolation)
+                if run.get('use_human_references') and isinstance(complete['method'], dict):
+                    complete['reference_preparation'] = complete['method'].get('reference_preparation', {})
                 if run['model_checks']['sam']:
                     complete['sam'] = source.get('summary', {}).get('sam', {})
                 if run['model_checks']['gemma']:
@@ -307,13 +327,21 @@ class AnnotationAssist:
             shutil.copyfile(image, copied)
             if _hash(copied) != frame['image_sha256']:
                 raise ConflictError('原圖內容與批次快照不同，請重新選取影像')
-            rows.append({'id': aid, 'image': relative, 'image_sha256': frame['image_sha256'],
-                         'width': frame['width'], 'height': frame['height'], 'base_revision': frame['base_revision']})
+            row = {'id': aid, 'image': relative, 'image_sha256': frame['image_sha256'],
+                   'width': frame['width'], 'height': frame['height'], 'base_revision': frame['base_revision']}
+            if run.get('use_human_references'):
+                row['protected_boxes'] = frame['protected_boxes']
+            rows.append(row)
         manifest = staging / 'manifest.json'
         checks = run['model_checks']
-        atomic_json(manifest, {'job_id': run['id'], 'config': {'classes': run['classes'],
-                     'settings': {'candidate_limit': 5, 'retry_regions': 2, 'sam_extent': checks['sam'],
-                                  'gemma_observation': checks['gemma']}}, 'frames': rows})
+        payload = {'job_id': run['id'], 'config': {'classes': run['classes'],
+                   'settings': {'candidate_limit': 5, 'retry_regions': 2, 'sam_extent': checks['sam'],
+                                'gemma_observation': checks['gemma']}}, 'frames': rows}
+        if run.get('use_human_references'):
+            payload['config']['reference_labels'] = {label: row['status'] for label, row in run['reference_summary'].items()}
+            payload['references'] = stage_reference_crops(self.store, run['project_id'], staging,
+                                                          run['reference_sources'], progress)
+        atomic_json(manifest, payload)
         return manifest
 
     @staticmethod

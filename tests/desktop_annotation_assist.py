@@ -123,6 +123,8 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
             click(selector)
     started = time.monotonic()
     click("#annotationAssistStart")
+    wait("document.querySelector('#annotate').dataset.messageSource === 'batch' && "
+         "!document.querySelector('#annotationMessagesPanel').hidden")
     wait("document.querySelector('button[data-assist-candidate-id]') || "
          "document.querySelector('#annotationAssistStatus')?.textContent.includes('失敗')", 600)
     wait("document.querySelector('button[data-assist-candidate-id]')")
@@ -142,8 +144,17 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     print("PASS: real batch completed and proposals stayed separate", flush=True)
 
     if js("window.workbenchState().assetId") != hammer_id:
-        js("[...document.querySelectorAll('.asset-row')].find(row=>row.innerText.includes('01-hammer'))?.click()")
+        click(f'#annotationMessageBatchFrames [data-asset-id="{hammer_id}"]')
         wait(f"window.workbenchState().assetId === {json.dumps(hammer_id)}")
+    manual_label = js("document.querySelector('[data-assist-manual-label]')?.dataset.assistManualLabel")
+    assert manual_label, "an unresolved class did not request human boxing"
+    click(f'[data-assist-manual-label="{manual_label}"]')
+    wait("document.querySelector('#annotationMessagesPanel').hidden && "
+         "document.querySelector('#addBoundingBox').getAttribute('aria-pressed') === 'true'")
+    assert js("document.querySelector('#shapeLabel').value") == manual_label
+    assert js("window.workbenchState().assetId") == hammer_id
+    click('#openAnnotationMessages')
+    click('#annotationBatchMessagesTab')
     candidate = 'button[data-assist-label="hammer"][data-assist-verdict="accepted"]'
     wait(f"document.querySelector({json.dumps(candidate)})")
     click(candidate)
@@ -156,6 +167,7 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
         click('#annotationAssistShowSam')
         wait("document.querySelector('#overlay [data-assist-preview]') && !document.querySelector('#overlay [data-assist-sam-preview]')")
         click('#annotationAssistShowSam')
+    QTest.qWait(200)
     window.grab().save(str(root / "01-model-evidence.png"))
     click("#annotationAssistAdopt")
     wait("document.querySelector('.shape-row')")
@@ -167,6 +179,8 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     archived = f'button[data-assist-candidate-id="{origin["annotation_assist"]["candidate_id"]}"]'
     assert js(f"Boolean(document.querySelector('#annotationAssistArchivedCandidates ' + {json.dumps(archived)}))")
     assert not js(f"Boolean(document.querySelector('#annotationAssistCandidates ' + {json.dumps(archived)}))")
+    click('#returnAnnotationEditor')
+    wait("document.querySelector('#annotationMessagesPanel').hidden")
     click('#annotationObjectsTab')
     click('#shapeList .shape-row')
     click('#editBoundingBox')
@@ -189,7 +203,8 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     window.grab().save(str(root / "02-saved-correction.png"))
     print("PASS: dragged a native SVG box handle, saved geometry, kept the original candidate", flush=True)
 
-    open_assist()
+    click('#openAnnotationMessages')
+    click('#annotationBatchMessagesTab')
     click("#annotationAssistResolve")
     wait("document.querySelector('#annotationAssistExceptions').textContent.includes('已完成人工覆核')")
     click('[data-stage="review"]')
@@ -198,12 +213,14 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     wait("document.querySelector('#annotationAssistReviewLink').getClientRects().length > 0")
     click("#annotationAssistReviewLink")
     wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(exception_id)}")
-    wait("document.querySelector('#annotationAiTab').getAttribute('aria-selected') === 'true' && document.querySelector('#annotationBatchTab').getAttribute('aria-selected') === 'true' && !document.querySelector('#annotationAssistPanel').hidden")
+    wait("document.querySelector('#annotate').dataset.messageSource === 'batch'")
     wait("document.querySelector('#annotationAssistExceptions').textContent.includes('待人工覆核')")
     assert service.store.get_asset(pid, exception_id)["shapes"] == []
+    QTest.qWait(200)
     window.grab().save(str(root / "04-exception.png"))
-    js("[...document.querySelectorAll('.asset-row')].find(row=>row.innerText.includes('01-hammer'))?.click()")
+    click(f'#annotationMessageBatchFrames [data-asset-id="{hammer_id}"]')
     wait(f"window.workbenchState().stage === 'annotate' && window.workbenchState().assetId === {json.dumps(hammer_id)}")
+    click('#returnAnnotationEditor')
     wait(f"document.querySelector('[data-shape={json.dumps(shape['id'])}]')")
     reloaded = service.store.get_asset(pid, hammer_id)
     assert reloaded["shapes"] == corrected["shapes"]

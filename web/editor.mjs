@@ -70,6 +70,7 @@ export class AnnotationEditor {
     this.aiToolTabs = [...this.$('annotationAiToolTabs').querySelectorAll('[role="tab"]')];
     this.sidebarView = 'objects';
     this.aiTool = 'segmentation';
+    this.messageSource = null;
     this.installEvents();
     this.resizeObserver = new ResizeObserver(() => this.fit(false));
     this.resizeObserver.observe(this.$('canvasArea'));
@@ -83,6 +84,7 @@ export class AnnotationEditor {
     this.gesture = null;
     this.prompts = {positive: [], negative: []};
     this.candidate = null;this.proposals=[];this.assistPreview=null;this.assistSamPreview=null;
+    this.$('aiMessage').textContent = '尚無候選結果';
     this.history = history(40);
     this.maskCache = new WeakMap();
     this.zoom = 1; this.pan = {x:0, y:0};
@@ -109,7 +111,17 @@ export class AnnotationEditor {
     this.$('imageDimensions').textContent = '— × — px';
   }
   get hasUncommittedWork() { return !!this.draft.length || !!this.gesture || !!this.candidate; }
-  get activeAiTool() { return this.sidebarView === 'ai' ? this.aiTool : null; }
+  get activeAiTool() { return this.messageSource ?? (this.sidebarView === 'ai' ? this.aiTool : null); }
+  setMessageSource(source) {
+    if (this.messageSource === source) return;
+    const previous = this.activeAiTool;
+    this.messageSource = source;
+    this.crosshair.hidden = true;
+    this.updateCanvasCursor();
+    this.updateCandidate();
+    this.renderCanvas();
+    this.onAiToolChange?.(this.activeAiTool, previous);
+  }
   setSidebarTab(view, aiTool = this.aiTool) {
     const previous = this.activeAiTool;
     this.sidebarView = view;
@@ -165,7 +177,7 @@ export class AnnotationEditor {
     this.renderCanvas();
   }
   updateCanvasCursor() {
-    this.$('overlay').style.cursor = this.gesture?.kind === 'rectangle-resize'
+    this.$('overlay').style.cursor = this.messageSource ? 'default' : this.gesture?.kind === 'rectangle-resize'
       ? rectangleResizeCursors[this.gesture.direction]
       : this.tool === 'pan' ? 'grab' : this.tool === 'select' ? 'default' : 'crosshair';
   }
@@ -313,7 +325,7 @@ export class AnnotationEditor {
       const label = svgElement('text',{x:shape.x,y:Math.max(14/scale,shape.y-5/scale),fill:color,'font-size':12/scale,'font-family':'Segoe UI, Microsoft JhengHei, sans-serif','font-weight':600,'paint-order':'stroke','stroke':'#101820','stroke-width':2/scale,'pointer-events':'none'});
       label.textContent = shape.label; this.$('overlay').append(label);
     }
-    if (selected && !proposal && t !== 'mask' && t !== 'rectangle') {
+    if (selected && !proposal && !this.messageSource && t !== 'mask' && t !== 'rectangle') {
       shape.points.forEach((point,index) => this.$('overlay').append(svgElement('rect',{x:point[0]-3.5/scale,y:point[1]-3.5/scale,width:7/scale,height:7/scale,fill:'#e5fff5',stroke:'#175753','stroke-width':1/scale,'data-handle':index,'data-owner':shape.id,style:'cursor:crosshair'})));
     }
   }
@@ -357,7 +369,7 @@ export class AnnotationEditor {
     const svg = this.$('overlay'); svg.replaceChildren();
     if (!this.asset) return;
     for (const shape of this.asset.shapes) if (!shape.hidden && !(this.gesture?.kind==='brush' && this.gesture.target===shape.id)) this.drawShape(shape);
-    if (this.tool === 'select') {
+    if (this.tool === 'select' && !this.messageSource) {
       for (const shape of this.selected()) {
         if (!shape.hidden && kind(shape) === 'rectangle') this.drawRectangleResizeControls(shape, svg);
       }
@@ -369,13 +381,13 @@ export class AnnotationEditor {
       svg.append(svgElement('polyline',{points:points.map(p=>p.join(',')).join(' '),stroke:'#70f2d1','stroke-width':2/scale,fill:'none','stroke-dasharray':`${5/scale} ${3/scale}`,'pointer-events':'none'}));
       for (const [x,y] of this.draft) svg.append(svgElement('circle',{cx:x,cy:y,r:3/scale,fill:'#bcfff1','pointer-events':'none'}));
     }
-    if (this.activeAiTool === 'prediction') for (const proposal of this.proposals) this.drawShape(proposal,true);
-    if (this.activeAiTool === 'batch') {
+    if (this.messageSource === 'prediction') for (const proposal of this.proposals) this.drawShape(proposal,true);
+    if (this.messageSource === 'batch') {
       if (this.assistPreview) this.drawShape(this.assistPreview,true,true);
       if (this.assistSamPreview) this.drawShape(this.assistSamPreview,true,'sam');
     }
     if (this.activeAiTool !== 'segmentation') return;
-    if (this.candidate) this.drawShape(this.candidate,true);
+    if (this.candidate && this.messageSource === 'segmentation') this.drawShape(this.candidate,true);
     for (const [category,points] of Object.entries(this.prompts)) for (const [x,y] of points) {
       const scale = this.scale*this.zoom || 1;
       svg.append(svgElement('circle',{cx:x,cy:y,r:5/scale,fill:category==='positive'?'#54e9b2':'#ff8585',stroke:'#0c1a20','stroke-width':1.5/scale,'pointer-events':'none'}));
@@ -478,7 +490,7 @@ export class AnnotationEditor {
       const rect = area.getBoundingClientRect();
       const x = event.clientX - rect.left - area.clientLeft;
       const y = event.clientY - rect.top - area.clientTop;
-      guides.hidden = !this.asset || this.locked || event.pointerType === 'touch' ||
+      guides.hidden = !this.asset || this.locked || this.messageSource || event.pointerType === 'touch' ||
         x < 0 || y < 0 || x >= area.clientWidth || y >= area.clientHeight;
       if (guides.hidden) return;
       horizontal.style.transform = `translateY(${Math.round(y)}px)`;
@@ -495,7 +507,7 @@ export class AnnotationEditor {
     svg.addEventListener('pointerup',event=>this.pointerUp(event));
     svg.addEventListener('pointercancel',()=>this.cancel());
     svg.addEventListener('dblclick',event=>{
-      if(this.locked||!this.asset)return;
+      if(this.locked||!this.asset||this.messageSource)return;
       event.preventDefault();
       if(['polygon','linestrip'].includes(this.tool)) {this.finish();return;}
       const shape=this.asset.shapes.find(s=>s.id===event.target.dataset.shape);
@@ -530,7 +542,7 @@ export class AnnotationEditor {
     document.addEventListener('keydown',event=>this.keyDown(event));
   }
   pointerDown(event) {
-    if(this.locked||!this.asset||event.button!==0)return;
+    if(this.locked||!this.asset||this.messageSource||event.button!==0)return;
     areaFocus(this.$('canvasArea'));
     event.preventDefault();
     if(event.detail>1&&['polygon','linestrip'].includes(this.tool))return;
@@ -652,8 +664,14 @@ export class AnnotationEditor {
   }
   removeSelected() {this.mutate(()=>{this.asset.shapes=this.asset.shapes.filter(shape=>!this.selection.has(shape.id));this.selection.clear()});}
   keyDown(event) {
-    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true],#annotationSidebarTabs,#annotationAiToolTabs'))return;
+    if(!this.active||this.locked||document.querySelector('dialog[open]')||event.target.closest?.('input,textarea,select,[contenteditable=true],#annotationSidebarTabs,#annotationAiToolTabs,#annotationMessageTabs'))return;
     const key=event.key.toLowerCase();
+    if(this.messageSource){
+      if(!event.ctrlKey&&!event.metaKey&&['arrowright','arrowleft','a','d'].includes(key)){
+        event.preventDefault();this.onAssetNavigation(['arrowright','d'].includes(key)?1:-1);
+      }
+      return;
+    }
     if(event.ctrlKey||event.metaKey) {
       if(key==='z'){event.preventDefault();this.travel(event.shiftKey?'redo':'undo');}
       else if(key==='y'){event.preventDefault();this.travel('redo');}
@@ -690,10 +708,8 @@ export class AnnotationEditor {
   updateCandidate() {
     this.$('acceptAI').disabled=!this.candidate||this.locked;
     this.$('discardAI').disabled=!this.candidate||this.locked;
-    this.$('canvasNotice').hidden=!this.candidate;
-    this.$('canvasNotice').textContent=this.activeAiTool === 'segmentation'
-      ? '候選遮罩預覽 · 請在右側接受或捨棄'
-      : '候選遮罩待處理 · 請回到「AI 輔助 → 互動分割」';
+    this.$('canvasNotice').hidden=!this.candidate||this.messageSource==='segmentation';
+    this.$('canvasNotice').textContent='候選遮罩待處理 · 請回到 AI 訊息的「互動分割」';
   }
 }
 function areaFocus(area) {area.focus({preventScroll:true});}

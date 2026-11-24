@@ -76,9 +76,12 @@
    <section class="acquired-tray" aria-label="專案影像素材"><div class="acquired-heading"><div><h2>專案素材 <span id="acquireTotal">0</span></h2><span id="acquireAssetHint">加入影像後即可開始標註</span></div><div class="acquired-bulk-actions"><label id="selectAllAssetsLabel" class="check-label" hidden><input id="selectAllAssets" type="checkbox">全選目前顯示</label><button id="deleteSelectedAssets" class="secondary danger" disabled hidden>刪除所選</button><button id="goAnnotate" class="primary" disabled>前往標註 →</button></div></div><div id="acquiredAssets" class="acquired-assets"></div></section>
   </section>
   <section id="annotate" class="editor-page" hidden>
-   <div class="editor-top"><div class="inline"><button id="toggleAssets" class="icon-button" title="收合／展開圖片清單">☷</button><select id="editorSelector" class="editor-selector" aria-label="選擇標註編輯器"><option value="builtin">內建編輯器</option><option value="labelme">Labelme</option><option value="cvat">CVAT</option></select><button id="previousAssetTop" class="editor-nav" title="上一張 / A">‹ <kbd>A</kbd></button><button id="nextAssetTop" class="editor-nav" title="下一張 / D"><kbd>D</kbd> ›</button><b id="assetTitle">尚未選擇影像</b><span id="assetReviewBadge" class="badge">待審核</span></div><div class="inline"><span id="saveState" class="save-state">已儲存</span><button id="saveNow" class="secondary" hidden disabled>已儲存</button><button id="toggleProperties" class="icon-button" title="收合／展開標註側欄" aria-label="收合／展開標註側欄" aria-controls="propertiesSidebar">☷</button></div></div>
+   <div class="editor-top">
+    <div class="inline"><h2 id="annotationMessagesTitle" tabindex="-1" hidden>AI 訊息</h2><button id="toggleAssets" class="icon-button" title="收合／展開圖片清單">☷</button><select id="editorSelector" class="editor-selector" aria-label="選擇標註編輯器"><option value="builtin">內建編輯器</option><option value="labelme">Labelme</option><option value="cvat">CVAT</option></select><button id="previousAssetTop" class="editor-nav" title="上一張 / A">‹ <kbd>A</kbd></button><button id="nextAssetTop" class="editor-nav" title="下一張 / D"><kbd>D</kbd> ›</button><b id="assetTitle">尚未選擇影像</b><span id="assetReviewBadge" class="badge">待審核</span></div>
+    <div class="inline"><span id="saveState" class="save-state">已儲存</span><button id="saveNow" class="secondary" hidden disabled>已儲存</button><button id="openAnnotationMessages" type="button" class="secondary">AI 訊息</button><button id="returnAnnotationEditor" type="button" class="secondary" hidden>← 返回標註編輯</button><button id="toggleProperties" class="icon-button" title="收合／展開標註側欄" aria-label="收合／展開標註側欄" aria-controls="propertiesSidebar">☷</button></div>
+   </div>
    <div class="editor-layout">
-    <aside id="assetSidebar" class="asset-sidebar"><div class="sidebar-heading"><h2>影像資產 <span id="assetCount">0</span></h2></div><div class="sidebar-filters"><input id="assetSearch" type="search" placeholder="搜尋檔名" aria-label="搜尋影像"><select id="assetFilter" aria-label="篩選圖片狀態"><option value="all">所有狀態</option><option value="pending">待審核</option><option value="approved">已核准</option><option value="rejected">已退回</option></select></div><div id="assetList" class="asset-list"></div><div class="sidebar-bottom"><button id="addMore" class="secondary full">＋ 匯入更多資料</button></div></aside>
+    <aside id="assetSidebar" class="asset-sidebar"><div class="sidebar-heading"><h2>影像資產 <span id="assetCount">0</span></h2></div><div class="sidebar-filters"><input id="assetSearch" type="search" placeholder="搜尋檔名" aria-label="搜尋影像"><select id="assetFilter" aria-label="篩選圖片狀態"><option value="all">所有狀態</option><option value="pending">待審核</option><option value="approved">已核准</option><option value="rejected">已退回</option></select></div><div id="assetList" class="asset-list"></div><div class="sidebar-bottom"><button id="addMore" class="secondary full">＋ 匯入更多資料</button></div><div id="annotationMessageBatchHeading" class="sidebar-heading" hidden><h2>批次影像</h2></div><div id="annotationMessageBatchFrames" class="asset-list" aria-label="批次影像" hidden></div></aside>
     <div class="canvas-workspace">
      <div class="canvas-editor-toolbar">
       <div id="toolStrip" class="tool-strip" role="toolbar" aria-label="Annotation tools"><button data-tool="polygon" class="tool" title="Polygon / P">⬠<span>Polygon (P)</span></button><button data-tool="linestrip" class="tool" title="Polyline / L">⌁<span>Polyline (L)</span></button><button data-tool="point" class="tool" title="Point / K">⊙<span>Point (K)</span></button><button data-tool="obb" class="tool" title="Oriented box / O">◇<span>OBB (O)</span></button><button data-tool="mask" class="tool" title="Brush / B">◒<span>Brush (B)</span></button><button data-tool="erase" class="tool" title="Eraser / E">◐<span>Eraser (E)</span></button><span class="tool-separator"></span><button data-tool="pan" class="tool" title="Pan / H">✥<span>Pan (H)</span></button><button id="undo" class="tool" title="Undo / Ctrl Z" disabled>↶<span>Undo</span></button><button id="redo" class="tool" title="Redo / Ctrl Y" disabled>↷<span>Redo</span></button></div>
@@ -134,8 +137,6 @@
         <label for="aiEngine">互動分割引擎</label><select id="aiEngine"><option value="sam2">SAM 2</option><option value="grabcut">GrabCut</option></select>
         <div class="inline"><button data-tool="ai-positive" class="secondary" title="前景提示點">＋ 前景</button><button data-tool="ai-negative" class="secondary" title="背景提示點">− 背景</button><button id="clearPrompts" class="text-button">清除</button></div>
         <button id="runAI" class="primary full">產生候選遮罩</button>
-        <div id="aiMessage" class="muted" role="status">尚無候選結果</div>
-        <div class="inline"><button id="acceptAI" class="secondary full" disabled>接受</button><button id="discardAI" class="secondary full" disabled>捨棄</button></div>
        </section>
        <section id="annotationAssistPanel" class="property-section annotation-assist" role="tabpanel" aria-labelledby="annotationBatchTab" hidden>
         <div class="annotation-assist-config">
@@ -147,35 +148,57 @@
           <label class="check-label"><input id="annotationAssistEnableSam" type="checkbox" checked> SAM 2.1 框界檢查</label>
           <label class="check-label"><input id="annotationAssistEnableGemma" type="checkbox"> Gemma 4 觀察覆核</label>
          </div>
-         <div class="inline"><button id="annotationAssistStart" class="primary full">開始批量找框</button><button id="annotationAssistStop" class="secondary" hidden>停止</button></div>
-         <div id="annotationAssistStatus" class="muted" role="status">尚無執行紀錄。</div><progress id="annotationAssistProgress" max="100" hidden aria-label="批量找框進度"></progress>
-        </div>
-        <div id="annotationAssistResult" class="annotation-assist-results" hidden>
-         <label for="annotationAssistRuns">批次結果</label><select id="annotationAssistRuns"></select>
-         <div id="annotationAssistSummary" class="muted"></div>
-         <div id="annotationAssistGemmaHealth" class="annotation-assist-models" hidden></div>
-         <div id="annotationAssistExceptions" class="annotation-assist-exceptions" role="status"></div>
-         <div id="annotationAssistLayers" class="annotation-assist-checks" hidden>
-          <label class="check-label"><input id="annotationAssistShowOriginal" type="checkbox" checked><span class="annotation-assist-swatch original" aria-hidden="true"></span>MM 原框</label>
-          <label class="check-label"><input id="annotationAssistShowSam" type="checkbox" checked><span class="annotation-assist-swatch sam" aria-hidden="true"></span>SAM 外接框</label>
-         </div>
-         <div id="annotationAssistEvidence" class="muted annotation-assist-evidence"></div>
-         <div id="annotationAssistCandidateModels" class="annotation-assist-models"></div>
-         <div id="annotationAssistCandidates" class="annotation-assist-candidates" aria-label="目前影像的候選框"></div>
-         <details id="annotationAssistArchive" class="annotation-assist-archive" hidden>
-          <summary id="annotationAssistArchiveLabel">收起的候選</summary>
-          <div id="annotationAssistArchivedCandidates" class="annotation-assist-candidates" aria-label="已處理的候選框"></div>
-         </details>
-         <div class="inline annotation-assist-actions"><button id="annotationAssistAdopt" class="secondary full" disabled>採用到畫布</button><button id="annotationAssistReject" class="secondary" disabled>不採用</button></div>
-         <div class="inline annotation-assist-actions"><button id="annotationAssistResolve" class="secondary full" disabled>確認例外已處理</button><button id="annotationAssistNext" class="secondary" disabled>下一筆例外</button></div>
+         <button id="annotationAssistStart" class="primary full">開始批量找框</button>
         </div>
        </section>
        <section id="annotationPredictionPanel" class="property-section ai-section" role="tabpanel" aria-labelledby="annotationPredictionTab" hidden>
         <label for="annotationModel">標註模型</label><select id="annotationModel"></select>
         <button id="generateCurrentPrediction" class="secondary full">為目前圖片建立候選</button>
-        <div id="annotationPredictionList" class="prediction-list"></div>
        </section>
       </div>
+     </div>
+    </aside>
+    <aside id="annotationMessagesPanel" class="properties-sidebar annotation-messages-sidebar" aria-label="AI 辨識結果" hidden>
+     <div id="annotationMessageTabs" class="annotation-ai-tool-tabs" role="tablist" aria-label="AI 訊息來源">
+      <button type="button" id="annotationSegmentationMessagesTab" role="tab" data-editor-tab="segmentation" aria-controls="annotationSegmentationMessages" aria-selected="true" tabindex="0">互動分割</button>
+      <button type="button" id="annotationBatchMessagesTab" role="tab" data-editor-tab="batch" aria-controls="annotationBatchMessages" aria-selected="false" tabindex="-1">批量找框</button>
+      <button type="button" id="annotationPredictionMessagesTab" role="tab" data-editor-tab="prediction" aria-controls="annotationPredictionMessages" aria-selected="false" tabindex="-1">模型預標註</button>
+     </div>
+     <div class="properties-scroll annotation-messages-content">
+      <section id="annotationSegmentationMessages" class="property-section ai-section" role="tabpanel" aria-labelledby="annotationSegmentationMessagesTab">
+       <div id="aiMessage" class="muted" role="status">尚無候選結果</div>
+       <div class="inline"><button id="acceptAI" class="secondary full" disabled>接受</button><button id="discardAI" class="secondary full" disabled>捨棄</button></div>
+      </section>
+      <section id="annotationBatchMessages" class="property-section annotation-assist" role="tabpanel" aria-labelledby="annotationBatchMessagesTab" hidden>
+       <div class="annotation-message-progress">
+        <div id="annotationAssistStatus" class="muted" role="status">尚無執行紀錄。</div>
+        <progress id="annotationAssistProgress" max="100" hidden aria-label="批量找框進度"></progress>
+        <button id="annotationAssistStop" class="secondary" hidden>停止</button>
+       </div>
+       <div id="annotationAssistResult" class="annotation-assist-results" hidden>
+        <label for="annotationAssistRuns">批次結果</label><select id="annotationAssistRuns"></select>
+        <div id="annotationAssistSummary" class="muted"></div>
+        <div id="annotationAssistGemmaHealth" class="annotation-assist-models" hidden></div>
+        <div id="annotationAssistExceptions" class="annotation-assist-exceptions" role="status"></div>
+        <div class="inline annotation-assist-actions"><button id="annotationAssistResolve" class="secondary full" disabled>確認例外已處理</button><button id="annotationAssistNext" class="secondary" disabled>下一筆例外</button></div>
+        <div id="annotationAssistLayers" class="annotation-assist-checks" hidden>
+         <label class="check-label"><input id="annotationAssistShowOriginal" type="checkbox" checked><span class="annotation-assist-swatch original" aria-hidden="true"></span>MM 原框</label>
+         <label class="check-label"><input id="annotationAssistShowSam" type="checkbox" checked><span class="annotation-assist-swatch sam" aria-hidden="true"></span>SAM 外接框</label>
+        </div>
+        <div id="annotationAssistEvidence" class="muted annotation-assist-evidence"></div>
+        <div id="annotationAssistCandidateModels" class="annotation-assist-models"></div>
+        <div class="inline annotation-assist-actions"><button id="annotationAssistAdopt" class="secondary full" disabled>採用到畫布</button><button id="annotationAssistReject" class="secondary" disabled>不採用</button></div>
+        <div id="annotationAssistCandidates" class="annotation-assist-candidates" aria-label="目前影像的候選框"></div>
+        <details id="annotationAssistArchive" class="annotation-assist-archive" hidden>
+         <summary id="annotationAssistArchiveLabel">收起的候選</summary>
+         <div id="annotationAssistArchivedCandidates" class="annotation-assist-candidates" aria-label="已處理的候選框"></div>
+        </details>
+       </div>
+      </section>
+      <section id="annotationPredictionMessages" class="property-section ai-section" role="tabpanel" aria-labelledby="annotationPredictionMessagesTab" hidden>
+       <div id="annotationPredictionStatus" class="muted" role="status"></div>
+       <div id="annotationPredictionList" class="prediction-list"></div>
+      </section>
      </div>
     </aside>
    </div>
