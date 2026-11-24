@@ -119,8 +119,10 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     open_assist()
     choose("#annotationAssistScope", "visible")
     for selector in ('#annotationAssistEnableSam', '#annotationAssistEnableGemma'):
-        if js(f"document.querySelector({json.dumps(selector)})?.checked") is not model_checks:
+        assert js(f"document.querySelector({json.dumps(selector)}).checked") is True
+        if not model_checks:
             click(selector)
+    assert js("document.querySelector('#annotationAssistPanel .annotation-assist-checks label:last-child input').checked") is False
     started = time.monotonic()
     click("#annotationAssistStart")
     wait("document.querySelector('#annotate').dataset.messageSource === 'batch' && "
@@ -131,11 +133,11 @@ def exercise_ui(window, service, pid, hammer_id, exception_id, root, qt, *, mode
     assert service.store.get_asset(pid, hammer_id)["shapes"] == [], "AI silently wrote formal labels"
     batch_id = js("document.querySelector('#annotationAssistRuns').value")
     initial = service.annotation_assist.detail(pid, batch_id)
+    assert initial['model_checks'] == {'sam': model_checks, 'gemma': model_checks}
     assert initial["isolation"]["network_denied"] and initial["isolation"]["cuda"]
     record = next((root / "data" / "projects").glob(f"*/integrations/annotation-assist/{batch_id}/batch.json"))
     candidate_digest = sha256(record.read_bytes()).hexdigest()
     if model_checks:
-        assert initial['model_checks'] == {'sam': True, 'gemma': True}
         assert initial.get('gemma', {}).get('status') == 'observed', initial.get('gemma')
         assert initial['gemma']['observation_only'] and initial['gemma']['observed_candidates'] >= 2
         proof = json.loads((record.parent / 'inference-gemma-isolation.json').read_bytes())

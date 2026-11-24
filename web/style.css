@@ -30,6 +30,9 @@
 .class-empty{color:var(--muted);font-size:12px;padding:4px 1px}
 .class-management-summary{display:grid;gap:7px}.class-management-row{display:flex;align-items:center;gap:12px;min-height:49px;padding:8px 10px;border:1px solid #30434f;border-radius:5px;background:#14212a}.class-management-row>div{flex:1;min-width:0}.class-management-row b,.class-management-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.class-management-row b{font-size:12px}.class-management-row small{font-size:12px;color:var(--muted);margin-top:2px}.class-management-row>select{width:min(210px,48%);padding:7px 8px;font-size:12px}.class-management-row.requires-replacement{border-color:#71534b;background:#2b2424}
 .class-management-row.delete-objects{border-color:#9a555b;background:#3a282d}.class-management-row.delete-objects select{color:#ffc1c1;border-color:#9a555b}
+#formDialog.plain-dialog-backdrop::backdrop{backdrop-filter:none}
+.class-management-summary{block-size:min(224px,26vh);overflow-y:auto;scrollbar-gutter:stable;align-content:start}
+.class-management-additions{display:contents}
 
 .canvas-editor-toolbar {
   display: grid;

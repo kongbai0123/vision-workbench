@@ -109,8 +109,19 @@ def main():
             capture("03-annotation-workspace")
             assert js("document.querySelector('#annotationClassChoices button[data-class-name=工件]').getClientRects().length > 0")
             # Category management must produce an immediate, persisted UI change.
+            js("""window.classManagerFocus=[];
+                document.addEventListener('focusin',event=>{
+                    if(event.target.closest('#formDialog'))window.classManagerFocus.push(event.target.id);
+                });""")
             click("#manageClasses");wait("document.querySelector('#formDialog').open")
+            QTest.qWait(90)
+            assert js("window.classManagerFocus.join()") == 'classManagementInput'
+            assert js("getComputedStyle(document.querySelector('#formDialog'),'::backdrop').backdropFilter") == 'none'
+            js("""window.originalClassRow=document.querySelector('.class-management-row');
+                window.classEditorTop=document.querySelector('#classManagementInput').getBoundingClientRect().top;""")
             fill("#dialogBody textarea","工件\n已修正工件\n暫存類別")
+            assert js("""window.originalClassRow===document.querySelector('.class-management-row') &&
+                Math.abs(window.classEditorTop-document.querySelector('#classManagementInput').getBoundingClientRect().top)<1""")
             js("document.querySelector('#dialogForm').requestSubmit()")
             wait("!document.querySelector('#formDialog').open && !!document.querySelector('#annotationClassChoices button[data-class-name=暫存類別]')")
             assert service.store.get_project(pid)['classes']==['工件','已修正工件','暫存類別']
@@ -163,6 +174,9 @@ def main():
             fill("#dialogBody textarea","已修正工件")
             wait("!!document.querySelector('#dialogBody .requires-replacement select')")
             fill("#dialogBody .requires-replacement select","已修正工件")
+            fill("#dialogBody textarea","已修正工件\n待檢查類別")
+            assert js("document.querySelector('#dialogBody .requires-replacement select').value") == '已修正工件'
+            fill("#dialogBody textarea","已修正工件")
             js("document.querySelector('#dialogForm').requestSubmit()")
             wait("!document.querySelector('#formDialog').open && !document.querySelector('#annotationClassChoices button[data-class-name=工件]')")
             snapshot=service.store.snapshot(pid)

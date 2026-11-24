@@ -504,10 +504,13 @@ function updateAnnotationClassButtons() {
     choice.setAttribute('aria-pressed', String(choice.dataset.className === select.value));
   }
 }
-async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPACE',wide=false}) {
+async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPACE',wide=false,blurBackdrop=true}) {
   return new Promise(resolve=>{
     const dialog=$('formDialog');$('dialogTitle').textContent=title;$('dialogEyebrow').textContent=eyebrow;
     dialog.classList.toggle('diagnostic-dialog',wide);
+    dialog.classList.toggle('plain-dialog-backdrop',!blurBackdrop);
+    const firstField=body.querySelector('[autofocus]') || body.querySelector('input:not([type=hidden]):not([hidden]):enabled, textarea:not([hidden]):enabled, select:not([hidden]):enabled');
+    if(firstField)firstField.autofocus=true;
     $('dialogBody').replaceChildren(body);$('confirmDialog').textContent=confirm;$('confirmDialog').hidden=!onSubmit;
     $('cancelDialog').textContent=onSubmit?'取消':'關閉';
     let processing=false;
@@ -520,7 +523,7 @@ async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPA
       try{const result=await onSubmit();processing=false;dialog.close();resolve(result)}catch(error){toast(error.message,true)}
       finally{processing=false;$('confirmDialog').disabled=false;$('cancelDialog').disabled=false;$('closeDialog').disabled=false;}
     };
-    dialog.showModal();setTimeout(()=>body.querySelector('input,textarea,select')?.focus(),30);
+    dialog.showModal();
   });
 }
 async function createProject() {
@@ -562,40 +565,72 @@ async function manageClasses() {
   body.append(element('p','每行一個類別。刪除使用中的類別時，必須明確選擇：把既有物件改成另一類，或連同這些標註物件一起刪除。'));
   const label=element('label','專案類別（每行一個）');
   const input=document.createElement('textarea');input.rows=7;input.value=usage.classes.map(item=>item.name).join('\n');
+  input.id='classManagementInput';label.htmlFor=input.id;
   const summary=element('div',undefined,'class-management-summary');
   body.append(label,input,element('label','目前使用情況'),summary);
   const decisions=new Map();
   const values=()=>[...new Set(input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean))];
-  const render=()=>{
-    const desired=values();summary.replaceChildren();decisions.clear();
-    for(const item of usage.classes) {
-      const row=element('div',undefined,'class-management-row');
-      const copy=element('div');copy.append(element('b',item.name),element('small',item.object_count?`${number(item.object_count)} 個物件 · ${number(item.image_count)} 張影像`:'尚未被標註使用'));
-      row.append(copy);
-      if(desired.includes(item.name))row.append(element('span','保留','badge approved'));
-      else if(!item.object_count)row.append(element('span','儲存後刪除','badge rejected'));
-      else {
-        const select=document.createElement('select');select.setAttribute('aria-label',`刪除「${item.name}」前的標註處理方式`);
-        select.append(new Option('選擇標註處理方式',''));
-        for(const name of desired)select.append(new Option(`將全部 ${number(item.object_count)} 個物件改為 ${name}`,name));
-        select.append(new Option(`刪除這 ${number(item.object_count)} 個標註物件`,'__delete_objects__'));
-        select.value=decisions.get(item.name)||'';
-        select.onchange=()=>{decisions.set(item.name,select.value);row.classList.toggle('delete-objects',select.value==='__delete_objects__')};
-        row.classList.add('requires-replacement');row.append(select);
-      }
-      summary.append(row);
+  const originalNames=new Set(usage.classes.map(item=>item.name));
+  const rows=usage.classes.map(item=>{
+    const row=element('div',undefined,'class-management-row');
+    const count=number(item.object_count),copy=element('div');
+    copy.append(element('b',item.name),element('small',item.object_count?`${count} 個物件 · ${number(item.image_count)} 張影像`:'尚未被標註使用'));
+    const badge=element('span','保留','badge approved');
+    row.append(copy,badge);
+    const select=item.object_count?element('select'):null;
+    if(select){
+      select.hidden=true;
+      select.setAttribute('aria-label',`刪除「${item.name}」前的標註處理方式`);
+      select.onchange=()=>{decisions.set(item.name,select.value);row.classList.toggle('delete-objects',select.value==='__delete_objects__');};
+      row.append(select);
     }
-    const added=desired.filter(name=>!usage.classes.some(item=>item.name===name));
-    for(const name of added) {
+    summary.append(row);
+    return {name:item.name,count,row,badge,select};
+  });
+  const additions=element('div',undefined,'class-management-additions');
+  summary.append(additions);
+  let previousClasses;
+  const render=()=>{
+    const desired=values(),key=JSON.stringify(desired);
+    if(key===previousClasses)return;
+    previousClasses=key;
+    const names=new Set(desired);
+    for(const {name,count,row,badge,select} of rows){
+      const kept=names.has(name),needsDecision=Boolean(select&&!kept);
+      row.classList.toggle('requires-replacement',needsDecision);
+      badge.hidden=needsDecision;
+      if(!needsDecision){
+        if(kept)decisions.delete(name);
+        badge.textContent=kept?'保留':'儲存後刪除';
+        badge.classList.toggle('approved',kept);
+        badge.classList.toggle('rejected',!kept);
+      }
+      if(select){
+        select.hidden=!needsDecision;
+        if(needsDecision){
+          const decision=decisions.get(name);
+          if(decision!=='__delete_objects__'&&!names.has(decision))decisions.delete(name);
+          select.replaceChildren(new Option('選擇標註處理方式',''),
+            ...desired.map(target=>new Option(`將全部 ${count} 個物件改為 ${target}`,target)),
+            new Option(`刪除這 ${count} 個標註物件`,'__delete_objects__'));
+          select.value=decisions.get(name)||'';
+        }
+      }
+      row.classList.toggle('delete-objects',needsDecision&&select.value==='__delete_objects__');
+    }
+    const added=desired.filter(name=>!originalNames.has(name)).map(name=>{
       const row=element('div',undefined,'class-management-row');
       const copy=element('div');copy.append(element('b',name),element('small','新類別'));
-      row.append(copy,element('span','新增','badge approved'));summary.append(row);
-    }
-    if(!usage.classes.length&&!added.length)summary.append(element('div','尚無類別。可在上方輸入第一個類別。','class-empty'));
+      row.append(copy,element('span','新增','badge approved'));return row;
+    });
+    if(!rows.length&&!added.length)added.push(element('div','尚無類別。可在上方輸入第一個類別。','class-empty'));
+    additions.replaceChildren(...added);
   };
-  input.addEventListener('input',render);render();
+  input.addEventListener('input',event=>{if(!event.isComposing)render();});
+  input.addEventListener('compositionend',render);render();
   const currentAssetId=state.asset?.id;
-  const project=await formDialog({title:'管理物件類別',body,confirm:'儲存並套用',onSubmit:()=>{
+  const project=await formDialog({title:'管理物件類別',body,confirm:'儲存並套用',blurBackdrop:false,onSubmit:()=>{
+    render();
     const desired=values(),mapping={},deleteObjects=[];
     for(const item of usage.classes)if(!desired.includes(item.name)&&item.object_count) {
       const decision=decisions.get(item.name);
@@ -605,9 +640,9 @@ async function manageClasses() {
     return api(projectPath('/classes'),'POST',{classes:desired,replacements:mapping,delete_objects:deleteObjects,revision:usage.revision});
   }});
   if(project){
-    state.project=project;updateClassList();editor.render();
+    state.project=project;updateClassList();
     if(currentAssetId&&project.class_update?.asset_ids?.includes(currentAssetId))await loadAsset(currentAssetId);
-    else renderAssetList();
+    else{editor.render();renderAssetList();}
     await loadProjects();
     const change=project.class_update||{};
     const operations=[];

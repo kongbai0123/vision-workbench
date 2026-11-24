@@ -273,7 +273,7 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
       actions.append(draw);
       const repeat=button('以人工範例重跑','secondary',()=>safe(()=>{
         const definition=run.classes.find(item=>item.label===label);
-        return start({classes:[definition],imageIds:[frame.asset_id],modelChecks:run.model_checks,useHumanReferences:true});
+        return start({classes:[definition],imageIds:[frame.asset_id],useHumanReferences:true});
       }));
       repeat.disabled=jobs.has(projectId);
       actions.append(repeat);
@@ -510,13 +510,13 @@ export function createAnnotationAssistPage({$, state, editor, api, button, eleme
     try{await task;}finally{if(refreshing===task)refreshing=null;}
   }
 
-  async function start({classes=selectedClasses(),imageIds=scopeAssets().map(asset=>asset.id),modelChecks,
+  async function start({classes=selectedClasses(),imageIds=scopeAssets().map(asset=>asset.id),
     useHumanReferences=useReferences.checked}={}) {
     if(!projectId||jobs.has(projectId))return;
     const pid=projectId;
     if(!classes.length||!imageIds.length)throw Error('請選取影像及至少一個類別。');
     if(classes.some(item=>!item.prompt))throw Error('已選取的類別都需要 MM 提示詞。');
-    modelChecks??={sam:$('annotationAssistEnableSam').checked,gemma:$('annotationAssistEnableGemma').checked};
+    const modelChecks={sam:$('annotationAssistEnableSam').checked,gemma:$('annotationAssistEnableGemma').checked};
     const active={id:null,progress:0,message:'準備批次…',imageIds};
     jobs.set(pid,active);
     renderControls();
