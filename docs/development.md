@@ -37,6 +37,14 @@ v2.21.10 的驗證範圍與結果見[啟動修復驗證紀錄](validation-202610
 
 開啟終端輸出的本機網址；按 `Ctrl+C` 停止服務。未指定 `--data-root` 時使用專案下的 `data/`。瀏覽器模式不提供 Labelme 原生嵌入介面。
 
+## 公開內容與搜尋索引
+
+本機介面只在 `127.0.0.1` 啟動，API 需要工作階段憑證。HTTP 服務提供 `robots.txt` 並回傳 `X-Robots-Tag: noindex, nofollow, nosnippet`。這些指令適用於遵守規則的爬蟲。GitHub 公開儲存庫仍可被瀏覽和複製，私人專案、權重和診斷紀錄應存放在公開儲存庫之外。
+
+自架公開頁若希望保留很短的 Google 搜尋摘要，可讓 Google 爬取該頁並設定 `<meta name="robots" content="max-snippet:80">`。若要讓匿名請求只能讀到簡介，公開頁本身只提供那段文案，其餘內容放在需授權的服務中。 [Google 摘要設定](https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag)
+
+> Vision Workbench 是本機影像標註、資料審核與模型訓練工作台。
+
 ## 自動測試
 
 架構整頓的逐項實作、相容性決定與驗證紀錄見 [architecture-hardening.md](architecture-hardening.md)。

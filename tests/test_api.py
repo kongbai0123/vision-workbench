@@ -73,6 +73,33 @@ class ApiWorkflowTests(unittest.TestCase):
             self.call('/api/projects', {'name': []})
         self.assertEqual(error.exception.code, 400)
 
+    def test_local_crawler_policy_covers_static_and_denied_responses(self):
+        policy = 'noindex, nofollow, nosnippet'
+        with urlopen(self.service.url + '/robots.txt', timeout=5) as response:
+            self.assertEqual(response.headers.get_content_type(), 'text/plain')
+            self.assertEqual(response.headers['X-Robots-Tag'], policy)
+            self.assertEqual(response.read().decode().splitlines(), ['User-agent: *', 'Disallow: /'])
+        with urlopen(self.service.url, timeout=5) as response:
+            self.assertEqual(response.headers['X-Robots-Tag'], policy)
+        with self.assertRaises(HTTPError) as error:
+            urlopen(self.service.url + '/api/projects', timeout=5)
+        self.assertEqual(error.exception.code, 403)
+        self.assertEqual(error.exception.headers['X-Robots-Tag'], policy)
+        with error.exception as response:
+            self.assertEqual(set(json.load(response)), {'error', 'message'})
+
+    def test_unexpected_api_error_logs_detail_locally(self):
+        internal = 'internal diagnostic example'
+        with patch.object(self.service.store, 'list_projects', side_effect=RuntimeError(internal)):
+            with self.assertLogs(level='ERROR') as logs, self.assertRaises(HTTPError) as error:
+                self.call('/api/projects')
+        self.assertEqual(error.exception.code, 500)
+        self.assertIn(internal, '\n'.join(logs.output))
+        with error.exception as response:
+            payload = json.load(response)
+        self.assertEqual(payload['message'], '工作台目前無法完成請求，請查閱本機診斷紀錄。')
+        self.assertNotIn(internal, payload['error'])
+
     def test_browser_model_upload_streams_to_single_use_temporary_file(self):
         payload=b'synthetic model checkpoint'
         result=self.upload_model('零件 模型.pt',payload)

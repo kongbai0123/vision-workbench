@@ -209,6 +209,13 @@ class Handler(BaseHTTPRequestHandler):
         if 'session=' not in self.path:
             logging.debug("HTTP %s", fmt % args)
 
+    def end_headers(self):
+        self.send_header('X-Robots-Tag', 'noindex, nofollow, nosnippet')
+        super().end_headers()
+
+    def token_valid(self, value):
+        return value.isascii() and secrets.compare_digest(value, self.app.api_token)
+
     def authorized(self):
         cookie = SimpleCookie()
         try:
@@ -216,7 +223,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return False
         value = self.headers.get('X-Workbench-Token') or (cookie['workbench_session'].value if 'workbench_session' in cookie else '')
-        return secrets.compare_digest(value, self.app.api_token)
+        return self.token_valid(value)
 
     def host_valid(self):
         expected = urlsplit(self.app.url).netloc
@@ -304,11 +311,13 @@ class Handler(BaseHTTPRequestHandler):
         status = 409 if isinstance(exc, ConflictError) else 403 if isinstance(exc, PermissionError) else 404 if isinstance(exc, FileNotFoundError) else 400 if isinstance(exc, ValueError) else 500
         if isinstance(exc, MethodNotAllowed):
             status = 405
+        message = str(exc)
         if status == 500:
             logging.exception("Application API failure")
+            message = '工作台目前無法完成請求，請查閱本機診斷紀錄。'
         self.close_connection = True
         try:
-            self.json({"error":str(exc), "message":str(exc)}, status)
+            self.json({"error":message, "message":message}, status)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
@@ -319,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
             path = unquote(urlsplit(self.path).path)
             if path == '/' and 'session' in parse_qs(urlsplit(self.path).query):
                 supplied = parse_qs(urlsplit(self.path).query)['session'][0]
-                if not secrets.compare_digest(supplied, self.app.api_token):
+                if not self.token_valid(supplied):
                     raise PermissionError('啟動憑證無效')
                 self.send_response(303)
                 self.send_header('Set-Cookie', f'workbench_session={self.app.api_token}; HttpOnly; SameSite=Strict; Path=/')
