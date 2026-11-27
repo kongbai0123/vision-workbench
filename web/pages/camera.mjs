@@ -183,7 +183,7 @@ function selectedCameraRecording(){
   if(recordingProject!==state.project?.id)return null;
   return recordingItems.find(recording=>recording.name===$('cameraRecordingSelect').value)||null;
 }
-async function loadCameraRecordings({latest=false}={}){
+async function loadCameraRecordings({latest=false,name='',syncSource=false}={}){
   const pid=state.project?.id,request=++recordingRequest,select=$('cameraRecordingSelect');
   const previous=recordingProject===pid?select.value:'';
   if(recordingProject!==pid){
@@ -194,6 +194,7 @@ async function loadCameraRecordings({latest=false}={}){
     $('cameraRecordingSampling').hidden=true;
     $('cameraVideoReport').hidden=true;
     $('cameraRecordingCount').textContent='0';
+    $('openVideoMaterials').disabled=true;
   }
   if(!pid)return;
   const summary=$('recordingSummary');
@@ -203,11 +204,14 @@ async function loadCameraRecordings({latest=false}={}){
     if(request!==recordingRequest||state.project?.id!==pid)return;
     recordingItems=recordings;
     select.replaceChildren(...recordings.map(recording=>new Option(
-      `${recording.name} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒`, recording.name)));
-    if(!latest&&recordings.some(recording=>recording.name===previous))select.value=previous;
+      `${recording.display_name||recording.name} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒`, recording.name)));
+    const preferred=name||(!latest?previous:'');
+    if(recordings.some(recording=>recording.name===preferred))select.value=preferred;
     $('cameraRecordingCount').textContent=String(recordings.length);
+    $('openVideoMaterials').disabled=!recordings.length;
     $('cameraRecordingSampling').hidden=!recordings.length;
-    summary.textContent=recordings.length?`最近錄影 · ${Number(recordings[0].duration_seconds||0).toFixed(1)} 秒 · ${recordings[0].frames||0} 幀`:'目前專案尚無錄影。';
+    summary.textContent=recordings.length?'可選擇專案影片取幀，取出的畫格會加入圖片素材。':'目前專案尚無影片。';
+    if(syncSource&&!$('videoPath').value&&select.value)select.dispatchEvent(new Event('change'));
     updateCameraControls();
   }catch(error){
     if(request===recordingRequest&&state.project?.id===pid)summary.textContent=error.message;

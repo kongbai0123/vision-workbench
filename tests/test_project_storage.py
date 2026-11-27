@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 from PIL import Image
@@ -98,6 +99,43 @@ class ProjectStorageTests(unittest.TestCase):
         self.assertEqual(catalog["dataset_versions"][0]["relative_path"], "datasets/D001/manifest.json")
         self.assertTrue(self.store.database_integrity(self.pid)["ok"])
         workspace.close()
+
+    def test_default_dataset_export_is_owned_by_project_and_survives_rename(self):
+        from workbench.server import WorkbenchService
+
+        service = WorkbenchService(self.data)
+        try:
+            self.store.update_project(self.pid, classes=["part"])
+            image = self.root / "approved.png"
+            Image.new("RGB", (16, 16), (100, 20, 30)).save(image)
+            self.store.add_assets(self.pid, [{"path": str(image), "review_state": "approved", "split": "train",
+                "shapes": [{"type": "rectangle", "label": "part", "x": 1, "y": 1, "width": 6, "height": 6}]}])
+
+            def export(payload):
+                job = service.pipeline_job(self.pid, "export", payload)
+                for _ in range(150):
+                    current = service.jobs.get(job["id"])
+                    if current["state"] in {"succeeded", "failed"}:
+                        return current
+                    time.sleep(.02)
+                self.fail("Export job did not finish")
+
+            result = export({"format": "native", "version": "project-v1"})
+            self.assertEqual(result["state"], "succeeded", result)
+            archive = Path(result["result"]["zip_path"])
+            self.assertEqual(archive.parent, self.store.directory(self.pid) / "exports")
+            self.assertTrue(archive.is_file())
+
+            other = self.store.create_project("other")["id"]
+            rejected = export({"output_dir": str(self.store.directory(other) / "exports")})
+            self.assertEqual(rejected["state"], "failed")
+            self.assertFalse((self.store.directory(other) / "exports").exists())
+            self.store.update_project(self.pid, name="portable-renamed")
+            current = self.store.get_project(self.pid)["exports"][0]
+            self.assertEqual(Path(current["zip_path"]).parent, self.store.directory(self.pid) / "exports")
+            self.assertTrue(Path(current["zip_path"]).is_file())
+        finally:
+            service.close()
 
 
 if __name__ == "__main__":

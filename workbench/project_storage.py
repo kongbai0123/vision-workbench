@@ -33,7 +33,7 @@ class ProjectStorage:
         return self.store.directory(project_id)
 
     def area(self, project_id: str, name: str, *, create: bool = False) -> Path:
-        if name not in PROJECT_AREAS and not name.startswith("integrations/"):
+        if name not in (*PROJECT_AREAS, "recordings", "exports", "scratch") and not name.startswith("integrations/"):
             raise ValueError("專案儲存區名稱無效")
         path = self.root(project_id).joinpath(*name.split("/"))
         if path.resolve() != path and not path.exists():

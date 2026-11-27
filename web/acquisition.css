@@ -124,8 +124,13 @@
 .acquired-tray>.recorded-frame-tools{flex-shrink:0;padding:9px 10px;border-bottom:1px solid var(--acq-line);background:#20262c}
 .camera-recording-actions{display:flex;gap:6px;margin-top:6px}
 #acquire .camera-recording-actions button{width:100%;min-height:32px;height:32px}
-.recorded-frame-tools h3{font-size:12px}
-.recorded-frame-tools h3 span{margin-left:6px;padding:2px 6px;border-radius:3px;background:#343b43}
+.acquired-material-switch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:9px 10px;border-bottom:1px solid var(--acq-line);flex-shrink:0}
+.acquired-material-switch button{min-height:34px;border:1px solid transparent;border-radius:4px;color:var(--acq-muted);background:#292f37}
+.acquired-material-switch button[aria-pressed="true"]{border-color:#509c90;color:#b5f3e7;background:#263d39}
+.acquired-material-switch span{margin-left:6px;padding:1px 5px;border-radius:3px;background:#343b43;color:#e2eaf0;font:12px Consolas,monospace}
+.camera-video-import{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+#acquire .camera-video-import button{height:32px;min-height:32px}
+.acquired-tray>[hidden],.camera-recording-actions[hidden]{display:none!important}
 .recorded-frame-tools details{margin-top:6px}
 .camera-recording-sample{display:grid;gap:5px;grid-template-columns:minmax(0,1fr) minmax(55px,75px);align-items:center;margin-top:8px}
 #acquire .camera-recording-sample label{margin:0}

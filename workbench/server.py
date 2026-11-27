@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import __version__
 from .annotation_model_install import annotation_model_catalog, install_annotation_models
 from .jobs import JobManager
+from .project_storage import ProjectStorage
 from .model_uploads import ModelUploadStore
 from .store import ConflictError, ProjectStore, dump
 from .training import TrainingWorkspace
@@ -31,6 +32,7 @@ class WorkbenchService:
         self.data_root = Path(data_root or APP_ROOT / "data").resolve()
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.store = ProjectStore(self.data_root / "projects")
+        self.storage = ProjectStorage(self.data_root, self.store)
         from .review_workflow import ReviewWorkflow
         self.review_workflow = ReviewWorkflow(self.store)
         self.exports = self.data_root / "exports"
@@ -158,10 +160,11 @@ class WorkbenchService:
             progress("檢查圖片雜湊、標註、審核與分組")
             if action == "validate":
                 return validate_project(snapshot, format_key, tolerance)
-            output = Path(payload.get("output_dir") or self.exports).resolve()
+            project_exports = self.storage.area(pid, "exports").resolve()
+            output = Path(payload.get("output_dir") or project_exports).resolve()
             # Never export over the source or inside its immutable image store.
-            if output.is_relative_to(self.store.root):
-                raise ValueError("匯出位置不能放在工作專案的原圖儲存區")
+            if output.is_relative_to(self.store.root) and not output.is_relative_to(project_exports):
+                raise ValueError("專案內的匯出位置必須位於本專案的 exports 資料夾")
             result = export_project(snapshot, output, format_key, payload.get("version", "v1"),
                                     tolerance, payload.get("acknowledge_loss") is True)
             result["project_revision"] = snapshot["revision"]
@@ -377,7 +380,8 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) == 3:
                     return self.json(self.app.store.get_project(pid))
                 if len(parts) == 4 and parts[3] == "recordings":
-                    directory = self.app.store.directory(pid) / "recordings"
+                    self.app.store.get_project(pid, include_assets=False)
+                    directory = self.app.storage.area(pid, "recordings")
                     return self.json({"recordings": self.app.camera.list_recordings(directory, pid)})
                 if len(parts) == 4 and parts[3] == "classes":
                     return self.json(self.app.store.class_usage(pid))
@@ -558,6 +562,9 @@ class Handler(BaseHTTPRequestHandler):
                         folder = archive.parent
                     else:
                         folder = Path(item["path"])
+                elif payload.get("project_id") and payload.get("project_area") == "recordings":
+                    self.app.store.get_project(payload["project_id"], include_assets=False)
+                    folder = self.app.storage.area(payload["project_id"], "recordings")
                 elif payload.get("project_id"):
                     folder = self.app.store.directory(payload["project_id"])
                 else:
@@ -585,7 +592,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/camera/record/start":
                 pid = payload.get("project_id")
                 self.app.store.get_project(pid, include_assets=False)
-                directory = self.app.store.directory(pid) / "recordings"
+                directory = self.app.storage.area(pid, "recordings")
                 return self.json(self.app.camera.start_recording(pid, directory=directory))
             if path == "/api/camera/record/stop":
                 return self.json(self.app.camera.stop_recording())
@@ -594,6 +601,12 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] != ["api", "projects"] or len(parts) < 3:
                 raise FileNotFoundError("找不到 API")
             pid = parts[2]
+            if parts[3:] == ["recordings", "import"]:
+                from .acquisition import import_project_video
+                self.app.store.get_project(pid, include_assets=False)
+                directory = self.app.storage.area(pid, "recordings")
+                return self.json(self.app.jobs.submit(
+                    "video-import", lambda progress: import_project_video(payload.get("path"), directory, pid, progress)))
             if len(parts) == 3 and method == "PATCH":
                 return self.json(self.app.store.update_project(pid,name=payload.get("name"),classes=payload.get("classes")))
             if len(parts) == 3 and method == "DELETE":

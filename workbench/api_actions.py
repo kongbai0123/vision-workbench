@@ -1,4 +1,7 @@
 """Project mutation dispatch; method and request contracts live in routes/contracts."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 def action_maintenance(self, pid, payload, action):
     from .maintenance import orphan_images
     if type(payload.get('quarantine', False)) is not bool:
@@ -149,13 +152,16 @@ def action_annotation_assist(self, pid, payload, action):
 def action_capture(self, pid, payload, action):
     from .acquisition import capture_screen
     self.app.store.get_project(pid, include_assets=False)
-    record = self.app.camera.snapshot() if action == "capture" else capture_screen(self.app.incoming)
-    if action == "capture" and payload.get("target_shape") is not None:
-        self.app.store.require_class(pid,payload["target_shape"].get("label"))
-        record["shapes"] = [payload["target_shape"]]
-    if payload.get("batch_id"):
-        record["batch_id"] = payload["batch_id"]
-    result = self.app.store.add_assets(pid,[record])
+    target = payload.get("target_shape") if action == "capture" else None
+    if target is not None:
+        self.app.store.require_class(pid, target.get("label"))
+    with TemporaryDirectory(prefix="capture-", dir=self.app.storage.area(pid, "scratch", create=True)) as folder:
+        record = self.app.camera.snapshot(Path(folder)) if action == "capture" else capture_screen(Path(folder))
+        if target is not None:
+            record["shapes"] = [target]
+        if payload.get("batch_id"):
+            record["batch_id"] = payload["batch_id"]
+        result = self.app.store.add_assets(pid, [record])
     if result["asset_ids"]:
         return self.json(self.app.store.get_asset(pid,result["asset_ids"][0]))
     return self.json(dict(result,message="相同原圖已存在，未重複加入"))
@@ -163,16 +169,27 @@ def action_capture(self, pid, payload, action):
 
 def action_video(self, pid, payload, action):
     self.app.store.get_project(pid, include_assets=False)
+
     def run(progress):
-        from .acquisition import extract_video
+        from .acquisition import extract_video, import_project_video
+        target = payload.get("target_shape")
+        if target is not None:
+            self.app.store.require_class(pid, target.get("label"))
+        project_root = self.app.storage.root(pid)
+        source = import_project_video(payload.get("path"), self.app.storage.area(pid, "recordings"), pid,
+                                      lambda message, percent: progress(message, round(percent * .2)))
+        clip = Path(source["path"])
         progress("從影片擷取影格")
-        records = extract_video(payload.get("path"),self.app.incoming,payload.get("interval_seconds",1),
-                                progress=lambda percent:progress("從影片擷取影格",round(float(percent)*.8)))
-        if payload.get("target_shape") is not None:
-            self.app.store.require_class(pid,payload["target_shape"].get("label"))
+        with TemporaryDirectory(prefix="video-", dir=self.app.storage.area(pid, "scratch", create=True)) as folder:
+            records = extract_video(clip, folder, payload.get("interval_seconds", 1),
+                                    source_name=source.get("display_name"),
+                                    progress=lambda percent: progress("從影片擷取影格", 20 + round(float(percent) * .6)))
             for record in records:
-                record["shapes"] = [payload["target_shape"]]
-        return self.app.store.add_assets(pid,records,progress=lambda n,total:progress(f"保存影格 {n} / {total}",round(n/total*95)))
+                record["source"]["video"] = clip.relative_to(project_root).as_posix()
+                if target is not None:
+                    record["shapes"] = [target]
+            return self.app.store.add_assets(
+                pid, records, progress=lambda n, total: progress(f"保存影格 {n} / {total}", 80 + round(n / total * 15)))
     return self.json(self.app.jobs.submit("video",run))
 
 

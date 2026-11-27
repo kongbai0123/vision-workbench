@@ -309,15 +309,24 @@ document.addEventListener('drop',event=>{
   event.preventDefault();clearFileDrag();
   if(state.stage==='acquire'&&state.acquireSource==='files')toast('請使用桌面版拖曳檔案，或在右側輸入完整路徑。');
 });
+function selectAcquisitionMaterial(kind) {
+  const video=kind==='video';
+  $('showImageMaterial').setAttribute('aria-pressed',String(!video));
+  $('showVideoMaterial').setAttribute('aria-pressed',String(video));
+  $('recordedFrameTools').hidden=!video;
+  $('imageMaterialHeading').hidden=video;
+  $('acquiredAssets').hidden=video;
+  document.querySelector('.compact-camera-capture').hidden=video||state.acquireSource!=='camera';
+}
 function switchSource(source) {
   if(state.busy||state.transitioning||!['camera','files','video','screen','merge'].includes(source))return;
   if(source!=='camera')setCameraPreviewExpanded(false);
   clearFileDrag();
   setSourceInspector(false);
   state.acquireSource=source;
-  const compactCapture=document.querySelector('.compact-camera-capture');if(compactCapture)compactCapture.hidden=source!=='camera';
-  $('recordedFrameTools').hidden=source!=='camera';
-  if(source==='camera')void loadCameraRecordings();
+  $('cameraRecordingActions').hidden=source!=='camera';
+  selectAcquisitionMaterial(source==='video'||(source==='camera'&&state.recording)?'video':'image');
+  if(source==='camera'||source==='video')void loadCameraRecordings({syncSource:source==='video'});
   for(const tab of document.querySelectorAll('[data-source]')) {
     const active=tab.dataset.source===source;
     tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;
@@ -348,11 +357,13 @@ function setupCameraInspectors() {
   const capture=settings.querySelector('.camera-capture-section'),recordings=$('recordedFrameTools'),tray=document.querySelector('.acquired-tray');
   capture.querySelector('h3').textContent='自動擷取畫格';
   capture.classList.add('compact-camera-capture');
-  capture.hidden=recordings.hidden=state.acquireSource!=='camera';
   const actions=element('div',undefined,'camera-recording-actions');
+  actions.id='cameraRecordingActions';
+  actions.hidden=state.acquireSource!=='camera';
   actions.append($('startRecording'),$('stopRecording'));
-  recordings.querySelector('h3').after(actions);
-  tray.prepend(recordings,capture);
+  recordings.prepend(actions);
+  tray.querySelector('.acquired-material-switch').after(recordings,capture);
+  selectAcquisitionMaterial('image');
 }
 function renderAcquisitionAssets() {
   const assets=state.project?.assets||[],list=$('acquiredAssets');
@@ -415,7 +426,7 @@ async function switchStage(stage) {
     for(const id of ['library','acquire','annotate','review','split','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
-    if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await Promise.all([cameraStatus(),loadCameraRecordings()]);}
+    if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await Promise.all([cameraStatus(),loadCameraRecordings({syncSource:state.acquireSource==='video'})]);}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
     if(stage==='review'){await refreshProject();const ids=new Set(state.project.assets.map(a=>a.id));state.reviewSelection=new Set([...state.reviewSelection].filter(id=>ids.has(id)));renderReview();$('review').scrollTop=state.reviewScroll||0;void safe(()=>assistPage.refresh());void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
     if(stage==='split'){await refreshProject();await loadTraining();await renderSplitPage();}
@@ -437,6 +448,9 @@ async function openProject(id) {
     await workflowDraft.load(id);
     if(editor.messageSource)setAnnotationMessageView(null);
     state.project=project;state.asset=null;state.exportReturnStage=null;$('portableExportHint').hidden=true;saver.load(null);editor.clear();editor.setSidebarTab('objects','segmentation');state.reviewSelection.clear();state.acquireSelection.clear();
+    $('videoPath').value='';updateVideoSource();
+    $('outputPath').value='';
+    selectAcquisitionMaterial(state.acquireSource==='video'?'video':'image');
     $('shapeLabel').value='';$('cameraTargetLabel').value='';
     state.reviewPage=0;state.reviewScroll=0;$('reviewSearch').value='';$('reviewFilter').value='pending';$('reviewAnnotationFilter').value='all';$('reviewReasonFilter').value='';
     $('projectName').textContent=project.name;$('projectName').title=project.name;updateClassList();
@@ -445,7 +459,7 @@ async function openProject(id) {
     for(const section of ['library','acquire','annotate','review','split','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
     renderAssetList();renderMergeList();renderExport();
-    if(project.assets.length)await loadAsset(project.assets[0].id);else await Promise.all([cameraStatus(),loadCameraRecordings()]);
+    if(project.assets.length)await loadAsset(project.assets[0].id);else await Promise.all([cameraStatus(),loadCameraRecordings({syncSource:state.acquireSource==='video'})]);
     if(project.assets.length)void safe(()=>assistPage.refresh());
     status(`已開啟 ${project.name} · ${number(project.assets.length)} 張影像`);
   } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
@@ -975,6 +989,7 @@ function showImportReport(id,result) {
 }
 async function afterAcquisition(result,reportId='importReport') {
   await refreshProject();showImportReport(reportId,result);
+  selectAcquisitionMaterial('image');
   if(state.asset&&result?.updated_asset_ids?.includes(state.asset.id))await loadAsset(state.asset.id);
   else if(!state.asset&&state.project.assets.length)await loadAsset(state.project.assets[0].id);
   await loadProjects();
@@ -1061,6 +1076,8 @@ $('cameraTargetTool').onchange=updateCameraTargetTool;$('cameraTargetLabel').onc
 $('cameraTargetUseProcessing').onchange=()=>{if(state.camera&&!state.busy&&!$('applyProcessing').disabled)$('applyProcessing').click()};
 $('clearCameraTarget').onclick=()=>clearCameraTarget();installCameraTargetEvents();
 $('videoPath').oninput=updateVideoSource;$('videoInterval').oninput=updateVideoSource;
+$('showImageMaterial').onclick=()=>selectAcquisitionMaterial('image');
+$('showVideoMaterial').onclick=()=>{selectAcquisitionMaterial('video');void loadCameraRecordings();};
 bind('home',()=>switchStage('library'));bind('newProject',createProject);bind('newProjectEmpty',createProject);
 bind('refreshProjects',loadProjects);$('projectSearch').oninput=renderProjects;
 bind('projectName',renameProject);bind('manageClasses',manageClasses);
@@ -1087,7 +1104,15 @@ bind('importFiles',()=>importPaths($('importPaths').value.split(/\r?\n/).map(p=>
 bind('mergeSelected',async()=>{await flushAllEdits();const ids=[...$('mergeProjects').querySelectorAll('input:checked')].map(i=>i.value);if(!ids.length)throw Error('請選取至少一份來源專案。');const result=await pollJob(await api(projectPath('/merge'),'POST',{project_ids:ids}));await afterAcquisition(result,'mergeReport')},{busy:true,task:'整併專案資料'});
 bind('screenCapture',async()=>{await flushAllEdits();await api(projectPath('/screen'),'POST',{});await afterAcquisition({added:1})},{busy:true,task:'擷取並加入桌面影像'});
 bind('chooseVideo',async()=>{const paths=await nativeChoose('video');if(paths.length){$('videoPath').value=paths[0];updateVideoSource()}});
-bind('extractVideo',async()=>{await flushAllEdits();const path=$('videoPath').value.trim(),interval=Number($('videoInterval').value);if(!path)throw Error('請先選擇影片或輸入完整路徑。');if(!Number.isFinite(interval)||interval<.1)throw Error('取樣間隔至少為 0.1 秒。');const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval}));await afterAcquisition(result,'videoReport')},{busy:true,task:'影片畫格取樣'});
+bind('extractVideo',async()=>{
+  await flushAllEdits();
+  const path=$('videoPath').value.trim(),interval=Number($('videoInterval').value);
+  if(!path)throw Error('請先選擇影片或輸入完整路徑。');
+  if(!Number.isFinite(interval)||interval<.1)throw Error('取樣間隔至少為 0.1 秒。');
+  const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval}));
+  await loadCameraRecordings({latest:true});
+  await afterAcquisition(result,'videoReport');
+},{busy:true,task:'影片畫格取樣'});
 bind('findCameras',async()=>{const previous=$('cameraDevice').value,result=await api('/api/camera/devices');$('cameraDevice').replaceChildren();for(const device of result.devices||[])$('cameraDevice').append(new Option(device.name||`相機 ${device.index}`,String(device.index)));if(!result.devices?.length){$('cameraDevice').append(new Option('未偵測到相機','0'));toast('未偵測到相機，請確認連線與其他程式的占用情形。',true)}else{if([...$('cameraDevice').options].some(o=>o.value===previous))$('cameraDevice').value=previous;await loadCameraModes()}},{busy:true,task:'偵測相機與支援模式'});
 $('cameraDevice').onchange=()=>safe(loadCameraModes);
 $('cameraResolution').onchange=updateCameraMode;
@@ -1095,18 +1120,41 @@ bind('startCamera',()=>cameraCommand('/api/camera/start',cameraConfiguration()),
 bind('stopCamera',async()=>{if(state.recording)throw Error('請先停止錄影，再停止相機。');if(state.autoCapture?.active)stopAutoCapture('相機停止前已結束自動擷取。');await cameraCommand('/api/camera/stop',{})},{busy:true});
 bind('takeSnapshot',async()=>{await flushAllEdits();await api(projectPath('/capture'),'POST',{target_shape:cameraTargetPayload()});await afterAcquisition({added:1})},{busy:true});
 bind('startAutoCapture',startAutoCapture);bind('stopAutoCapture',()=>stopAutoCapture());
-bind('startRecording',()=>cameraCommand('/api/camera/record/start',{project_id:state.project.id}),{busy:true});
+bind('startRecording',async()=>{
+  await cameraCommand('/api/camera/record/start',{project_id:state.project.id});
+  selectAcquisitionMaterial('video');
+},{busy:true});
 bind('stopRecording',async()=>{
   const previous=state.cameraDetails?.last_recording?.path;
   await cameraCommand('/api/camera/record/stop',{});
   const recording=state.cameraDetails?.last_recording;
   if(recording?.path&&recording.path!==previous){
     if(recording.project_id===state.project.id){$('videoPath').value=recording.path;updateVideoSource();}
-    toast('錄影已保存至錄影素材。');
+    toast('錄影已保存至專案影片。');
   }
 },{busy:true});
 $('cameraPreviewFPS').onchange=()=>safe(()=>cameraCommand('/api/camera/preview',{fps:Number($('cameraPreviewFPS').value)}));
-$('cameraRecordingSelect').onchange=()=>{$('cameraVideoReport').hidden=true;};
+function useSelectedVideo() {
+  const recording=selectedCameraRecording();
+  if(recording){$('videoPath').value=recording.path;updateVideoSource();}
+}
+async function saveProjectVideo(path) {
+  if(!path)throw Error('請先選擇影片或輸入完整路徑。');
+  const recording=await pollJob(await api(projectPath('/recordings/import'),'POST',{path}));
+  await loadCameraRecordings({name:recording.name});
+  useSelectedVideo();
+  selectAcquisitionMaterial('video');
+  toast('影片已保存至本專案。');
+}
+$('cameraRecordingSelect').onchange=()=>{$('cameraVideoReport').hidden=true;useSelectedVideo();};
+bind('importVideoMaterial',async()=>{
+  if(!state.project)return;
+  const [path]=await nativeChoose('video');
+  if(!path)return;
+  await saveProjectVideo(path);
+},{busy:true,task:'匯入影片至專案'});
+bind('saveVideoSource',()=>saveProjectVideo($('videoPath').value.trim()),{busy:true,task:'匯入影片至專案'});
+bind('openVideoMaterials',()=>api('/api/open-folder','POST',{project_id:state.project.id,project_area:'recordings'}));
 bind('extractRecording',async()=>{
   await flushAllEdits();
   const path=selectedCameraRecording()?.path,interval=Number($('cameraVideoInterval').value);
@@ -1261,7 +1309,6 @@ async function init() {
     applySettings();$('trainingDevice').value=settingValue('device');
     if(!system.desktop){clearFileDrag();$('fileDropHint').textContent='拖曳匯入請使用桌面版；瀏覽器版可在右側輸入完整路徑。';}
     $('versionLabel').textContent=`VISION WORKBENCH · ${system.version||'1.0'}`;
-    if(system.default_export_path)$('outputPath').placeholder=system.default_export_path;
     state.nativeBridge=await connectNative();
     updateSourceInspectorLabel();setSourceInspector(false);updateNavigation();updateCameraControls();updateCameraTargetTool();renderExport();status('本機服務已連線 · 選擇專案開始工作');
   }catch(error){toast(error.message,true);status(error.message,true);}

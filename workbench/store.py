@@ -386,8 +386,11 @@ class ProjectStore:
                                      for row in db.execute(f"SELECT {fields} FROM assets{where} ORDER BY created_at,rowid", ids)]
                 if delta:
                     project['delta'] = {'base_revision': delta_base, 'changed_ids': ids}
-            project["exports"] = [dict(json.loads(row["data"]), id=row["id"], created_at=row["created_at"])
-                                  for row in db.execute("SELECT * FROM exports ORDER BY created_at DESC")]
+            project["exports"] = [
+                dict(self._resolve_export_paths(project_id, json.loads(row["data"])),
+                     id=row["id"], created_at=row["created_at"])
+                for row in db.execute("SELECT * FROM exports ORDER BY created_at DESC")
+            ]
             if internal:
                 project["schema_version"] = 1
                 project["snapshot_at"] = timestamp()
@@ -800,13 +803,29 @@ class ProjectStore:
             raise ValueError('此歷史紀錄不含標註內容；垃圾桶項目請使用垃圾桶還原功能')
         return self.save_asset(project_id, asset_id, target["data"]["shapes"], revision)
 
+    def _resolve_export_paths(self, project_id, data):
+        for key in ("path", "zip_path"):
+            value = data.get(key)
+            if isinstance(value, str) and value.startswith("exports/"):
+                root = self.directory(project_id).resolve()
+                path = (root / value).resolve()
+                if path.is_relative_to(root / "exports"):
+                    data[key] = str(path)
+        return data
+
     def record_export(self, project_id, result):
         eid = uuid.uuid4().hex
         data = json.loads(dump(result))
+        project_root = self.directory(project_id).resolve()
+        for key in ("path", "zip_path"):
+            if data.get(key):
+                path = Path(data[key]).resolve()
+                if path.is_relative_to(project_root / "exports"):
+                    data[key] = path.relative_to(project_root).as_posix()
         with self.connection(project_id, write=True) as db:
             db.execute("INSERT INTO exports VALUES(?,?,?)", (eid, timestamp(), dump(data)))
             self._touch(db)
-        return dict(data, id=eid)
+        return dict(self._resolve_export_paths(project_id, data), id=eid)
 
     def assign(self, project_id, asset_ids, *, batch_id=None, split=None, delta_base=None):
         if not isinstance(asset_ids, list) or not asset_ids:

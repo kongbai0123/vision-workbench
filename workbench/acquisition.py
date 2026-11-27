@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -633,7 +634,7 @@ class CameraService:
                     self._jpeg_source, self._jpeg = frame, jpeg
             return jpeg
 
-    def snapshot(self) -> dict:
+    def snapshot(self, storage_root: Path | None = None) -> dict:
         with self._lock:
             if not self._state["running"] or self._frame is None:
                 raise AcquisitionError(self._state["error"] or "請先啟動相機並等待影像")
@@ -646,7 +647,7 @@ class CameraService:
                       "fps": self._state["fps"], "captured_at": datetime.now(timezone.utc).isoformat()}
             source.update(pixel_format=self._state.get("pixel_format"),
                           controls=deepcopy(self._state.get("controls", {})))
-        path = self.storage_root / "incoming" / f"{_identifier('camera')}.png"
+        path = (storage_root or self.storage_root) / "incoming" / f"{_identifier('camera')}.png"
         _save_png(path, frame)
         return {"path": str(path), "name": path.name, "batch_id": batch_id, "source": source}
 
@@ -671,15 +672,21 @@ class CameraService:
     @staticmethod
     def list_recordings(directory: Path, project_id: str) -> list[dict]:
         recordings = []
-        for metadata in sorted(directory.glob("recording_*.json"), reverse=True):
-            path = metadata.with_suffix(".mp4")
-            if not path.is_file():
-                continue
+        entries = []
+        for metadata in directory.glob("recording_*.json"):
             try:
                 summary = json.loads(metadata.read_text(encoding="utf-8"))
+                entries.append((metadata.stat().st_mtime_ns, metadata, summary))
             except (OSError, ValueError):
                 continue
-            if isinstance(summary, dict) and summary.get("project_id") == project_id:
+        for _, metadata, summary in sorted(entries, key=lambda entry: (entry[0], entry[1].name), reverse=True):
+            if not isinstance(summary, dict) or summary.get("project_id") != project_id:
+                continue
+            suffix = summary.get("extension", ".mp4")
+            if not isinstance(suffix, str) or suffix not in VIDEO_SUFFIXES:
+                continue
+            path = metadata.with_suffix(suffix)
+            if path.is_file() and not path.is_symlink():
                 recordings.append({**summary, "path": str(path), "name": path.name})
         return recordings
 
@@ -948,6 +955,66 @@ class CameraService:
                 command.done.set()
 
 
+VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".mts", ".m2ts", ".3gp"}
+
+
+def import_project_video(path, directory: Path, project_id: str, progress) -> dict:
+    """Copy one verified video into its project, keyed by content."""
+    from hashlib import sha256
+
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("請選擇影片檔")
+    source = Path(path).resolve()
+    suffix = source.suffix.lower()
+    if suffix not in VIDEO_SUFFIXES:
+        raise ValueError("不支援此影片格式")
+    if not source.is_file():
+        raise FileNotFoundError(f"找不到影片：{source.name}")
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = CameraService.list_recordings(directory, project_id)
+    for item in existing:
+        if Path(item["path"]) == source:
+            return item
+
+    digest = sha256()
+    size = max(1, source.stat().st_size)
+    copied = 0
+    with tempfile.TemporaryDirectory(prefix=".import-", dir=directory) as folder:
+        staged = Path(folder) / ("source" + suffix)
+        with source.open("rb") as original, staged.open("wb") as output:
+            while chunk := original.read(1024 * 1024):
+                output.write(chunk)
+                digest.update(chunk)
+                copied += len(chunk)
+                progress("複製來源影片", min(88, copied / size * 88))
+        checksum = digest.hexdigest()
+        for item in existing:
+            if item.get("sha256") == checksum:
+                return item
+        progress("驗證影片可讀性", 92)
+        capture = cv2.VideoCapture(_opencv_path(staged))
+        try:
+            fps = capture.get(cv2.CAP_PROP_FPS)
+            frames = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+            ok, frame = capture.read()
+            if not ok or frame is None or not math.isfinite(fps) or fps <= 0:
+                raise AcquisitionError(f"影片無法解碼或沒有有效的影格率：{source.name}")
+            frames = int(frames) if math.isfinite(frames) and frames > 0 else 0
+        finally:
+            capture.release()
+        destination = directory / f"recording_import_{checksum}_{suffix[1:]}{suffix}"
+        metadata = destination.with_suffix(".json")
+        summary = {"project_id": project_id, "name": destination.name, "display_name": source.name,
+                   "extension": suffix, "sha256": checksum, "fps": fps, "frames": frames,
+                   "width": frame.shape[1], "height": frame.shape[0], "duration_seconds": frames / fps,
+                   "source_kind": "imported"}
+        sidecar = Path(folder) / "recording.json"
+        sidecar.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+        staged.replace(destination)
+        sidecar.replace(metadata)
+    return {**summary, "path": str(destination)}
+
+
 def capture_screen(storage_root: Path) -> dict:
     """Capture the complete Windows virtual desktop only on explicit request."""
     try:
@@ -967,7 +1034,7 @@ def capture_screen(storage_root: Path) -> dict:
 
 
 def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threading.Event | None = None,
-                  progress: Callable[[float], None] | None = None) -> list[dict]:
+                  progress: Callable[[float], None] | None = None, source_name: str | None = None) -> list[dict]:
     interval = _number(interval_seconds, "取樣間隔（秒）", .01, 86400)
     path = Path(path).resolve()
     if not path.is_file():
@@ -975,6 +1042,7 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
     capture = cv2.VideoCapture(_opencv_path(path))
     records: list[dict] = []
     batch_id = _identifier("video")
+    source_stem = Path(source_name).stem if source_name else path.stem
     output_dir = Path(storage_root).resolve() / "incoming" / batch_id
     try:
         if not capture.isOpened():
@@ -1003,7 +1071,7 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
             if timestamp + 1e-8 >= next_time:
                 target = output_dir / f"frame_{frame_index:09d}.png"
                 _save_png(target, frame)
-                records.append({"path": str(target), "name": f"{path.stem}_{frame_index:09d}.png",
+                records.append({"path": str(target), "name": f"{source_stem}_{frame_index:09d}.png",
                                 "batch_id": batch_id, "source": {"kind": "video", "video": str(path),
                                 "video_sha256": video_hash.hexdigest(),
                                 "frame_index": frame_index, "timestamp_seconds": timestamp, "fps": fps}})

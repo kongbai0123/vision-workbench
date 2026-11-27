@@ -12,6 +12,8 @@ MUTATIONS = [
     (r'/api/projects/[^/]+/annotation-assist(?:/[^/]+/review)?', {'POST'}),
     (r'/api/projects/[^/]+/(classes|import-preview|import-confirm|review-trash-list|review-trash|review-restore|review-quality|import|review|independence-review|assign|auto-split|split-preview|split-info|split-apply|merge|validate|export|dataset-versions|workflow-draft|training-preflight|training-time-estimate|training-runs|training-compatibility|review-compatibility|model-exports|model-import|predictions|model-trials|model-comparisons|ai|capture|screen|video)', {'POST'}),
     (r'/api/camera/profiles', {'GET', 'POST'}),
+    (r'/api/camera/preview', {'POST'}),
+    (r'/api/projects/[^/]+/recordings/import', {'POST'}),
     (r'/api/(dialog|open-folder|camera/(start|stop|controls|processing|record/start|record/stop)|cvat/(setup|reboot|reboot/cancel|launch|import))', {'POST'}),
     (r'/api/model-components/[^/]+/install', {'POST'}),
     (r'/api/model-uploads', {'POST'}),

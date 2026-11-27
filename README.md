@@ -3,7 +3,7 @@
 Windows 桌面視覺資料工作台，整合影像採集、標註、審核、資料分割與模型訓練。專案資料與模型保存在本機，固定資料版本讓每次實驗的圖片、標註及增強設定可追溯。
 
 [![CI](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/kongbai0123/vision-workbench/actions/workflows/ci.yml)
-[![Version: 2.21.10](https://img.shields.io/badge/Version-2.21.10-45c6b1.svg)](CHANGELOG.md)
+[![Version: 2.21.11](https://img.shields.io/badge/Version-2.21.11-45c6b1.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4.svg)](#快速開始)
 
@@ -19,7 +19,7 @@ Windows 桌面視覺資料工作台，整合影像採集、標註、審核、資
 
 ## 核心功能
 
-- **資料採集**：相機、圖片、影片畫格與螢幕擷取；支援定時拍攝、錄影及原圖／處理結果比較。
+- **資料採集**：相機、圖片、影片畫格與螢幕擷取；圖片與影片分頁會跟隨採集來源，原始影片可匯入專案後取幀。
 - **相機控制**：輸出格式、解析度與 FPS 連動；曝光、增益、白平衡、對焦及進階畫質依裝置能力顯示，支援回讀驗證與本機設定檔。
 - **標註編輯**：同視窗切換內建編輯器、Labelme 與本機 CVAT。內建編輯器以側欄按鈕快速選擇新物件類別，畫布與物件清單可雙向選取，矩形框可從邊線及角點調整。管理類別時，編輯清單會保留欄位位置及仍有效的物件改派選擇。
 - **AI 輔助標註**：互動分割、批量找框和專案模型預標註共用「AI 訊息」畫面，可在同一張影像上查看進度、預覽候選及處理例外。

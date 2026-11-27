@@ -47,7 +47,7 @@ function renderSettingsSummary(){
   if(!state.system)return;
   $('settingsVersion').textContent=`Vision Workbench ${state.system.version||'—'}`;
   $('settingsLabelmeState').textContent=state.system.desktop?'桌面版可使用':'需要桌面版';
-  const facts=[['資料位置',state.system.data_root||'—'],['匯出位置',state.system.default_export_path||'—'],['訓練 Python',state.modelCatalog?.worker_python||'—'],['執行模式',state.system.desktop?'Windows 桌面版':'瀏覽器開發模式']];
+  const facts=[['資料位置',state.system.data_root||'—'],['資料集匯出','目前專案的 exports 資料夾'],['訓練 Python',state.modelCatalog?.worker_python||'—'],['執行模式',state.system.desktop?'Windows 桌面版':'瀏覽器開發模式']];
   $('computeSummary').replaceChildren(...facts.map(([label,value])=>{const row=element('div',undefined,'settings-fact');row.append(element('span',label),element('b',value));return row}));
   $('diagnosticSummary').textContent=[`Vision Workbench ${state.system.version||'—'}`,`模式：${state.system.desktop?'Windows 桌面版':'瀏覽器'}`,`資料：${state.system.data_root||'—'}`,`訓練 Python：${state.modelCatalog?.worker_python||'—'}`,
     ...((state.modelCatalog?.components||[]).map(component=>`${component.name}：${component.state} · ${component.message}`))].join('\n');
