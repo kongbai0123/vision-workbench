@@ -195,8 +195,11 @@ class ProjectStore:
         finally:
             db.close()
 
-    def create_project(self, name):
+    def create_project(self, name, *, classes=None):
         name = self._name(name)
+        if classes is not None and not isinstance(classes, list):
+            raise ValueError("初始類別必須為文字陣列")
+        names = list(dict.fromkeys(clean_label(value) for value in (classes or [])))
         pid = uuid.uuid4().hex
         folder = self.root / self._folder_name(name, pid)
         folder.mkdir()
@@ -206,7 +209,7 @@ class ProjectStore:
             db.execute("PRAGMA journal_mode=WAL")
             migrate(db)
             now = timestamp()
-            db.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", (pid, name, 1, now, now, "[]"))
+            db.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", (pid, name, 1, now, now, dump(names)))
             db.commit()
             migrate(db)
         finally:

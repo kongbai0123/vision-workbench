@@ -551,8 +551,29 @@ async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPA
 }
 async function createProject() {
   const body=element('div');body.append(element('p','為這份資料設定清楚的名稱，例如產品、場域或檢測任務。'));
-  const input=document.createElement('input');input.placeholder='例如：零件表面瑕疵';input.maxLength=100;input.required=true;body.append(input);
-  const result=await formDialog({title:'建立本地專案',body,confirm:'建立專案',onSubmit:async()=>{if(!input.value.trim())throw Error('請輸入專案名稱。');return api('/api/projects','POST',{name:input.value.trim()})}});
+  const name=element('input'),nameLabel=element('label','專案名稱');
+  name.id='createProjectName';nameLabel.htmlFor=name.id;
+  name.placeholder='零件表面瑕疵';name.maxLength=100;name.required=true;
+
+  const classes=element('textarea'),classesLabel=element('label','物件類別（CLS，選填）');
+  classes.id='createProjectClasses';classesLabel.htmlFor=classes.id;
+  classes.rows=4;classes.placeholder='hand\nL_grip\nhandlebar';
+  const hint=element('p','每行一個類別，或用「；」「;」分隔。系統會略過空白和重複名稱。','muted');
+  hint.id='createProjectClassHint';classes.setAttribute('aria-describedby',hint.id);
+  const count=element('p',undefined,'muted');
+  count.id='createProjectClassCount';count.setAttribute('role','status');
+  const classNames=()=>[...new Set(classes.value.split(/[\r\n;；]/).map(value=>value.trim()).filter(Boolean))];
+  const updateCount=()=>{count.textContent=`已輸入 ${classNames().length} 個類別`;};
+  classes.addEventListener('input',event=>{if(!event.isComposing)updateCount();});
+  classes.addEventListener('compositionend',updateCount);
+  updateCount();
+  body.append(nameLabel,name,classesLabel,classes,hint,count);
+
+  const result=await formDialog({title:'建立本地專案',body,confirm:'建立專案',onSubmit:()=>{
+    const projectName=name.value.trim();
+    if(!projectName)throw Error('請輸入專案名稱。');
+    return api('/api/projects','POST',{name:projectName,classes:classNames()});
+  }});
   if(result){await loadProjects();await openProject(result.id)}
 }
 async function confirmDeleteProject(project) {

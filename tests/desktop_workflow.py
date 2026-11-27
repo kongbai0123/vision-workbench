@@ -82,9 +82,15 @@ def main():
             capture("01-project-library")
             click("#newProject")
             wait("document.querySelector('#formDialog').open")
-            fill("#dialogBody input","整合流程驗收")
+            assert js("document.activeElement.id") == "createProjectName"
+            fill("#createProjectName","整合流程驗收")
+            fill("#createProjectClasses"," 工件；L_grip;工件\n\n表面 瑕疵；")
+            assert js("document.querySelector('#createProjectClassCount').textContent") == "已輸入 3 個類別"
             js("document.querySelector('#dialogForm').requestSubmit()")
             wait("!document.querySelector('#acquire').hidden")
+            initial_classes = ['工件', 'L_grip', '表面 瑕疵']
+            created = service.store.list_projects()[0]
+            assert service.store.get_project(created['id'])['classes'] == initial_classes
             click("[data-source='files']")
             click("#showManualImport")
             fill("#importPaths","\n".join(inputs));click("#importFiles")
@@ -97,6 +103,8 @@ def main():
             capture("02-shared-import")
             click("[data-stage='annotate']")
             wait("!document.querySelector('#imageStage').hidden && document.querySelector('#assetImage').complete")
+            displayed_classes = js("JSON.stringify(Array.from(document.querySelectorAll('#annotationClassChoices [data-class-name]'), button => button.dataset.className))")
+            assert json.loads(displayed_classes) == initial_classes, displayed_classes
             # Rebuilding the list after selection must retain the user's place.
             js("{const e=document.querySelector('#assetList');e.style.cssText='flex:0 0 120px;height:120px';e.scrollTop=e.scrollHeight}")
             js("document.querySelector('#assetList .asset-row:last-child').click()")

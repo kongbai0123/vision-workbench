@@ -484,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
             validate_request(path, method, payload)
             parts = path.strip("/").split("/")
             if path == "/api/projects" and method == "POST":
-                return self.json(self.app.store.create_project(payload.get("name")))
+                return self.json(self.app.store.create_project(payload.get("name"), classes=payload.get("classes")))
             if parts[:2] == ["api", "model-components"] and len(parts) == 4 and parts[3] == "install" and method == "POST":
                 component_id = parts[2]
                 if component_id == "annotation-assist":

@@ -73,6 +73,21 @@ class ApiWorkflowTests(unittest.TestCase):
             self.call('/api/projects', {'name': []})
         self.assertEqual(error.exception.code, 400)
 
+    def test_create_project_saves_initial_classes_in_input_order(self):
+        invalid = (["hand", ""], ["x" * 201], ["hand", 1], "hand")
+        for classes in invalid:
+            with self.subTest(classes=classes), self.assertRaises(HTTPError) as error:
+                self.call('/api/projects', {'name': '無效類別', 'classes': classes})
+            self.assertEqual(error.exception.code, 400)
+        self.assertEqual(list(self.service.store.root.iterdir()), [])
+
+        project = self.call('/api/projects', {'name': '初始類別', 'classes': [' L_grip ', '工件', 'L_grip', 'hand grip']})
+        expected = ['L_grip', '工件', 'hand grip']
+        self.assertEqual(project['classes'], expected)
+        self.assertEqual(project['revision'], 1)
+        self.assertEqual(self.call(f"/api/projects/{project['id']}")['classes'], expected)
+        self.assertEqual(self.call('/api/projects', {'name': '空白專案'})['classes'], [])
+
     def test_local_crawler_policy_covers_static_and_denied_responses(self):
         policy = 'noindex, nofollow, nosnippet'
         with urlopen(self.service.url + '/robots.txt', timeout=5) as response:
