@@ -26,6 +26,7 @@ import uuid
 import cv2
 import numpy as np
 from .camera_controls import CameraControls, validate_values
+from .materials import VIDEO_SUFFIXES
 
 
 class AcquisitionError(RuntimeError):
@@ -435,8 +436,9 @@ class _Command:
 class CameraService:
     """Camera lifecycle and recording, with a single native-handle owner."""
 
-    def __init__(self, storage_root: Path):
+    def __init__(self, storage_root: Path, *, recording_saved: Callable[[dict], None] | None = None):
         self.storage_root = Path(storage_root).resolve()
+        self._recording_saved = recording_saved
         self._lock = threading.RLock()
         self._control = threading.RLock()
         self._preview_encode = threading.Lock()
@@ -782,7 +784,7 @@ class CameraService:
                        "duration_seconds": record["frames"] / record["fps"], "width": record["width"],
                        "height": record["height"], "encoded_width": record["encoded_width"],
                        "encoded_height": record["encoded_height"], "interrupted": interrupted,
-                       "audio": False}
+                       "audio": False, "source_kind": "camera"}
             metadata = final_path.with_suffix(".json")
             if record["project_recording"]:
                 stored = {key: value for key, value in summary.items() if key != "path"}
@@ -793,6 +795,8 @@ class CameraService:
                 if record["project_recording"]:
                     metadata.unlink(missing_ok=True)
                 raise
+            if record["project_recording"] and self._recording_saved is not None:
+                self._recording_saved(summary)
             with self._lock:
                 self._state["last_recording"] = summary
         finally:
@@ -955,12 +959,11 @@ class CameraService:
                 command.done.set()
 
 
-VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".mts", ".m2ts", ".3gp"}
-
-
-def import_project_video(path, directory: Path, project_id: str, progress) -> dict:
+def import_project_video(path, directory: Path, project_id: str, progress, *, catalog=None,
+                         expected_sha256=None) -> dict:
     """Copy one verified video into its project, keyed by content."""
-    from hashlib import sha256
+    from hashlib import file_digest, sha256
+    from .file_lock import exclusive_file_lock
 
     if not isinstance(path, str) or not path.strip():
         raise ValueError("請選擇影片檔")
@@ -971,10 +974,13 @@ def import_project_video(path, directory: Path, project_id: str, progress) -> di
     if not source.is_file():
         raise FileNotFoundError(f"找不到影片：{source.name}")
     directory.mkdir(parents=True, exist_ok=True)
-    existing = CameraService.list_recordings(directory, project_id)
-    for item in existing:
-        if Path(item["path"]) == source:
-            return item
+    existing = None if catalog is not None else CameraService.list_recordings(directory, project_id)
+    if catalog is not None:
+        known = catalog.find_recording(project_id, path=source)
+    else:
+        known = next((item for item in existing if Path(item["path"]) == source), None)
+    if known and (expected_sha256 is None or known.get('sha256') == expected_sha256):
+        return known
 
     digest = sha256()
     size = max(1, source.stat().st_size)
@@ -988,9 +994,10 @@ def import_project_video(path, directory: Path, project_id: str, progress) -> di
                 copied += len(chunk)
                 progress("複製來源影片", min(88, copied / size * 88))
         checksum = digest.hexdigest()
-        for item in existing:
-            if item.get("sha256") == checksum:
-                return item
+        if expected_sha256 is not None and checksum != expected_sha256:
+            raise AcquisitionError(f"影片與歷史取樣記錄的 SHA-256 不符：{source.name}")
+        if catalog is not None and (known := catalog.find_recording(project_id, sha256=checksum)):
+            return known
         progress("驗證影片可讀性", 92)
         capture = cv2.VideoCapture(_opencv_path(staged))
         try:
@@ -1010,9 +1017,37 @@ def import_project_video(path, directory: Path, project_id: str, progress) -> di
                    "source_kind": "imported"}
         sidecar = Path(folder) / "recording.json"
         sidecar.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
-        staged.replace(destination)
-        sidecar.replace(metadata)
-    return {**summary, "path": str(destination)}
+        with exclusive_file_lock(directory / ".video-import.lock"):
+            if catalog is not None:
+                known = catalog.find_recording(project_id, sha256=checksum)
+            else:
+                known = next((item for item in CameraService.list_recordings(directory, project_id)
+                              if item.get("sha256") == checksum), None)
+            if known:
+                return known
+            if destination.is_symlink() or metadata.is_symlink():
+                raise AcquisitionError("專案影片路徑無效，請檢查錄影資料夾")
+            created = not destination.exists()
+            if created:
+                staged.replace(destination)
+            else:
+                with destination.open("rb") as current:
+                    if file_digest(current, "sha256").hexdigest() != checksum:
+                        raise AcquisitionError("專案內已有同名但內容不同的影片")
+            created_metadata = not metadata.exists()
+            published = {**summary, "path": str(destination)}
+            try:
+                if created_metadata:
+                    sidecar.replace(metadata)
+                if catalog is not None:
+                    return catalog.register_video(project_id, published, verified_sha256=checksum)
+            except Exception:
+                if created:
+                    destination.unlink(missing_ok=True)
+                if created_metadata:
+                    metadata.unlink(missing_ok=True)
+                raise
+    return published
 
 
 def capture_screen(storage_root: Path) -> dict:
@@ -1034,7 +1069,8 @@ def capture_screen(storage_root: Path) -> dict:
 
 
 def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threading.Event | None = None,
-                  progress: Callable[[float], None] | None = None, source_name: str | None = None) -> list[dict]:
+                  progress: Callable[[float], None] | None = None, source_name: str | None = None,
+                  expected_sha256: str | None = None) -> list[dict]:
     interval = _number(interval_seconds, "取樣間隔（秒）", .01, 86400)
     path = Path(path).resolve()
     if not path.is_file():
@@ -1054,11 +1090,15 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
                 if cancel_event is not None and cancel_event.is_set():
                     raise AcquisitionCancelled("影片取樣已取消")
                 video_hash.update(chunk)
+        checksum = video_hash.hexdigest()
+        if expected_sha256 is not None and checksum != expected_sha256:
+            raise AcquisitionError("來源影片的 SHA-256 與專案素材清單不符")
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         if not math.isfinite(fps) or fps <= 0:
             raise AcquisitionError("影片沒有有效的影格率，無法可靠地依時間取樣。")
         frame_count = max(0, int(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
         frame_index, next_time = 0, 0.0
+        container_origin = previous_time = 0.0
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise AcquisitionCancelled("影片取樣已取消")
@@ -1067,14 +1107,24 @@ def extract_video(path, storage_root, interval_seconds=1, *, cancel_event: threa
                 if frame_count > 0 and frame_index < frame_count - 2:
                     raise AcquisitionError(f"影片在影格 {frame_index} 解碼中斷，未匯入不完整批次。")
                 break
-            timestamp = frame_index / fps
+            media_time = float(capture.get(cv2.CAP_PROP_POS_MSEC)) / 1000
+            valid_time = math.isfinite(media_time) and media_time >= 0
+            if frame_index == 0:
+                container_origin = media_time if valid_time else 0.0
+            timestamp = media_time - container_origin if valid_time else -1.0
+            if timestamp >= 0 and (frame_index == 0 or timestamp > previous_time):
+                timestamp_method = "container"
+            else:
+                timestamp = max(frame_index / fps, previous_time + 1 / fps) if frame_index else 0.0
+                timestamp_method = "frame_fps"
+            previous_time = timestamp
             if timestamp + 1e-8 >= next_time:
                 target = output_dir / f"frame_{frame_index:09d}.png"
                 _save_png(target, frame)
                 records.append({"path": str(target), "name": f"{source_stem}_{frame_index:09d}.png",
                                 "batch_id": batch_id, "source": {"kind": "video", "video": str(path),
-                                "video_sha256": video_hash.hexdigest(),
-                                "frame_index": frame_index, "timestamp_seconds": timestamp, "fps": fps}})
+                                "video_sha256": checksum, "frame_index": frame_index,
+                                "timestamp_seconds": timestamp, "timestamp_method": timestamp_method, "fps": fps}})
                 next_time = (math.floor(timestamp / interval + 1e-8) + 1) * interval
             frame_index += 1
             if progress is not None and frame_count and frame_index % 30 == 0:

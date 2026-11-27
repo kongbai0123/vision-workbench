@@ -1,6 +1,6 @@
 import {createCameraSettings, modesForFormat} from './camera-settings.mjs';
 export function createCameraPage(context) {
-const {$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits}=context;
+const {$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits,onVideoSelected}=context;
 const cameraSettings=createCameraSettings({$,state,api,toast,cameraCommand,cameraConfiguration,updateCameraMode,updateCameraControls});
 let previewTimes=[];
 function cameraTargetDimensions() {
@@ -178,19 +178,93 @@ function cameraConfiguration() {
     preview_fps:Number($('cameraPreviewFPS').value||15)};
 }
 let cameraStatusTimer=null,cameraStatusRequest=null,cameraMutation=0;
-let recordingProject=null,recordingRequest=0,recordingItems=[];
+let recordingProject=null,recordingRequest=0,recordingItems=[],selectedRecordingName=null;
+const externalRecordingName='';
 function selectedCameraRecording(){
   if(recordingProject!==state.project?.id)return null;
-  return recordingItems.find(recording=>recording.name===$('cameraRecordingSelect').value)||null;
+  return recordingItems.find(recording=>recording.name===selectedRecordingName)||null;
+}
+function externalVideoPath(){
+  return state.acquireSource==='video'?$('videoPath').value.trim().replace(/^"|"$/g,''):'';
+}
+function videoSamplingPath(){
+  if(recordingProject!==state.project?.id)return '';
+  return selectedCameraRecording()?.path||(selectedRecordingName===externalRecordingName?externalVideoPath():'');
+}
+function updateVideoSelection(){
+  for(const row of $('cameraRecordingList').children){
+    const checked=row.dataset.recordingName===selectedRecordingName;
+    row.querySelector('input').checked=checked;
+    row.classList.toggle('selected',checked);
+  }
+  $('extractRecording').disabled=state.busy||!state.project||!videoSamplingPath();
+}
+function recordingRow(name){
+  const row=document.createElement('label');
+  row.className='acquired-item video-recording-row';
+  row.dataset.recordingName=name;
+  const icon=document.createElement('span');
+  icon.className='video-recording-icon';
+  icon.textContent='▶';
+  icon.setAttribute('aria-hidden','true');
+  const copy=document.createElement('span');
+  copy.className='video-recording-copy';
+  copy.append(document.createElement('b'),document.createElement('small'));
+  const choice=document.createElement('input');
+  choice.type='radio';
+  choice.name='cameraRecordingSource';
+  choice.value=name;
+  choice.onchange=()=>{
+    if(!choice.checked)return;
+    selectedRecordingName=name;
+    $('cameraVideoReport').hidden=true;
+    updateVideoSelection();
+    onVideoSelected();
+  };
+  row.append(icon,copy,choice);
+  return row;
+}
+function renderRecordingRows(recordings){
+  const list=$('cameraRecordingList'),scrollTop=list.scrollTop;
+  const rows=new Map([...list.children].map(row=>[row.dataset.recordingName,row]));
+  const names=new Set(recordings.map(recording=>recording.name));
+  for(const [name,row] of rows){
+    if(!names.has(name))row.remove();
+  }
+  recordings.forEach((recording,index)=>{
+    const name=recording.display_name||recording.name;
+    const row=rows.get(recording.name)||recordingRow(recording.name);
+    row.title=name;
+    row.querySelector('b').textContent=name;
+    const duration=Number(recording.duration_seconds);
+    const size=recording.width&&recording.height?`${recording.width} × ${recording.height}`:'';
+    row.querySelector('small').textContent=recording.name===externalRecordingName?'本機影片':
+      [Number.isFinite(duration)&&duration>0?`${duration.toFixed(1)} 秒`:'',size].filter(Boolean).join(' · ')||'專案影片';
+    if(list.children[index]!==row)list.insertBefore(row,list.children[index]||null);
+  });
+  if(list.scrollTop!==scrollTop)list.scrollTop=scrollTop;
+}
+function syncVideoSampling({preferredName=null}={}){
+  const stored=recordingProject===state.project?.id?recordingItems:[];
+  const path=externalVideoPath();
+  const saved=stored.find(recording=>recording.path===path);
+  const preferred=stored.find(recording=>recording.name===preferredName);
+  const external=path&&!saved&&!preferred?{name:externalRecordingName,display_name:path.split(/[\\/]/).pop()}:null;
+  const sources=external?[external,...stored]:stored;
+  const current=sources.find(recording=>recording.name===selectedRecordingName);
+  selectedRecordingName=(preferred||external||saved||current||sources[0])?.name??null;
+  renderRecordingRows(sources);
+  $('cameraRecordingSampling').hidden=!sources.length;
+  updateVideoSelection();
+  $('recordingSummary').textContent=external?'取幀後會將本機影片保存到專案。':stored.length?'選擇專案影片即可取幀。':'目前專案尚無影片。';
 }
 async function loadCameraRecordings({latest=false,name='',syncSource=false}={}){
-  const pid=state.project?.id,request=++recordingRequest,select=$('cameraRecordingSelect');
-  const previous=recordingProject===pid?select.value:'';
+  const pid=state.project?.id,request=++recordingRequest;
   if(recordingProject!==pid){
     recordingProject=pid;
     recordingItems=[];
-    select.replaceChildren();
-    $('cameraRecordingSampling').open=false;
+    selectedRecordingName=null;
+    $('cameraRecordingList').replaceChildren();
     $('cameraRecordingSampling').hidden=true;
     $('cameraVideoReport').hidden=true;
     $('cameraRecordingCount').textContent='0';
@@ -203,15 +277,10 @@ async function loadCameraRecordings({latest=false,name='',syncSource=false}={}){
     const {recordings}=await api(`/api/projects/${encodeURIComponent(pid)}/recordings`);
     if(request!==recordingRequest||state.project?.id!==pid)return;
     recordingItems=recordings;
-    select.replaceChildren(...recordings.map(recording=>new Option(
-      `${recording.display_name||recording.name} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒`, recording.name)));
-    const preferred=name||(!latest?previous:'');
-    if(recordings.some(recording=>recording.name===preferred))select.value=preferred;
     $('cameraRecordingCount').textContent=String(recordings.length);
     $('openVideoMaterials').disabled=!recordings.length;
-    $('cameraRecordingSampling').hidden=!recordings.length;
-    summary.textContent=recordings.length?'可選擇專案影片取幀，取出的畫格會加入圖片素材。':'目前專案尚無影片。';
-    if(syncSource&&!$('videoPath').value&&select.value)select.dispatchEvent(new Event('change'));
+    syncVideoSampling({preferredName:name||(latest&&!externalVideoPath()?recordings[0]?.name:null)});
+    if(syncSource&&!$('videoPath').value&&selectedCameraRecording())onVideoSelected();
     updateCameraControls();
   }catch(error){
     if(request===recordingRequest&&state.project?.id===pid)summary.textContent=error.message;
@@ -274,7 +343,7 @@ function setCameraPreviewExpanded(expanded) {
   requestAnimationFrame(updateCameraTargetEditingSurface);
 }
 function updateCameraControls() {
-  const details=state.cameraDetails||{},recording=selectedCameraRecording();
+  const details=state.cameraDetails||{};
   const starting=details.state==='starting',stopping=details.state==='stopping',engaged=state.camera||starting||stopping;
   $('startCamera').disabled=engaged||state.busy||cameraModesLoading;$('stopCamera').disabled=!engaged||stopping||state.busy;
   $('stopCamera').textContent=starting?'取消啟動':stopping?'停止中…':'停止相機';
@@ -287,7 +356,7 @@ function updateCameraControls() {
   $('stopRecording').disabled=!state.recording||state.busy;$('cameraDevice').disabled=engaged||state.busy||cameraModesLoading;
   $('findCameras').disabled=engaged||state.busy||cameraModesLoading;
   for(const id of ['cameraResolution','cameraFPS','cameraWidth','cameraHeight','cameraPixelFormat'])$(id).disabled=starting||stopping||state.recording||auto||state.busy||cameraModesLoading;
-  $('extractRecording').disabled=state.busy||!state.project||!recording?.path;
+  $('extractRecording').disabled=state.busy||!state.project||!videoSamplingPath();
   $('applyProcessing').disabled=!state.camera||state.busy;$('calibrateBackground').disabled=!state.camera||state.busy;
   for(const id of ['cameraTargetTool','cameraTargetLabel','cameraTargetBrushRadius','cameraTargetUseProcessing','cameraTargetAttach'])$(id).disabled=!state.camera||state.busy;
   $('clearCameraTarget').disabled=!cameraTargetShape()||state.busy;
@@ -378,5 +447,5 @@ async function startAutoCapture() {
   const session={active:true,projectId:state.project.id,batchId:`auto_${Date.now().toString(36)}`,interval,limit,count:0,attempts:0,timer:null};state.autoCapture=session;
   $('autoCaptureStatus').textContent='正在擷取第一張影像…';updateCameraControls();await runAutoCapture(session);
 }
-return {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording};
+return {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording, syncVideoSampling, videoSamplingPath};
 }

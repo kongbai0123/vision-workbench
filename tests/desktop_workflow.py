@@ -91,7 +91,8 @@ def main():
             initial_classes = ['工件', 'L_grip', '表面 瑕疵']
             created = service.store.list_projects()[0]
             assert service.store.get_project(created['id'])['classes'] == initial_classes
-            click("[data-source='files']")
+            click("#tab-import")
+            wait("document.querySelector('#source-files').getClientRects().length>0")
             click("#showManualImport")
             fill("#importPaths","\n".join(inputs));click("#importFiles")
             wait("document.querySelector('#formDialog').open && document.querySelectorAll('#dialogBody input[type=checkbox]').length===4")
@@ -364,14 +365,14 @@ def main():
             click('#home');wait("!document.querySelector('#library').hidden")
             click('.project-delete');wait("document.querySelector('#formDialog').open")
             assert js("document.querySelector('#dialogBody').innerText.includes('4 張影像')")
-            assert js("document.querySelector('#dialogBody').innerText.includes('已匯出的資料集會保留')")
+            assert js("document.querySelector('#dialogBody').innerText.includes('訓練產物及匯出檔')")
             capture('08-delete-confirmation')
             click('#cancelDialog');wait("!document.querySelector('#formDialog').open")
             assert service.store.get_project(pid)['id']==pid
             click('.project-delete');wait("document.querySelector('#formDialog').open")
             js("document.querySelector('#dialogForm').requestSubmit()")
             wait("window.workbenchState().projectId===null && !document.querySelector('.project-card')")
-            assert Path(exported['path']).is_dir() and Path(exported['zip_path']).is_file()
+            assert not Path(exported['path']).exists() and not Path(exported['zip_path']).exists()
             capture('09-project-deleted')
             assert not page.errors,page.errors
             (output/'report.json').write_text(json.dumps({'success':True,'steps':steps,'project_images':4,

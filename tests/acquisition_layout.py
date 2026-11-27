@@ -42,6 +42,7 @@ class Page(QWebEnginePage):
 
 
 SOURCES = ("camera", "files", "video", "screen", "merge")
+SOURCE_GROUPS = {"camera": "capture", "screen": "capture", "files": "import", "video": "import", "merge": "merge"}
 SIZES = ((1280, 720), (1440, 900), (1910, 992), (1920, 1080))
 IMAGE_COUNT = 52
 THUMBNAIL_COUNT = IMAGE_COUNT
@@ -54,7 +55,7 @@ def main():
     report = {
         "success": False,
         "scope": "Synthetic data only; temporary isolated project; no physical camera or screen capture",
-        "source_tabs": list(SOURCES),
+        "source_tabs": list(dict.fromkeys(SOURCE_GROUPS.values())),
         "project_images": 0,
         "steps": [],
         "layout": [],
@@ -67,16 +68,16 @@ def main():
         source = root / "合成驗收影像"
         source.mkdir()
         for index in range(IMAGE_COUNT):
-            image = Image.new("RGB", (960, 640), (217, 227, 230))
+            image = Image.new("RGB", (320, 214), (217, 227, 230))
             draw = ImageDraw.Draw(image)
-            offset = (index % 3) * 40
+            offset = (index % 3) * 14
             draw.rounded_rectangle(
-                (190 + offset, 100, 700, 550 - offset),
-                radius=30,
+                (63 + offset, 33, 233, 183 - offset),
+                radius=10,
                 fill=(40 + (index % 3) * 25, 90 + (index % 3) * 20, 130),
             )
-            draw.ellipse((350, 245, 530, 425), fill=(217, 227, 230))
-            draw.text((30, 30), f"SYNTHETIC FIXTURE {index + 1}", fill=(30, 45, 55))
+            draw.ellipse((117, 82, 177, 142), fill=(217, 227, 230))
+            draw.text((10, 10), f"SYNTHETIC FIXTURE {index + 1}", fill=(30, 45, 55))
             image.save(source / f"collection_session_20260909_工業檢測合成工件_長檔名驗收_{index + 1:03d}.png")
 
         service = WorkbenchService(root / "data").start()
@@ -125,11 +126,15 @@ def main():
             )
 
         def select_source(name):
-            click(f"[data-source='{name}']")
+            click("#tab-" + SOURCE_GROUPS[name])
+            if name != "merge":
+                selector = f"[data-source='{name}']"
+                assert js(f"!!document.querySelector({json.dumps(selector)})?.getClientRects().length")
+                click(selector)
             wait(
                 "(()=>{const e=document.querySelector('#source-"
                 + name
-                + "');return e && e.getAttribute('role')==='tabpanel' && e.getClientRects().length>0})()"
+                + "');return e && e.getClientRects().length>0})()"
             )
             shown = json.loads(
                 js(
@@ -159,7 +164,7 @@ def main():
                           if(/auto|scroll|hidden|clip/.test(s.overflowY)&&(r.top<q.top-1||r.bottom>q.bottom+1))return false;
                           if(/auto|scroll|hidden|clip/.test(s.overflowX)&&(r.left<q.left-1||r.right>q.right+1))return false;}
                         return true;};
-                      const active=document.querySelector('[role=tabpanel]:not([hidden])');
+                      const active=[...document.querySelectorAll('.source-view')].find(visible);
                       const workspace=document.querySelector('.source-workspace');
                       const tray=document.querySelector('.acquired-tray');
                       const list=document.querySelector('#acquiredAssets');
@@ -206,6 +211,7 @@ def main():
                         start_button_visible:viewportVisible(document.querySelector('#startCamera')),
                         capture_button_visible:viewportVisible(document.querySelector('#takeSnapshot')),
                         annotate_button_visible:viewportVisible(document.querySelector('#goAnnotate')),
+                        video_tools_visible:viewportVisible(document.querySelector('#recordedFrameTools')),
                         import_button_visible:viewportVisible(document.querySelector('#importFiles'))};
                     })())"""
                 )
@@ -221,7 +227,10 @@ def main():
             ratio=result["workspace"]["width"]/result["tray"]["width"]
             if not 2.85 <= ratio <= 3.15:
                 issues.append(f"Output/assets width ratio must remain near 3:1, got {ratio:.3f}")
-            if not result["annotate_button_visible"]:
+            if source_name == "video":
+                if not result["video_tools_visible"] or result["annotate_button_visible"]:
+                    issues.append("Video source should show video tools instead of image annotation controls")
+            elif not result["annotate_button_visible"]:
                 issues.append("Annotation button clipped")
             if result["select_all"] and result["annotate_button"]:
                 select_mid=result["select_all"]["top"]+result["select_all"]["height"]/2
@@ -236,7 +245,7 @@ def main():
             scroller = result["scroller"]
             if scroller["count"] != expected_thumbnails:
                 issues.append(f"Expected {expected_thumbnails} thumbnails, got {scroller['count']}")
-            if expected_thumbnails:
+            if expected_thumbnails and source_name != "video":
                 if scroller["overflowY"] not in ("auto", "scroll") or scroller["end_scroll_top"] <= 0:
                     issues.append(f"Thumbnail column must scroll internally: {scroller}")
                 if not scroller["last_visible"] or not scroller["last_hit"]:
@@ -278,6 +287,11 @@ def main():
             wait("!document.querySelector('#acquire').hidden && !window.workbenchState().transitioning")
             duplicate_ids = json.loads(js("JSON.stringify((()=>{const ids=[...document.querySelectorAll('[id]')].map(e=>e.id);return [...new Set(ids.filter((id,index)=>ids.indexOf(id)!==index))]})())"))
             assert not duplicate_ids, f"Duplicate DOM ids: {duplicate_ids}"
+            assert js("""
+                (()=>{const tabs=[...document.querySelectorAll('.source-group-tabs button')];
+                return tabs.map(tab=>tab.id).join(',')==='tab-capture,tab-import,tab-merge'
+                  && tabs.every(tab=>tab.getClientRects().length>0)})()
+            """), "Expected three visible acquisition groups"
             assert js("document.querySelector('#source-camera').getClientRects().length>0"), "Camera is not the default source"
             assert not js("document.querySelector('#source-camera .source-inspector').getClientRects().length"), "Settings drawer must default to hidden"
             assert js("!!document.querySelector('#showCenterCrosshair')"), "Center crosshair toggle is missing"
@@ -341,15 +355,18 @@ def main():
             select_source("video")
             video_path = str(root / "保留輸入測試.mp4")
             fill("#videoPath", video_path)
-            fill("#videoInterval", "0.8")
+            fill("#cameraVideoInterval", "0.8")
             for name in ("screen", "merge", "camera", "files", "video", "files"):
                 select_source(name)
             assert js("document.querySelector('#importPaths').value") == str(source), "File path lost on source switch"
             assert js("document.querySelector('#videoPath').value") == video_path, "Video path lost on source switch"
-            assert js("document.querySelector('#videoInterval').value") == "0.8", "Video interval lost on source switch"
+            assert js("document.querySelector('#cameraVideoInterval').value") == "0.8", "Video interval lost on source switch"
             assert js("document.querySelector('#manualImport').open"), "Expanded path section lost on source switch"
+            click("#toggleSourceInspector")
             click("#importFiles")
-            wait(f"document.querySelector('#acquiredAssets').querySelectorAll('img').length==={THUMBNAIL_COUNT}", seconds=60)
+            wait("document.querySelector('#formDialog').open && document.querySelector('#dialogTitle').textContent.includes('選擇要匯入')", seconds=150)
+            js("document.querySelector('#dialogForm').requestSubmit()")
+            wait(f"document.querySelector('#acquiredAssets').querySelectorAll('img').length==={THUMBNAIL_COUNT}", seconds=120)
             wait("!window.workbenchState().busy && !document.querySelector('#importFiles').disabled")
             wait("(()=>{const i=document.querySelector('#acquiredAssets img');return i&&i.complete&&i.naturalWidth>0})()")
             assert str(js("document.querySelector('#acquireTotal').textContent")) == str(IMAGE_COUNT), "Image total did not update"

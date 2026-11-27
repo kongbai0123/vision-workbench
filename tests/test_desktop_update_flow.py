@@ -337,6 +337,7 @@ class SettingsUpdateFlowTests(unittest.TestCase):
         source = """
             import assert from 'node:assert/strict';
             import {createSettingsPage} from MODULE;
+            globalThis.document={querySelectorAll:()=>[]};
             const elements=new Map();
             const $=id=>{if(!elements.has(id))elements.set(id,{textContent:'',className:'',disabled:false});return elements.get(id)};
             const callbacks={};let calls=0,complete;

@@ -88,7 +88,8 @@ def main():
             wait("document.querySelector('#formDialog').open")
             js("document.querySelector('#dialogBody input').value='拖曳匯入驗收';document.querySelector('#dialogForm').requestSubmit()")
             wait("window.workbenchState().projectId && !window.workbenchState().transitioning")
-            js("document.querySelector('[data-source=files]').click()")
+            js("document.querySelector('#tab-import').click()")
+            wait("document.querySelector('#source-files').getClientRects().length>0")
             native_drag([labelme], drop=False)
             native_drag([labelme], outside=True)
             assert service.store.list_projects()[0]['stats']['total']==0

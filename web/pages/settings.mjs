@@ -9,12 +9,54 @@ const mergedSettingsSections = new Map([
 export function createSettingsPage(context) {
 const {$, state, api, element, button, safe, switchStage, toast, setUpdateIndicators, renderTraining, loadTraining, nativeCallbacks, nativeChoose, formDialog}=context;
 const settingDefaults={scale:'1',device:'auto'};
+const modelTabs=[...document.querySelectorAll('[data-models-tab]')];
+const modelScroll=new Map(['settingsModelList','settingsModelDetailBody','settingsAnnotationModelsPanel'].map(id=>[$(id),0]));
+const memoryFormat=new Intl.NumberFormat('zh-TW',{maximumFractionDigits:1});
+let renderedCatalogModel;
+let hardwareLoaded=false,hardwareRequest;
 function settingValue(name){try{return localStorage.getItem(`vision-workbench.${name}`)||settingDefaults[name]}catch{return settingDefaults[name]}}
 function saveSetting(name,value){try{localStorage.setItem(`vision-workbench.${name}`,value)}catch{}applySettings()}
-function applySettings(){document.body.style.zoom=settingValue('scale');if($('settingScale'))$('settingScale').value=settingValue('scale');if($('settingDevice'))$('settingDevice').value=settingValue('device')}
+function applySettings(){
+  const scale=settingValue('scale'),device=settingValue('device');
+  document.body.style.zoom=scale;
+  $('settingScale').value=scale;
+  $('settingDevice').value=device;
+}
 
+function rememberModelScroll(){
+  for(const region of modelScroll.keys()){
+    if(region.clientHeight)modelScroll.set(region,region.scrollTop);
+  }
+}
+function restoreModelScroll(){
+  for(const [region,top] of modelScroll){
+    if(region.clientHeight)region.scrollTop=top;
+  }
+}
+function showModelTab(name){
+  rememberModelScroll();
+  for(const tab of modelTabs){
+    const active=tab.dataset.modelsTab===name;
+    tab.setAttribute('aria-selected',String(active));
+    tab.tabIndex=active?0:-1;
+    $(tab.getAttribute('aria-controls')).hidden=!active;
+  }
+  restoreModelScroll();
+}
+for(const [index,tab] of modelTabs.entries()){
+  tab.onclick=()=>showModelTab(tab.dataset.modelsTab);
+  tab.onkeydown=event=>{
+    const keys={Home:0,End:modelTabs.length-1,ArrowLeft:(index+modelTabs.length-1)%modelTabs.length,ArrowRight:(index+1)%modelTabs.length};
+    const next=modelTabs[keys[event.key]];
+    if(!next)return;
+    event.preventDefault();
+    showModelTab(next.dataset.modelsTab);
+    next.focus({preventScroll:true});
+  };
+}
 function showSettingsPage(requestedPage='general'){
   const [page, section] = mergedSettingsSections.get(requestedPage) || [requestedPage];
+  rememberModelScroll();
   state.settingsPage=page;
   for(const item of document.querySelectorAll('[data-settings-page]')){
     const active=item.dataset.settingsPage===page;
@@ -23,7 +65,11 @@ function showSettingsPage(requestedPage='general'){
     else item.removeAttribute('aria-current');
   }
   document.querySelectorAll('[data-settings-panel]').forEach(item=>item.hidden=item.dataset.settingsPanel!==page);
-  $('settingsContent').scrollTop=0;
+  const content=$('settingsContent');
+  content.classList.toggle('settings-content-models',page==='models');
+  content.scrollTop=0;
+  restoreModelScroll();
+  if(page==='general')void loadHardware();
   if(section)$(section).scrollIntoView({block:'start'});
   if(requestedPage==='updates'){
     void refreshDesktopUpdate().catch(error=>renderDesktopUpdate({state:'unavailable',count:null,changes:[],message:error.message}));
@@ -31,23 +77,60 @@ function showSettingsPage(requestedPage='general'){
   }
 }
 async function openSettings(page='general',modelKey=null){
-  state.settingsFocus=document.activeElement;$('settingsShell').hidden=false;showSettingsPage(page);applySettings();
-  if(modelKey)state.selectedCatalogModel=modelKey;
+  state.settingsFocus=document.activeElement;
+  showSettingsPage(page);applySettings();
+  if(modelKey){state.selectedCatalogModel=modelKey;showModelTab('training')}
+  $('settingsShell').hidden=false;restoreModelScroll();
+  $('closeSettings').focus({preventScroll:true});
   if(!state.system)state.system=await api('/api/system');
-  await loadModelCatalog();renderSettingsSummary();
-  if(modelKey&&state.settingsPage==='models')$('settingsTrainingModelsTitle').scrollIntoView({block:'start'});
-  $('closeSettings').focus();
+  await loadModelCatalog();
 }
-function closeSettings(){if($('settingsShell').hidden)return;$('settingsShell').hidden=true;state.settingsFocus?.focus?.();state.settingsFocus=null}
+function closeSettings(){if($('settingsShell').hidden)return;rememberModelScroll();$('settingsShell').hidden=true;state.settingsFocus?.focus?.();state.settingsFocus=null}
+$('refreshModelCatalog').onclick=()=>safe(()=>loadModelCatalog(true));
+$('settingsHardwareRefresh').onclick=()=>void loadHardware(true);
 $('goSettingsDiagnostics').onclick=()=>{
   showSettingsPage('diagnostics');
   $('settingsDiagnosticsTitle').focus({preventScroll:true});
 };
+function hardwareMemory(bytes){
+  return Number.isFinite(bytes)&&bytes>0?`${memoryFormat.format(bytes/1024**3)} GiB`:'未讀取';
+}
+function renderHardware({cpu,memory,gpus}){
+  $('settingsHardwareCpuName').textContent=cpu.name||'未取得處理器型號';
+  $('settingsHardwareCpuCores').textContent=cpu.logical_cores?` · ${cpu.logical_cores} 個邏輯處理器`:'';
+  $('settingsHardwareMemory').textContent=hardwareMemory(memory.total_bytes);
+  const gpuList=$('settingsHardwareGpus');
+  gpuList.replaceChildren(...gpus.map(gpu=>{
+    const row=element('li');
+    row.append(element('b',gpu.name),element('small',` · 專用顯示記憶體 ${hardwareMemory(gpu.memory_bytes)}`));
+    return row;
+  }));
+  if(!gpus.length)gpuList.append(element('li','未取得顯示卡資訊。','muted'));
+  $('settingsHardwareSummary').hidden=false;
+}
+function loadHardware(refresh=false){
+  if(hardwareRequest)return hardwareRequest;
+  if(hardwareLoaded&&!refresh)return;
+  const status=$('settingsHardwareStatus'),refreshButton=$('settingsHardwareRefresh');
+  refreshButton.disabled=true;
+  status.textContent='正在讀取本機硬體…';
+  status.hidden=false;
+  hardwareRequest=api('/api/system/hardware').then(info=>{
+    renderHardware(info);
+    hardwareLoaded=true;
+    status.hidden=true;
+  }).catch(()=>{
+    status.textContent=hardwareLoaded
+      ?'重新檢查失敗，目前顯示上次讀取的硬體資訊。'
+      :'無法讀取本機硬體，請按「重新檢查硬體」再試。';
+  }).finally(()=>{hardwareRequest=null;refreshButton.disabled=false});
+  return hardwareRequest;
+}
 function renderSettingsSummary(){
   if(!state.system)return;
   $('settingsVersion').textContent=`Vision Workbench ${state.system.version||'—'}`;
   $('settingsLabelmeState').textContent=state.system.desktop?'桌面版可使用':'需要桌面版';
-  const facts=[['資料位置',state.system.data_root||'—'],['資料集匯出','目前專案的 exports 資料夾'],['訓練 Python',state.modelCatalog?.worker_python||'—'],['執行模式',state.system.desktop?'Windows 桌面版':'瀏覽器開發模式']];
+  const facts=[['資料位置',state.system.data_root||'—'],['資料集匯出','專案內的 outputs/datasets 資料夾'],['訓練 Python',state.modelCatalog?.worker_python||'—'],['執行模式',state.system.desktop?'Windows 桌面版':'瀏覽器開發模式']];
   $('computeSummary').replaceChildren(...facts.map(([label,value])=>{const row=element('div',undefined,'settings-fact');row.append(element('span',label),element('b',value));return row}));
   $('diagnosticSummary').textContent=[`Vision Workbench ${state.system.version||'—'}`,`模式：${state.system.desktop?'Windows 桌面版':'瀏覽器'}`,`資料：${state.system.data_root||'—'}`,`訓練 Python：${state.modelCatalog?.worker_python||'—'}`,
     ...((state.modelCatalog?.components||[]).map(component=>`${component.name}：${component.state} · ${component.message}`))].join('\n');
@@ -136,6 +219,9 @@ async function loadModelCatalog(refresh=false){
 }
 function renderAnnotationModelCatalog(catalog){
   $('settingsAnnotationModels').hidden=!catalog;
+  const empty=$('settingsAnnotationCatalogEmpty');
+  empty.hidden=Boolean(catalog);
+  empty.textContent='目前沒有標註輔助元件資訊。';
   if(!catalog)return;
   const location=$('settingsAnnotationModelLocation');
   location.replaceChildren('批量找框模型的預設位置為程式資料夾下的 ',element('code',catalog.install_path));
@@ -143,16 +229,21 @@ function renderAnnotationModelCatalog(catalog){
   else if(!catalog.installable)location.append('。目前環境無法從設定安裝。');
   $('startAnnotationModelInstall').disabled=!catalog.installable||Boolean(state.settingsJob);
   const states={available:['已找到檔案','ready'],missing:['未找到','warning'],incomplete:['檔案不完整','error']};
-  $('settingsAnnotationModelList').replaceChildren(...catalog.components.map(component=>{
+  const batch=[],interactive=[];
+  for(const component of catalog.components){
     const [label,tone]=states[component.state]||['尚未檢查',''];
-    const row=element('div',undefined,'settings-annotation-model-row'),details=element('div');
-    details.append(element('b',component.name));
+    const card=element('article',undefined,'settings-annotation-model-row');
+    const heading=element('div',undefined,'settings-annotation-model-heading');
+    heading.append(element('b',component.name),element('span',label,'settings-state '+tone));
     const path=element('small',undefined,'muted');
     path.append(element('code',component.install_path));
-    if(component.message)path.append(` · ${component.message}`);
-    details.append(path);row.append(details,element('span',label,'settings-state '+tone));
-    return row;
-  }));
+    card.append(heading,path);
+    if(component.message)card.append(element('small',component.message,'muted'));
+    (component.id==='interactive-sam'?interactive:batch).push(card);
+  }
+  $('settingsAnnotationModelList').replaceChildren(...batch);
+  $('settingsInteractiveModelList').replaceChildren(...interactive);
+  $('settingsInteractiveModelSection').hidden=!interactive.length;
 }
 async function chooseAnnotationModelSource(){
   const body=element('div'),input=element('input'),row=element('div',undefined,'inline annotation-model-source-row');
@@ -177,19 +268,48 @@ $('startAnnotationModelInstall').onclick=()=>safe(async()=>{
 });
 function catalogState(model){if(model.train||model.predict)return [model.inference_only?'可匯入／推論':'可使用','ready'];if(model.integration!=='ready')return ['整合開發中','warning'];if(model.runtime_state==='broken')return ['需要修復','error'];return ['尚未安裝','warning']}
 function renderModelCatalog(){
-  const catalog=state.modelCatalog;if(!catalog)return;const search=$('modelCatalogSearch').value.trim().toLowerCase(),filter=$('modelCatalogFilter').value;
-  const models=(catalog.engines||catalog.models||[]).filter(model=>{
+  const catalog=state.modelCatalog;if(!catalog)return;
+  rememberModelScroll();
+  const search=$('modelCatalogSearch').value.trim().toLowerCase(),filter=$('modelCatalogFilter').value;
+  const engines=catalog.engines||catalog.models||[];
+  const models=engines.filter(model=>{
     if(filter==='ready'&&!model.train&&!model.predict)return false;if(filter==='unavailable'&&(model.train||model.predict))return false;
     return !search||`${model.name} ${model.description} ${model.task_name} ${model.family}`.toLowerCase().includes(search);
   });
-  if(!state.selectedCatalogModel||!(catalog.engines||catalog.models||[]).some(model=>model.key===state.selectedCatalogModel))state.selectedCatalogModel=models[0]?.key||(catalog.engines||catalog.models||[])[0]?.key;
+  if(!engines.some(model=>model.key===state.selectedCatalogModel))state.selectedCatalogModel=models[0]?.key||engines[0]?.key;
   const list=$('settingsModelList');list.replaceChildren();
+  $('settingsModelCount').textContent=`${models.length} 個模型`;
   if(!models.length)list.append(element('p','沒有符合條件的模型。','empty-list'));
-  for(const model of models){const [label,tone]=catalogState(model),row=button('','settings-model-row'+(model.key===state.selectedCatalogModel?' active':''),()=>{state.selectedCatalogModel=model.key;renderModelCatalog()});const top=element('div');top.append(element('b',model.name),element('i',undefined,'model-state-dot '+tone));row.append(top,element('small',`${model.task_name||model.task} · ${label}`));list.append(row)}
-  const model=(catalog.engines||catalog.models||[]).find(item=>item.key===state.selectedCatalogModel);renderCatalogDetail(model);
+  for(const model of models){
+    const [label,tone]=catalogState(model);
+    const active=model.key===state.selectedCatalogModel;
+    const row=button('','settings-model-row'+(active?' active':''),()=>{
+      rememberModelScroll();
+      const previous=list.querySelector('.active');
+      previous?.classList.remove('active');
+      previous?.setAttribute('aria-pressed','false');
+      row.classList.add('active');
+      row.setAttribute('aria-pressed','true');
+      state.selectedCatalogModel=model.key;
+      renderCatalogDetail(model);
+      restoreModelScroll();
+    });
+    row.setAttribute('aria-pressed',String(active));
+    const top=element('div');top.append(element('b',model.name),element('i',undefined,'model-state-dot '+tone));
+    row.append(top,element('small',`${model.task_name||model.task} · ${label}`));
+    list.append(row);
+  }
+  renderCatalogDetail(engines.find(model=>model.key===state.selectedCatalogModel));
+  restoreModelScroll();
 }
 function renderCatalogDetail(model){
-  const root=$('settingsModelDetail');root.replaceChildren();if(!model){root.append(element('p','選擇一個模型查看詳情。'));return}
+  const root=$('settingsModelDetailBody'),actions=$('settingsModelActions');
+  if(renderedCatalogModel!==model?.key)modelScroll.set(root,0);
+  renderedCatalogModel=model?.key;
+  root.replaceChildren();
+  actions.replaceChildren();
+  actions.hidden=!model;
+  if(!model){root.append(element('p','選擇一個模型查看詳情。'));return}
   const [statusLabel,tone]=catalogState(model),head=element('div',undefined,'model-detail-status'),title=element('div');title.append(element('span',model.family||'MODEL','eyebrow'),element('h3',model.name));head.append(title,element('span',statusLabel,'settings-state '+tone));root.append(head,element('p',model.description));
   const component=(state.modelCatalog.components||[]).find(item=>item.id===model.component),stateNames={ready:'可使用',not_installed:'尚未安裝',broken:'需要修復',planned:'整合開發中'};
   const capability=model.inference_only&&model.predict?'可匯入外部權重 · 試跑／預標註／匯出 · 不提供續訓':model.train?`訓練可使用 · ${model.predict?'可產生預標註':'不產生物件預標註'} · 可匯出`:model.unavailable_reason||'尚未準備';
@@ -202,11 +322,9 @@ function renderCatalogDetail(model){
   root.append(facts,element('p',component?.description||'','field-note'));
   if(component?.install_path)root.append(element('p','移到新電腦後，請在新位置重新安裝此執行環境。','field-note'));
   root.append(element('div',`授權：${model.license||'依來源'}`,'catalog-license'));
-  const actions=element('div',undefined,'catalog-actions');
   if(model.train){const use=button('回到訓練並選用','primary',()=>{if(!state.project){toast('請先開啟專案。',true);return}closeSettings();switchStage('train').then(()=>{$('trainingEngine').value=model.key;renderTraining()})});actions.append(use)}
   else if(model.integration==='ready'&&component?.installable){const install=button(component.state==='broken'?'修復必要元件':'安裝必要元件','primary',()=>safe(()=>installModelComponent(component.id)));actions.append(install)}
   else {const planned=button('查看開發狀態','secondary',()=>toast('此模型已納入交付待辦；完成資料、評估與推論 adapter 後才會開放安裝。'));actions.append(planned)}
-  root.append(actions);
 }
 async function installModelComponent(componentId,payload={}){
   if(state.settingsJob)return;

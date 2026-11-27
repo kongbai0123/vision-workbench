@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from hashlib import sha256
+from hashlib import file_digest
 import json
 import os
 from pathlib import Path
 
+from .file_lock import exclusive_file_lock
+from .project_layout import AREA_PATHS, migrate_project_layout, project_area
 
 PROJECT_AREAS = ("datasets", "runs", "models", "model-exports", "predictions")
 
@@ -33,13 +35,7 @@ class ProjectStorage:
         return self.store.directory(project_id)
 
     def area(self, project_id: str, name: str, *, create: bool = False) -> Path:
-        if name not in (*PROJECT_AREAS, "recordings", "exports", "scratch") and not name.startswith("integrations/"):
-            raise ValueError("專案儲存區名稱無效")
-        path = self.root(project_id).joinpath(*name.split("/"))
-        if path.resolve() != path and not path.exists():
-            path = path.resolve()
-        if not path.resolve().is_relative_to(self.root(project_id).resolve()):
-            raise ValueError("專案儲存路徑超出專案資料夾")
+        path = project_area(self.root(project_id), name)
         if create:
             path.mkdir(parents=True, exist_ok=True)
         return path
@@ -83,7 +79,7 @@ class ProjectStorage:
 
     def _deduplicate_dataset_images(self, project_id: str, report: dict) -> None:
         """Replace verified legacy copies with hard links to immutable project images."""
-        project_images = self.root(project_id) / "images"
+        project_images = self.area(project_id, "images")
         if not project_images.is_dir():
             return
         by_hash = {path.stem: path for path in project_images.iterdir()
@@ -102,13 +98,19 @@ class ProjectStorage:
                 if (source is None or not destination.is_file()
                         or not destination.is_relative_to(dataset_root)):
                     continue
+                temporary = None
                 try:
                     if os.path.samefile(source, destination):
                         continue
                     with destination.open("rb") as stream:
-                        actual = sha256(stream.read()).hexdigest()
+                        actual = file_digest(stream, "sha256").hexdigest()
                     if actual != digest:
                         report["conflicts"].append({"path": str(destination), "reason": "sha256_mismatch"})
+                        continue
+                    with source.open("rb") as stream:
+                        source_digest = file_digest(stream, "sha256").hexdigest()
+                    if source_digest != digest:
+                        report["conflicts"].append({"path": str(source), "reason": "source_sha256_mismatch"})
                         continue
                     temporary = destination.with_name(f".{destination.name}.link.tmp")
                     temporary.unlink(missing_ok=True)
@@ -117,10 +119,11 @@ class ProjectStorage:
                     report["deduplicated_files"] += 1
                     report["deduplicated_bytes"] += destination.stat().st_size
                 except OSError:
-                    try:
-                        temporary.unlink(missing_ok=True)
-                    except (OSError, UnboundLocalError):
-                        pass
+                    if temporary is not None:
+                        try:
+                            temporary.unlink(missing_ok=True)
+                        except OSError:
+                            pass
 
     def migrate(self) -> list[dict]:
         """Move legacy project-owned artifacts without overwriting collisions."""
@@ -140,6 +143,10 @@ class ProjectStorage:
             report = {"project_id": project_id, "moved": [], "conflicts": [],
                       "deduplicated_files": 0, "deduplicated_bytes": 0}
             project_root = self.root(project_id)
+            with (exclusive_file_lock(project_root / '.training-admission.lock'),
+                  exclusive_file_lock(project_root / '.dataset-publish.lock'),
+                  exclusive_file_lock(project_root / '.images.lock')):
+                self._migrate_project_layout(project_root, report)
             for name in PROJECT_AREAS:
                 destination = self.area(project_id, name)
                 if name == "predictions":
@@ -186,9 +193,10 @@ class ProjectStorage:
             if report["moved"] or report["conflicts"] or report["deduplicated_files"]:
                 migrations = [*migrations, report]
             _write_json(layout_path, {
-                "schema_version": 1,
+                "schema_version": 2,
                 "layout": "project-scoped",
-                "areas": list(PROJECT_AREAS) + ["integrations/labelme", "integrations/cvat"],
+                "areas": {name: self.area(project_id, name).relative_to(project_root).as_posix()
+                          for name in (*AREA_PATHS, "integrations/labelme", "integrations/cvat")},
                 "last_verified_at": report["completed_at"],
                 "migrations": migrations,
             })
@@ -197,3 +205,24 @@ class ProjectStorage:
         if links_changed:
             _write_json(legacy_links_path, legacy_links)
         return reports
+
+    @staticmethod
+    def _migrate_project_layout(root, report):
+        from .run_events import read_state
+
+        if not any((root / name).exists() or (root / name).is_symlink() for name in AREA_PATHS):
+            return
+        active = {'queued', 'preparing', 'running', 'stopping'}
+        for run_path in project_area(root, 'runs').glob('R*/run.json'):
+            try:
+                run = read_state(run_path)
+                terminal = run_path.parent / 'control' / 'terminal.json'
+                if run.get('status') in active and terminal.is_file():
+                    run = json.loads(terminal.read_text(encoding='utf-8'))
+                if run.get('status') in {'completed', 'failed', 'stopped'}:
+                    continue
+            except (OSError, ValueError, AttributeError):
+                pass
+            report['conflicts'].append({'path': str(run_path), 'reason': 'active_or_unverified_run'})
+            return
+        migrate_project_layout(root, report)

@@ -18,7 +18,10 @@ def worker_lifecycle(run_dir, run):
     try:
         from .resources import accelerator_lease
         from pathlib import Path
-        root = Path(os.environ.get('VISION_WORKBENCH_RESOURCE_ROOT', str(run_dir.parent.parent.parent.parent)))
+        project = run_dir.parent.parent
+        if project.name == 'artifacts' and run_dir.parent.name == 'runs':
+            project = project.parent
+        root = Path(os.environ.get('VISION_WORKBENCH_RESOURCE_ROOT', str(project.parent.parent)))
         def checkpoint():
             from .training_engine import stop_requested
             if stop_requested(run_dir):

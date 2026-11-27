@@ -53,6 +53,18 @@ def _json(path):
     return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
 
+def _source_text(path):
+    """Fingerprint the exact bytes passed to the annotation parser."""
+    path = Path(path).resolve()
+    raw = path.read_bytes()
+    return raw.decode('utf-8-sig'), {'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def _source_json(path):
+    raw, provenance = _source_text(path)
+    return json.loads(raw), provenance
+
+
 def _write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 
@@ -120,7 +132,8 @@ def _shape(kind, label, key, *, points=None, box=None, counts=None, metadata=Non
     return shape
 
 
-def _record(path, shapes, root, *, split='', batch=None, source=None, review='pending', expected_sha=None):
+def _record(path, shapes, root, *, split='', batch=None, source=None, review='pending', expected_sha=None,
+            annotation_files=()):
     path, root = Path(path).resolve(), Path(root).resolve()
     width, height = _dimensions(path)
     if expected_sha and _sha(path) != expected_sha:
@@ -136,13 +149,17 @@ def _record(path, shapes, root, *, split='', batch=None, source=None, review='pe
         raise ValueError(f'{path.name}：標註 ID 重複')
     provenance = deepcopy(source or {'path': str(path), 'format': 'image'})
     provenance['pixel_coordinates'] = _coordinate_metadata(path)
-    return {'path': str(path), 'name': path.name, 'shapes': shapes, 'width': width, 'height': height,
-            'batch_id': str(batch or f'{root.name}-{_identifier(str(root), split)[:10]}'),
-            'split': split, 'source': provenance,
-            'review_state': review}
+    record = {'path': str(path), 'name': path.name, 'shapes': shapes, 'width': width, 'height': height,
+              'batch_id': str(batch or f'{root.name}-{_identifier(str(root), split)[:10]}'),
+              'split': split, 'source': provenance, 'review_state': review}
+    if expected_sha:
+        record['expected_import_sha'] = expected_sha
+    if annotation_files:
+        record['annotation_files'] = annotation_files
+    return record
 
 
-def _native_import(root, document, report=None):
+def _native_import(root, document, annotation_file, report=None):
     if document.get('format') != NATIVE_FORMAT or document.get('schema_version') != 1:
         raise ValueError('不支援的 Native 資料版本')
     manifest_path = root / 'manifest.json'
@@ -150,8 +167,13 @@ def _native_import(root, document, report=None):
         raise ValueError('Native 封裝缺少 manifest.json')
     manifest = _json(manifest_path)
     declared_files = manifest.get('files', [])
-    if not isinstance(declared_files, list) or 'project.json' not in {f.get('path') for f in declared_files}:
+    if not isinstance(declared_files, list):
+        raise ValueError('Native manifest 缺少檔案清單')
+    declared = {f['path']: f for f in declared_files}
+    if 'project.json' not in declared:
         raise ValueError('Native manifest 未驗證 project.json')
+    if declared['project.json']['sha256'] != annotation_file['sha256']:
+        raise ValueError('Native 標註內容與 manifest 不一致')
     verifying, loading = _subrange(report, 0, .5), _subrange(report, .5, 1)
     for index, item in enumerate(declared_files, 1):
         file = _safe_child(root, item['path'])
@@ -161,14 +183,16 @@ def _native_import(root, document, report=None):
     assets = document.get('assets')
     if not isinstance(assets, list):
         raise ValueError('Native 封裝缺少 assets')
+    annotation_files = ({**annotation_file, 'format': 'native'},)
     records = []
     for asset in assets:
-        if asset['image'] not in {f.get('path') for f in declared_files}:
+        if asset['image'] not in declared:
             raise ValueError('Native manifest 缺少圖片雜湊記錄')
         path = _safe_child(root, asset['image'])
         record = _record(path, deepcopy(asset['shapes']), root, split=asset.get('split', ''),
                          batch=asset.get('batch_id'), source=asset.get('source'),
-                         review=asset.get('review_state', 'pending'), expected_sha=asset['sha256'])
+                         review=asset.get('review_state', 'pending'), expected_sha=asset['sha256'],
+                         annotation_files=annotation_files)
         if (record['width'], record['height']) != (asset['width'], asset['height']):
             raise ValueError(f'{path.name}：Native 尺寸與圖片不一致')
         record['name'] = asset.get('name', path.name)
@@ -183,8 +207,10 @@ def _asset_lines_import(root, path, report=None):
     manifest = _json(root / 'manifest.json')
     files = manifest.get('files', [])
     declared = {entry['path']: entry for entry in files}
-    if path.relative_to(root).as_posix() not in declared:
+    relative_path = path.relative_to(root).as_posix()
+    if relative_path not in declared:
         raise ValueError('JSONL 未被 manifest 宣告')
+    expected_digest = declared[relative_path]['sha256']
     verifying, loading = _subrange(report, 0, .5), _subrange(report, .5, 1)
     for index, (relative, entry) in enumerate(declared.items(), 1):
         file = _safe_child(root, relative)
@@ -195,9 +221,12 @@ def _asset_lines_import(root, path, report=None):
     if loading is not None:
         with path.open(encoding='utf-8-sig') as handle:
             total = sum(1 for line in handle if line.strip())
-    records = []
-    with path.open(encoding='utf-8-sig') as handle:
-        for number, line in enumerate(handle, 1):
+    records, digest = [], hashlib.sha256()
+    annotation_files = ({'path': str(path), 'sha256': expected_digest, 'format': 'jsonl'},)
+    with path.open('rb') as handle:
+        for number, raw in enumerate(handle, 1):
+            digest.update(raw)
+            line = raw.decode('utf-8-sig' if number == 1 else 'utf-8')
             if not line.strip():
                 continue
             row = json.loads(line)
@@ -209,17 +238,20 @@ def _asset_lines_import(root, path, report=None):
             image = _safe_child(root, asset['image'])
             record = _record(image, deepcopy(asset['shapes']), root, split=asset.get('split', ''),
                              batch=asset.get('batch_id'), source=asset.get('source'),
-                             review=asset.get('review_state', 'pending'), expected_sha=asset['sha256'])
+                             review=asset.get('review_state', 'pending'), expected_sha=asset['sha256'],
+                             annotation_files=annotation_files)
             if (record['width'], record['height']) != (asset['width'], asset['height']):
                 raise ValueError('JSONL 圖片尺寸不一致')
             record['name'] = asset.get('name', image.name)
             record['source'] = {**record['source'], 'imported_from': str(root), 'native_asset_id': asset.get('id')}
             records.append(record)
             _tick(loading, len(records), total, '解析 JSONL 圖片')
+    if digest.hexdigest() != expected_digest:
+        raise ValueError('JSONL 標註內容與 manifest 不一致')
     return records
 
 
-def _coco_import(path, root=None, flat_manifest=None, report=None):
+def _coco_import(path, root=None, flat_manifest=None, report=None, *, parsed=None):
     root = Path(root or path.parent).resolve()
     companion = root / 'manifest.json'
     if flat_manifest is None and companion.is_file():
@@ -228,7 +260,8 @@ def _coco_import(path, root=None, flat_manifest=None, report=None):
             if _safe_child(root, candidate.get('annotations', 'annotations.json')) != path.resolve():
                 raise ValueError('verified 封裝內有未宣告的 COCO 文件')
             flat_manifest = candidate
-    document = _json(path)
+    document, annotation_file = parsed if parsed is not None else _source_json(path)
+    annotation_files = ({**annotation_file, 'format': 'coco'},)
     images, annotations, categories = (document.get(k) for k in ('images', 'annotations', 'categories'))
     if not all(isinstance(v, list) for v in (images, annotations, categories)):
         raise ValueError('COCO 必須有 images、annotations、categories 陣列')
@@ -249,7 +282,7 @@ def _coco_import(path, root=None, flat_manifest=None, report=None):
         if (manifest.get('image_count', manifest.get('sample_count')) != len(images)
                 or manifest.get('annotation_count', manifest.get('sample_count')) != len(annotations)):
             raise ValueError('verified manifest 與 COCO 數量不一致')
-        if not manifest.get('annotations_sha256') or _sha(path) != manifest['annotations_sha256']:
+        if annotation_file['sha256'] != manifest.get('annotations_sha256'):
             raise ValueError('verified annotations SHA-256 不一致或缺失')
         samples = manifest.get('samples', [])
         if len(samples) != manifest.get('sample_count') or any(x.get('review_status') != 'human_verified' for x in samples):
@@ -318,7 +351,7 @@ def _coco_import(path, root=None, flat_manifest=None, report=None):
                   'image': deepcopy(image), 'sample': deepcopy(sample)}
         records.append(_record(image_path, shapes, root, split=split, batch=batch, source=source,
                                review='approved' if flat_manifest is not None else 'pending',
-                               expected_sha=sample.get('image_sha256')))
+                               expected_sha=sample.get('image_sha256'), annotation_files=annotation_files))
         _tick(report, len(records), len(images), '解析圖片')
     return records
 
@@ -390,8 +423,8 @@ def _select_working(root, records, samples, selected_path):
             if Path(record['path']).relative_to(root).as_posix() in selected_images]
 
 
-def _labelme_import(path):
-    document = _json(path)
+def _labelme_import(path, *, parsed=None):
+    document, annotation_file = parsed if parsed is not None else _source_json(path)
     image_name = document.get('imagePath') or path.with_suffix('.png').name
     image_path = _safe_child(path.parent, image_name)
     width, height = _dimensions(image_path)
@@ -418,14 +451,16 @@ def _labelme_import(path):
     meta = document.get('workbench', {})
     return [_record(image_path, shapes, path.parent, split=meta.get('split', ''), batch=meta.get('batch_id'),
                     source={'format': 'labelme', 'path': str(image_path), 'annotation_path': str(path),
-                            'metadata': deepcopy(meta)})]
+                            'metadata': deepcopy(meta)},
+                    annotation_files=({**annotation_file, 'format': 'labelme'},))]
 
 
-def _class_names(root, label_path=None):
+def _yolo_class_definition(root):
     for name in ('data.yaml', 'data.yml', 'dataset.yaml', 'dataset.yml'):
         candidate = root / name
         if candidate.is_file():
-            document = yaml.safe_load(candidate.read_text('utf-8-sig')) or {}
+            contents, annotation_file = _source_text(candidate)
+            document = yaml.safe_load(contents) or {}
             names = document.get('names')
             if isinstance(names, dict):
                 mapped = {int(k): v for k, v in names.items()}
@@ -434,20 +469,23 @@ def _class_names(root, label_path=None):
                 names = [mapped[i] for i in range(len(mapped))]
             if not isinstance(names, list) or any(not isinstance(n, str) or not n.strip() for n in names):
                 raise ValueError('YOLO YAML 缺少有效 names')
-            return names
+            return names, {**annotation_file, 'format': 'yolo', 'role': 'class_mapping'}
     for candidate in (root / 'classes.txt', root / 'labels' / 'classes.txt'):
         if candidate.is_file():
-            names = candidate.read_text('utf-8-sig').splitlines()
+            contents, annotation_file = _source_text(candidate)
+            names = contents.splitlines()
             if not names or any(not n.strip() for n in names):
                 raise ValueError('classes.txt 類別為空')
-            return names
+            return names, {**annotation_file, 'format': 'yolo', 'role': 'class_mapping'}
     raise ValueError('YOLO 標註缺少 data.yaml names 或 classes.txt；不猜測類別名称')
 
 
-def _yolo_record(image, label, root, names, report_item=None):
+def _yolo_record(image, label, root, classes, report_item=None):
     width, height = _dimensions(image)
     shapes = []
-    for number, line in enumerate(label.read_text('utf-8-sig').splitlines(), 1):
+    names, class_file = classes
+    contents, annotation_file = _source_text(label)
+    for number, line in enumerate(contents.splitlines(), 1):
         if not line.strip():
             continue
         tokens = line.split()
@@ -496,7 +534,8 @@ def _yolo_record(image, label, root, names, report_item=None):
         batch = report_item.get('batch_id')
         source['origin'] = deepcopy(report_item.get('source', {}))
         source['origin_asset_id'] = report_item.get('asset_id')
-    return _record(image, shapes, root, split=split, batch=batch, source=source)
+    return _record(image, shapes, root, split=split, batch=batch, source=source,
+                   annotation_files=({**annotation_file, 'format': 'yolo'}, class_file))
 
 
 def _files(root):
@@ -531,9 +570,9 @@ def _folder_import(root, report=None):
                                 report=report)
     project_file = root / 'project.json'
     if project_file.is_file():
-        document = _json(project_file)
+        document, annotation_file = _source_json(project_file)
         if document.get('format') == NATIVE_FORMAT:
-            return _native_import(root, document, report=report)
+            return _native_import(root, document, annotation_file, report=report)
     dataset_file = root / 'dataset.json'
     if dataset_file.is_file():
         document = _json(dataset_file)
@@ -563,12 +602,13 @@ def _folder_import(root, report=None):
     _tick(report, step, total, '掃描檔案')
     records, used_images, used_labels = [], set(), set()
     for file in json_files:
-        document = _json(file)
+        parsed = _source_json(file)
+        document, _annotation_file = parsed
         nested = _subrange(report, step / total, (step + 1) / total)
         if isinstance(document, dict) and all(isinstance(document.get(k), list) for k in ('images', 'annotations', 'categories')):
-            found = _coco_import(file, file.parent, report=nested)
+            found = _coco_import(file, file.parent, report=nested, parsed=parsed)
         elif isinstance(document, dict) and isinstance(document.get('shapes'), list) and 'imagePath' in document:
-            found = _labelme_import(file)
+            found = _labelme_import(file, parsed=parsed)
         else:
             found = []
         step += 1
@@ -582,7 +622,7 @@ def _folder_import(root, report=None):
             if not record['split'] and not record['source'].get('image', {}).get('session_id') and not record['source'].get('image', {}).get('batch_id') and not record['source'].get('metadata', {}).get('batch_id'):
                 record['batch_id'] = f'{root.name}-{_identifier(str(root), "")[:10]}'
             records.append(record)
-    names = None
+    classes = None
     yolo_dataset = any((root / name).is_file() for name in ('data.yaml', 'data.yml', 'dataset.yaml', 'dataset.yml', 'classes.txt'))
     report_items = {}
     conversion_path = root / 'conversion_report.json'
@@ -606,9 +646,9 @@ def _folder_import(root, report=None):
         if len(labels) > 1:
             raise ValueError(f'{image.name} 有多份可能的 YOLO 標註')
         if labels:
-            if names is None:
-                names = _class_names(root)
-            records.append(_yolo_record(image, labels[0], root, names, report_items.get(relative.as_posix())))
+            if classes is None:
+                classes = _yolo_class_definition(root)
+            records.append(_yolo_record(image, labels[0], root, classes, report_items.get(relative.as_posix())))
             used_labels.add(labels[0])
         else:
             if yolo_dataset:
@@ -777,11 +817,12 @@ def import_sources(paths: list[str | Path], progress=None) -> dict:
             elif path.is_dir():
                 found = folder(path)
             elif path.suffix.lower() == '.json' and path.is_file():
-                document = _json(path)
+                parsed = _source_json(path)
+                document, annotation_file = parsed
                 if document.get('dataset_type') in {WORKING_TYPE, VERIFIED_TYPE, FLAT_TYPE}:
                     found = folder(path.parent)
                 elif document.get('format') == NATIVE_FORMAT:
-                    found = _native_import(path.parent, document, report=report)
+                    found = _native_import(path.parent, document, annotation_file, report=report)
                 elif document.get('format') in {'vision-workbench-jsonl', 'vision-workbench-classification'}:
                     found = folder(path.parent)
                 elif isinstance(document.get('images'), list):
@@ -789,9 +830,9 @@ def import_sources(paths: list[str | Path], progress=None) -> dict:
                     if parent_manifest.is_file() and _json(parent_manifest).get('dataset_type') == FLAT_TYPE:
                         found = folder(path.parent)
                     else:
-                        found = _coco_import(path, report=report)
+                        found = _coco_import(path, report=report, parsed=parsed)
                 elif isinstance(document.get('shapes'), list):
-                    found = _labelme_import(path)
+                    found = _labelme_import(path, parsed=parsed)
                 else:
                     raise ValueError('不支援的 JSON 結構')
             elif path.suffix.lower() == '.jsonl' and path.is_file():
@@ -812,7 +853,7 @@ def import_sources(paths: list[str | Path], progress=None) -> dict:
                 elif path.with_suffix('.json').is_file():
                     found = _labelme_import(path.with_suffix('.json'))
                 elif path.with_suffix('.txt').is_file():
-                    found = [_yolo_record(path, path.with_suffix('.txt'), path.parent, _class_names(path.parent))]
+                    found = [_yolo_record(path, path.with_suffix('.txt'), path.parent, _yolo_class_definition(path.parent))]
                 else:
                     found = [_record(path, [], path.parent)]
             else:

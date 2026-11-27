@@ -121,17 +121,35 @@
 /* Dense target tools: one shortcut rail and three compact control rows. */
 #acquire .camera-target-section{padding-bottom:10px}
 #acquire .camera-target-section .target-intro{margin:5px 0 7px;line-height:1.45;font-size:12px;white-space:nowrap}
-.acquired-tray>.recorded-frame-tools{flex-shrink:0;padding:9px 10px;border-bottom:1px solid var(--acq-line);background:#20262c}
+.acquired-tray>.recorded-frame-tools{display:flex;flex:1 1 0;flex-direction:column;min-height:0;padding:9px 10px;border-bottom:1px solid var(--acq-line);background:#20262c}
+.recorded-frame-tools > :not(.camera-recording-options){flex-shrink:0}
 .camera-recording-actions{display:flex;gap:6px;margin-top:6px}
 #acquire .camera-recording-actions button{width:100%;min-height:32px;height:32px}
 .acquired-material-switch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:9px 10px;border-bottom:1px solid var(--acq-line);flex-shrink:0}
 .acquired-material-switch button{min-height:34px;border:1px solid transparent;border-radius:4px;color:var(--acq-muted);background:#292f37}
 .acquired-material-switch button[aria-pressed="true"]{border-color:#509c90;color:#b5f3e7;background:#263d39}
 .acquired-material-switch span{margin-left:6px;padding:1px 5px;border-radius:3px;background:#343b43;color:#e2eaf0;font:12px Consolas,monospace}
-.camera-video-import{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
-#acquire .camera-video-import button{height:32px;min-height:32px}
+.camera-video-actions{margin:6px 0}
+#acquire .camera-video-actions button{height:32px;min-height:32px}
 .acquired-tray>[hidden],.camera-recording-actions[hidden]{display:none!important}
-.recorded-frame-tools details{margin-top:6px}
+.camera-recording-options{display:flex;flex:1 1 auto;min-height:0;flex-direction:column;margin-top:10px}
+.camera-recording-options > :not(.video-recording-list){flex-shrink:0}
+.video-recording-list{display:flex;flex:1 1 0;flex-direction:column;gap:6px;min-height:64px;overflow-y:auto;overscroll-behavior-y:contain;scroll-padding:4px;padding:4px 2px}
+#acquire .video-recording-row{flex:0 0 auto;width:100%;max-width:none;min-height:56px;margin:0;padding:6px 8px;cursor:pointer}
+.video-recording-row:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-2px}
+.video-recording-icon{display:grid;flex:0 0 42px;place-items:center;height:33px;border:1px solid var(--acq-line);border-radius:3px;background:#14191e;color:#a7cfc8;font-size:13px}
+#acquire .video-recording-copy{flex:1;min-width:0;color:var(--acq-text)}
+#acquire .video-recording-row input{flex:0 0 14px;width:14px;height:14px;margin:0;accent-color:var(--accent)}
+.source-group-tabs,.source-mode-switch{display:flex;align-items:stretch;flex-shrink:0}
+.source-group-tabs{gap:5px}
+.source-mode-switch{margin-left:auto;align-self:center;gap:2px;padding:3px;border:1px solid var(--acq-line);border-radius:6px;background:#191d23}
+.source-tabs .source-mode-switch button{min-height:29px;justify-content:center;padding:3px 11px;border:1px solid transparent;border-radius:4px;font-size:12px}
+.source-tabs .source-mode-switch button[aria-pressed="true"]{border-color:#407f75;color:#b5f3e7;background:#263d39}
+.source-mode-switch[hidden]{display:none}
+.video-source-picker,.video-source-report{width:min(100%,440px);text-align:left}
+.video-source-picker input{flex:1;min-width:0}
+#acquire .video-source-picker label{display:block;margin:0 0 5px}
+.video-source-picker .inline{flex-wrap:nowrap}
 .camera-recording-sample{display:grid;gap:5px;grid-template-columns:minmax(0,1fr) minmax(55px,75px);align-items:center;margin-top:8px}
 #acquire .camera-recording-sample label{margin:0}
 .camera-recording-sample button{grid-column:1/-1}

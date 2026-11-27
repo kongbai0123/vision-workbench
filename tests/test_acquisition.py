@@ -432,6 +432,62 @@ class AcquisitionTests(unittest.TestCase):
         self.assertTrue(video.is_file())
         self.assertEqual(len(list((self.root / "incoming").iterdir())), 1)
 
+    def test_video_sampling_records_container_time_and_fallback(self):
+        class TimingCapture:
+            index = -1
+            times = (2000, 2100, 2470, 2470, 2700)
+
+            def isOpened(self):
+                return True
+
+            def get(self, prop):
+                if prop == cv2.CAP_PROP_POS_MSEC:
+                    return self.times[self.index]
+                return 10 if prop == cv2.CAP_PROP_FPS else len(self.times)
+
+            def read(self):
+                self.index += 1
+                if self.index == len(self.times):
+                    return False, None
+                return True, np.zeros((12, 16, 3), np.uint8)
+
+            def release(self):
+                pass
+
+        source = self.root / "timing.mp4"
+        source.write_bytes(b"codec fixture")
+        with patch.object(a.cv2, "VideoCapture", return_value=TimingCapture()):
+            frames = a.extract_video(source, self.root, .09)
+        metadata = [frame["source"] for frame in frames]
+        self.assertEqual([(m["frame_index"], round(m["timestamp_seconds"], 2), m["timestamp_method"])
+                          for m in metadata],
+                         [(0, 0, "container"), (1, .1, "container"), (2, .47, "container"),
+                          (3, .57, "frame_fps"), (4, .7, "container")])
+
+    def test_project_capture_is_registered_before_recording_list_is_read(self):
+        from hashlib import file_digest
+        from workbench.server import WorkbenchService
+
+        service = WorkbenchService(self.root / "workspace")
+        try:
+            project = service.store.create_project("錄影素材")
+            pid = project["id"]
+            camera = service.camera
+            with patch.object(camera, "_open_capture", return_value=FakeCamera()):
+                camera.start(width=96, height=64, fps=20)
+                wait_until(lambda: camera.status()["has_frame"])
+                camera.start_recording(pid, directory=service.storage.area(pid, "recordings"))
+                wait_until(lambda: camera.status()["record_frames"] >= 3)
+                finished = service.index_recording_status(camera.stop_recording())["last_recording"]
+            registered, = service.materials.list_recordings(pid)
+            self.assertEqual(registered["video_id"], finished["video_id"])
+            with Path(registered["path"]).open("rb") as raw:
+                self.assertEqual(registered["sha256"], file_digest(raw, "sha256").hexdigest())
+            Path(registered["path"]).with_suffix(".json").unlink()
+            self.assertEqual(service.materials.list_recordings(pid), [registered])
+        finally:
+            service.close()
+
     def test_screen_capture_uses_explicit_mss_request_only(self):
         class Screen:
             monitors = [{"left": -100, "top": 0, "width": 48, "height": 32}]

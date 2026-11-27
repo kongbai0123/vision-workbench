@@ -7,12 +7,12 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QByteArray, QObject, QEvent, QLockFile, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QEvent, QLockFile, QPropertyAnimation, QTimer, QUrl, Qt, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPalette, QPixmap
 from PySide6.QtNetwork import QNetworkCookie
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
-                               QMessageBox, QStackedWidget, QToolBar)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QGraphicsOpacityEffect, QLabel, QMainWindow,
+                               QMessageBox, QProgressBar, QStackedWidget, QToolBar, QVBoxLayout, QWidget)
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -20,6 +20,70 @@ from .server import APP_ROOT, WorkbenchService
 from . import __version__
 from .desktop_update import (changed_sources, github_version_status, pull_remote_update,
                              schedule_restart, source_snapshot, validate_sources, missing_runtime_requirements)
+
+STARTUP_BACKGROUND = "#10171e"
+
+
+class StartupCover(QWidget):
+    def __init__(self, view):
+        super().__init__(view)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(STARTUP_BACKGROUND))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addStretch()
+        mark = QLabel("VW", self)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setFixedSize(52, 52)
+        mark.setStyleSheet(
+            "background:#192a32;border:1px solid #33575a;border-radius:8px;"
+            "color:#78dfcc;font-size:18px;font-weight:700"
+        )
+        title = QLabel("Vision Workbench", self)
+        title.setStyleSheet("color:#e5edf2;font-size:22px;font-weight:600")
+        status = QLabel("正在載入本機工作空間…", self)
+        status.setStyleSheet("color:#a7b8c7;font-size:14px")
+        for label in (mark, title, status):
+            layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.progress = QProgressBar(self)
+        self.progress.setAccessibleName("本機工作空間載入進度")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedSize(210, 5)
+        self.progress.setStyleSheet(
+            "QProgressBar {background:#263843;border:0;border-radius:2px;}"
+            "QProgressBar::chunk {background:#61c7b5;border-radius:2px;}"
+        )
+        layout.addWidget(self.progress, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+        view.installEventFilter(self)
+        self.setGeometry(view.rect())
+        self.raise_()
+        self.show()
+
+    def eventFilter(self, watched, event):
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self.setGeometry(watched.rect())
+            self.raise_()
+        return super().eventFilter(watched, event)
+
+    def dismiss(self, animate=True):
+        self.parentWidget().removeEventFilter(self)
+        if not animate:
+            self.hide()
+            return
+        effect = QGraphicsOpacityEffect(self)
+        effect.setOpacity(1.0)
+        self.setGraphicsEffect(effect)
+        self.fade = QPropertyAnimation(effect, b"opacity", self)
+        self.fade.setDuration(180)
+        self.fade.setStartValue(1.0)
+        self.fade.setEndValue(0.0)
+        self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.fade.finished.connect(self.hide)
+        self.fade.start()
 
 
 class DialogBridge(QObject):
@@ -31,7 +95,7 @@ class DialogBridge(QObject):
         self.requested.connect(self.choose)
 
     def __call__(self, kind):
-        if kind not in {"images", "folder", "video", "output", "annotation-models"}:
+        if kind not in {"images", "folder", "video", "output", "annotation-models", "project-backup"}:
             raise ValueError("檔案選擇器類型無效")
         request = {"kind":kind, "event":threading.Event(), "paths":[]}
         self.requested.emit(request)
@@ -50,6 +114,11 @@ class DialogBridge(QObject):
             }
             if kind in folder_titles:
                 value = QFileDialog.getExistingDirectory(self.parent_window, folder_titles[kind])
+                request["paths"] = [value] if value else []
+            elif kind == "project-backup":
+                value, _ = QFileDialog.getOpenFileName(
+                    self.parent_window, "選擇專案備份", "", "Vision Workbench 專案備份 (*.vwb-project.zip)",
+                )
                 request["paths"] = [value] if value else []
             elif kind == "model":
                 value, _ = QFileDialog.getOpenFileName(self.parent_window, "匯入 YOLO／RT-DETR 權重", "", "PyTorch 權重 (*.pt)")
@@ -187,6 +256,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Vision Workbench｜影像資料工作台")
         self.resize(1520, 960)
         self.setMinimumSize(1000, 680)
+        self.setObjectName("workbenchDesktop")
+        self.setStyleSheet(
+            f"#workbenchDesktop, #workbenchDesktopStack {{ background-color: {STARTUP_BACKGROUND}; }}"
+        )
         self.fullscreen_action = QAction("切換全螢幕", self)
         self.fullscreen_action.setShortcut(QKeySequence("F11"))
         self.fullscreen_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -197,6 +270,7 @@ class MainWindow(QMainWindow):
         self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         self.profile.downloadRequested.connect(self.save_download)
         self.page = Page(self.profile, self.view)
+        self.page.setBackgroundColor(QColor(STARTUP_BACKGROUND))
         self.view.setPage(self.page)
         self.file_drop_bridge = FileDropBridge(self.view)
         self.channel = QWebChannel(self.page)
@@ -204,8 +278,16 @@ class MainWindow(QMainWindow):
         self.channel.registerObject("workbenchNative", self.native_bridge)
         self.page.setWebChannel(self.channel)
         self.stack = QStackedWidget(self)
+        self.stack.setObjectName("workbenchDesktopStack")
         self.stack.addWidget(self.view)
         self.setCentralWidget(self.stack)
+        self.startup_cover = StartupCover(self.view)
+        self.startup_pending = True
+        self.startup_has_loaded = False
+        self.startup_timeout = QTimer(self)
+        self.startup_timeout.setSingleShot(True)
+        self.startup_timeout.setInterval(12000)
+        self.startup_timeout.timeout.connect(self.startup_timed_out)
         self.cvat_view = None
         self.cvat_profile = None
         self.cvat_url = None
@@ -224,7 +306,6 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.cvat_toolbar)
         self.cvat_toolbar.hide()
         self.view.loadFinished.connect(self.loaded)
-        self.view.setUrl(QUrl(service.entry_url))
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor("#172531"))
         painter = QPainter(pixmap)
@@ -239,6 +320,8 @@ class MainWindow(QMainWindow):
         self.update_timer.timeout.connect(self.check_update_indicator)
         self.update_timer.timeout.connect(self.poll_remote_version_check)
         self.update_timer.timeout.connect(self.poll_remote_update)
+        self.startup_timeout.start()
+        self.view.setUrl(QUrl(service.entry_url))
 
     def start_remote_version_check(self, force=False):
         if self.remote_version_thread and self.remote_version_thread.is_alive():
@@ -679,14 +762,42 @@ class MainWindow(QMainWindow):
 
     def loaded(self, ok):
         if not ok:
+            self.finish_startup(animate=False)
             QMessageBox.critical(self, "介面載入失敗", "請檢查 data/logs/workbench.log 後重新啟動。專案資料仍保留在本機。")
         else:
+            self.startup_has_loaded = True
+            if self.startup_pending:
+                self.startup_cover.raise_()
+                self.poll_startup()
             self.check_update_indicator()
             self.start_remote_version_check()
             # ES modules may finish installing the callback just after loadFinished.
             # Retry once, then keep the indicator current in every desktop session.
             QTimer.singleShot(400, self.check_update_indicator)
             self.update_timer.start()
+
+    def poll_startup(self):
+        if self.startup_pending:
+            self.page.runJavaScript("window.workbenchStartupSettled === true", self.startup_checked)
+
+    def startup_checked(self, settled):
+        if not self.startup_pending:
+            return
+        if settled is True:
+            self.finish_startup()
+        else:
+            QTimer.singleShot(80, self.poll_startup)
+
+    def startup_timed_out(self):
+        logging.warning("Desktop startup did not report that the interface settled; revealing the page.")
+        self.finish_startup()
+
+    def finish_startup(self, animate=True):
+        if not self.startup_pending:
+            return
+        self.startup_pending = False
+        self.startup_timeout.stop()
+        self.startup_cover.dismiss(animate)
 
     def closeEvent(self, event):
         if self.allow_close:
@@ -701,6 +812,10 @@ class MainWindow(QMainWindow):
             return
         if self.service.jobs.active():
             QMessageBox.information(self,"工作仍在執行","請等待匯入、AI 或匯出完成後再關閉，確保資料完整保存。")
+            return
+        if self.startup_pending or not self.startup_has_loaded:
+            self.finish_startup(animate=False)
+            self.finish_close()
             return
         self.closing = True
         self.view.setEnabled(False)

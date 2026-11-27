@@ -1,4 +1,5 @@
 """Project container migration, SQL lineage, and immutable image reuse."""
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import unittest
 
 from PIL import Image
 
+from workbench.project_layout import project_area, project_reference
+from workbench.project_storage import ProjectStorage
 from workbench.store import ProjectStore
 from workbench.training import TrainingWorkspace
 
@@ -55,8 +58,9 @@ class ProjectStorageTests(unittest.TestCase):
 
         workspace = TrainingWorkspace(self.data, self.store, python_executable=sys.executable)
         project_root = self.store.directory(self.pid)
-        for relative in ("datasets/D001/manifest.json", "runs/R001/run.json", "models/M001/model.json",
-                         "model-exports/E001/record.json", f"predictions/{candidate_id}.json",
+        for relative in ("artifacts/datasets/D001/manifest.json", "artifacts/runs/R001/run.json",
+                         "artifacts/models/M001/model.json", "outputs/models/E001/record.json",
+                         f"artifacts/predictions/{candidate_id}.json",
                          "integrations/labelme/recovery.json", "integrations/cvat/project-link.json",
                          "integrations/cvat/sync.json", "integrations/cvat/annotation-backups/task-7-before.json"):
             self.assertTrue((project_root / relative).is_file(), relative)
@@ -71,7 +75,7 @@ class ProjectStorageTests(unittest.TestCase):
         self.assertTrue(self.store.database_integrity(self.pid)["ok"])
 
         self.store.update_project(self.pid, name="renamed")
-        self.assertTrue((self.store.directory(self.pid) / "models" / "M001" / "model.json").is_file())
+        self.assertTrue((self.store.directory(self.pid) / "artifacts/models/M001/model.json").is_file())
         workspace.close()
 
     def test_new_dataset_reuses_project_image_and_is_sql_indexed(self):
@@ -96,9 +100,30 @@ class ProjectStorageTests(unittest.TestCase):
             self.assertTrue(os.path.samefile(source, copy))
         catalog = self.store.artifact_catalog(self.pid)
         self.assertEqual(catalog["dataset_versions"][0]["asset_count"], 3)
-        self.assertEqual(catalog["dataset_versions"][0]["relative_path"], "datasets/D001/manifest.json")
+        self.assertEqual(catalog["dataset_versions"][0]["relative_path"], "artifacts/datasets/D001/manifest.json")
         self.assertTrue(self.store.database_integrity(self.pid)["ok"])
         workspace.close()
+
+    def test_migration_preserves_verified_dataset_copy_if_project_image_is_corrupt(self):
+        project_root = self.store.directory(self.pid)
+        good_image = b"verified dataset image bytes"
+        digest = sha256(good_image).hexdigest()
+        project_image = project_area(project_root, "images") / f"{digest}.png"
+        project_image.write_bytes(b"corrupt source image bytes")
+        dataset = project_area(project_root, "datasets") / "D001"
+        self.write_json(dataset / "manifest.json", {
+            "assets": [{"image_file": "images/retained.png", "sha256": digest}],
+        })
+        dataset_image = dataset / "images" / "retained.png"
+        dataset_image.parent.mkdir()
+        dataset_image.write_bytes(good_image)
+
+        report, = ProjectStorage(self.data, self.store).migrate()
+
+        self.assertEqual(report["deduplicated_files"], 0)
+        self.assertIn({"path": str(project_image), "reason": "source_sha256_mismatch"}, report["conflicts"])
+        self.assertEqual(dataset_image.read_bytes(), good_image)
+        self.assertFalse(os.path.samefile(project_image, dataset_image))
 
     def test_default_dataset_export_is_owned_by_project_and_survives_rename(self):
         from workbench.server import WorkbenchService
@@ -123,19 +148,70 @@ class ProjectStorageTests(unittest.TestCase):
             result = export({"format": "native", "version": "project-v1"})
             self.assertEqual(result["state"], "succeeded", result)
             archive = Path(result["result"]["zip_path"])
-            self.assertEqual(archive.parent, self.store.directory(self.pid) / "exports")
+            self.assertEqual(archive.parent, self.store.directory(self.pid) / "outputs/datasets")
             self.assertTrue(archive.is_file())
 
             other = self.store.create_project("other")["id"]
-            rejected = export({"output_dir": str(self.store.directory(other) / "exports")})
+            rejected = export({"output_dir": str(self.store.directory(other) / "outputs/datasets")})
             self.assertEqual(rejected["state"], "failed")
-            self.assertFalse((self.store.directory(other) / "exports").exists())
+            self.assertFalse((self.store.directory(other) / "outputs/datasets").exists())
             self.store.update_project(self.pid, name="portable-renamed")
             current = self.store.get_project(self.pid)["exports"][0]
-            self.assertEqual(Path(current["zip_path"]).parent, self.store.directory(self.pid) / "exports")
+            self.assertEqual(Path(current["zip_path"]).parent, self.store.directory(self.pid) / "outputs/datasets")
             self.assertTrue(Path(current["zip_path"]).is_file())
         finally:
             service.close()
+
+    def test_migration_moves_flat_project_areas_and_preserves_existing_references(self):
+        root = self.store.directory(self.pid)
+        image = self.root / "import.png"
+        Image.new("RGB", (16, 16), (50, 60, 70)).save(image)
+        imported = self.store.add_assets(self.pid, [{"path": str(image)}])
+        original = Path(self.store.get_asset(self.pid, imported["asset_ids"][0], internal=True)["image_path"])
+        original.parent.rename(root / "images")
+
+        legacy_files = {
+            "recordings/clip.mp4": b"recording bytes",
+            "imported-annotations/source.json": b"original annotation",
+            "datasets/D001/manifest.json": b'{"assets":[],"source":{"video":"recordings/clip.mp4"}}',
+            "runs/R001/metrics.jsonl": b"run metrics",
+            "models/M001/checkpoint.pt": b"weights",
+            "predictions/candidate.json": b"prediction",
+            "exports/v1.zip": b"dataset output",
+            "model-exports/E001/model.zip": b"model output",
+            "scratch/recording-notes": b"work file",
+        }
+        for relative, payload in legacy_files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+
+        storage = ProjectStorage(self.data, self.store)
+        report, = storage.migrate()
+        self.assertEqual(report["conflicts"], [])
+        self.assertEqual(len(report["moved"]), 10)
+        for relative, payload in legacy_files.items():
+            self.assertFalse((root / relative).exists())
+            self.assertEqual(project_reference(root, relative).read_bytes(), payload)
+        self.assertEqual(project_reference(root, "recordings/clip.mp4"), root / "inputs/videos/clip.mp4")
+        self.assertEqual(project_reference(root, "exports/v1.zip"), root / "outputs/datasets/v1.zip")
+        self.assertEqual(Path(self.store.get_asset(self.pid, imported["asset_ids"][0], internal=True)["image_path"]),
+                         original)
+        self.assertEqual(storage.migrate()[0]["moved"], [])
+
+    def test_layout_conflict_keeps_both_existing_files(self):
+        root = self.store.directory(self.pid)
+        old = root / "recordings/clip.mp4"
+        new = root / "inputs/videos/clip.mp4"
+        for path, payload in ((old, b"original"), (new, b"separate copy")):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(payload)
+
+        report, = ProjectStorage(self.data, self.store).migrate()
+
+        self.assertEqual(report["conflicts"][0]["reason"], "destination_exists")
+        self.assertEqual(project_reference(root, "recordings/clip.mp4").read_bytes(), b"original")
+        self.assertEqual(project_reference(root, "inputs/videos/clip.mp4").read_bytes(), b"separate copy")
 
 
 if __name__ == "__main__":

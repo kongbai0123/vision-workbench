@@ -143,6 +143,9 @@ class TrainingWorkflowTests(unittest.TestCase):
 
     def test_real_train_evaluate_predict_accept_roundtrip(self):
         dataset = self.workspace.create_dataset_version(self.pid)
+        root = self.store.directory(self.pid)
+        self.assertEqual(self.workspace.datasets_dir(self.pid), root / "artifacts" / "datasets")
+        original_manifest = (self.workspace.datasets_dir(self.pid) / dataset["id"] / "manifest.json").read_bytes()
         run = self.workspace.start_run(self.pid, dataset["id"], {"engine": "pixel_prototype_v1", "epochs": 6,
                                                                 "threshold_min": .5, "threshold_max": 2.5})
         finished = self.wait_run(run["run_id"])
@@ -158,12 +161,26 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(exported["format"], "vision-workbench-model-bundle")
         self.assertEqual(exported["model_version_id"], model_id)
         self.assertEqual(len(exported["sha256"]), 64)
+        bundle = Path(exported["path"])
+        self.assertEqual(bundle.parent, root / "outputs" / "models" / exported["export_id"])
+        record_path = bundle.parent / "record.json"
+        saved_record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_record["path"], bundle.name)
         with zipfile.ZipFile(exported["path"]) as archive:
             self.assertIn("export-manifest.json", archive.namelist())
             self.assertIn("model/model.json", archive.namelist())
             manifest = json.loads(archive.read("export-manifest.json"))
         self.assertEqual(manifest["dataset_version_id"], "D001")
         self.assertEqual(self.workspace.list_model_exports(self.pid)[0]["export_id"], "E001")
+        saved_record["path"] = f"Q:\\source-host\\model-exports\\E001\\{bundle.name}"
+        record_path.write_text(json.dumps(saved_record), encoding="utf-8")
+        self.store.update_project(self.pid, name="工作站搬移後專案")
+        current_root = self.store.directory(self.pid)
+        reopened = self.workspace.model_export(self.pid, exported["export_id"])
+        self.assertEqual(Path(reopened["path"]), current_root / "outputs" / "models" / exported["export_id"] / bundle.name)
+        self.assertTrue(Path(reopened["path"]).is_file())
+        self.assertEqual((self.workspace.datasets_dir(self.pid) / dataset["id"] / "manifest.json").read_bytes(),
+                         original_manifest)
         target_image = np.full((36, 48, 3), (24, 28, 32), np.uint8)
         target_image[9:30, 11:33] = (185, 72, 48)
         target = self.root / "predict.png"

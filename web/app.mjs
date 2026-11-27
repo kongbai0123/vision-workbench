@@ -10,6 +10,7 @@ import {createTrainingPage} from './pages/training.mjs';
 import {createSettingsPage} from './pages/settings.mjs';
 import {createReviewPage} from './pages/review.mjs';
 import {createExportPage} from './pages/export.mjs';
+import {createProjectMaterialsDialog} from './pages/materials.mjs';
 import {createPreparationPage} from './pages/preparation.mjs';
 import {createCameraPage} from './pages/camera.mjs';
 import {createAnnotationAssistPage} from './pages/annotation-assist.mjs';
@@ -22,7 +23,7 @@ const $ = id => document.getElementById(id);
 const reviewNames = {pending:'待審核',approved:'已核准',rejected:'已排除訓練'};
 const formatNames = {native:'原生專案',coco:'COCO',yolo_detection:'YOLO 偵測',yolo_segmentation:'YOLO 分割',labelme:'LabelMe',classification:'圖片分類',jsonl:'JSONL'};
 const formatDescriptions = {
-  native:'完整保留幾何形狀、遮罩、來源與修訂資訊，適合備份及再次匯入工作站。',
+  native:'保留匯出影像的幾何形狀、遮罩、來源與修訂資訊，適合交換影像與標註。',
   coco:'保留物件偵測框、多邊形與遮罩。遮罩使用 RLE 保存內孔，適合精確分割資料交付。',
   yolo_detection:'將物件轉成正規化矩形框。多邊形、旋轉框或遮罩可能產生幾何損失，須閱讀驗證報告。',
   yolo_segmentation:'將物件輸出為多邊形。含內孔或分離區塊的遮罩可能無法無損表達，請檢查轉換報告。',
@@ -215,20 +216,28 @@ nativeCallbacks.state=()=>({projectId:state.project?.id||null,assetId:state.asse
 window.addEventListener('beforeunload',event=>{if(saver.dirty||workflowDraft.dirty||editor.hasUncommittedWork||state.busy||state.autoCapture?.active){event.preventDefault();event.returnValue='';}});
 
 async function safe(work) {try{return await work()}catch(error){toast(error.message,true);status(error.message,true);return null;}}
-function bind(id,work,{busy=false,task=null}={}) {
-  $(id).onclick=async()=>{
-    if($(id).disabled||state.busy||state.transitioning)return;
-    $(id).disabled=true;
+function bind(id,work,options) {bindAction($(id),work,options)}
+function bindAction(control,work,{busy=false,task=null}={}) {
+  control.onclick=async()=>{
+    if(control.disabled||state.busy||state.transitioning)return;
+    control.disabled=true;
     if(busy){state.busy=true;editor.locked=true;updateNavigation();}
     try{if(task)await runTimedTask(typeof task==='function'?task():task,work);else await work()}catch(error){if(!error.silent){toast(error.message,true);status(error.message,true)}}
-    finally{if(busy){state.busy=false;editor.locked=false;updateNavigation();editor.render();editor.updateCandidate();if(state.stage==='review')updateReviewSelection()}$(id).disabled=false;updateCameraControls();}
+    finally{if(busy){state.busy=false;editor.locked=false;updateNavigation();editor.render();editor.updateCandidate();if(state.stage==='review')updateReviewSelection()}control.disabled=false;updateCameraControls();}
   };
 }
 function updateNavigation() {
   document.querySelectorAll('[data-stage]').forEach(b=>{b.disabled=state.busy||state.transitioning||(b.dataset.stage!=='library'&&!state.project);b.classList.toggle('active',b.dataset.stage===state.stage)});
+  document.querySelectorAll('#restoreProjectBackup, .project-card-backup').forEach(control=>{control.disabled=state.busy||state.transitioning});
   $('home').disabled=state.busy||state.transitioning;
-  $('projectName').disabled=!state.project||state.busy||state.transitioning;
+  const projectName=$('projectName'),hasProject=Boolean(state.project);
+  projectName.disabled=!hasProject||state.busy||state.transitioning;
+  projectName.classList.toggle('can-rename',hasProject);
+  if(hasProject)projectName.setAttribute('aria-describedby','projectRenameHint');
+  else projectName.removeAttribute('aria-describedby');
+  $('libraryWorkflowHint').hidden=hasProject;
   $('openProjectFolder').disabled=!state.project||state.busy;
+  $('projectMaterials').disabled=!hasProject||state.busy||state.transitioning;
   $('dataExport').disabled=!state.project||state.busy||state.transitioning;
   $('shapeLabel').disabled=$('manageClasses').disabled=!state.project||state.busy||state.transitioning;
   updateAnnotationClassButtons();
@@ -239,9 +248,10 @@ function updateNavigation() {
 }
 function updateAcquisitionControls() {
   const locked=state.busy||state.transitioning;
+  $('cameraRecordingList').inert=locked;
   $('fileDropZone').setAttribute('aria-busy',String(locked));
   if(locked)clearFileDrag();
-  document.querySelectorAll('[data-source]').forEach(tab=>tab.disabled=locked);
+  document.querySelectorAll('[data-source-group], [data-source]').forEach(button=>button.disabled=locked);
   $('cameraActivity').disabled=locked;
   $('goAnnotate').disabled=locked||!state.project?.assets.length;
   const visible=[...(state.project?.assets||[])].reverse(),selected=visible.filter(asset=>state.acquireSelection.has(asset.id));
@@ -318,26 +328,39 @@ function selectAcquisitionMaterial(kind) {
   $('acquiredAssets').hidden=video;
   document.querySelector('.compact-camera-capture').hidden=video||state.acquireSource!=='camera';
 }
+const acquisitionSourceGroups={capture:['camera','screen'],import:['files','video'],merge:['merge']};
+function switchSourceGroup(group) {
+  const sources=acquisitionSourceGroups[group];
+  if(sources&&!sources.includes(state.acquireSource))switchSource(sources[0]);
+}
 function switchSource(source) {
-  if(state.busy||state.transitioning||!['camera','files','video','screen','merge'].includes(source))return;
+  const group=Object.keys(acquisitionSourceGroups).find(key=>acquisitionSourceGroups[key].includes(source));
+  if(state.busy||state.transitioning||!group)return;
   if(source!=='camera')setCameraPreviewExpanded(false);
   clearFileDrag();
   setSourceInspector(false);
   state.acquireSource=source;
   $('cameraRecordingActions').hidden=source!=='camera';
   selectAcquisitionMaterial(source==='video'||(source==='camera'&&state.recording)?'video':'image');
+  syncVideoSampling();
   if(source==='camera'||source==='video')void loadCameraRecordings({syncSource:source==='video'});
-  for(const tab of document.querySelectorAll('[data-source]')) {
-    const active=tab.dataset.source===source;
-    tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;
-    $(`source-${tab.dataset.source}`).hidden=!active;
+  for(const tab of document.querySelectorAll('[data-source-group]')) {
+    const active=tab.dataset.sourceGroup===group;
+    tab.classList.toggle('active',active);
+    tab.setAttribute('aria-selected',String(active));
+    tab.tabIndex=active?0:-1;
+    if(active)tab.setAttribute('aria-controls',`source-${source}`);
   }
+  for(const modes of document.querySelectorAll('[data-source-modes]'))modes.hidden=modes.dataset.sourceModes!==group;
+  for(const button of document.querySelectorAll('[data-source]'))button.setAttribute('aria-pressed',String(button.dataset.source===source));
+  for(const panel of document.querySelectorAll('.source-workspace > .source-view'))panel.hidden=panel.id!==`source-${source}`;
   updateSourceInspectorLabel();
 }
-const sourceInspectorNames={camera:'相機設定',files:'匯入設定',video:'取樣設定',screen:'擷取設定',merge:'整併設定'};
+const sourceInspectorNames={camera:'相機設定',files:'匯入設定',screen:'擷取設定',merge:'整併設定'};
 function updateSourceInspectorLabel() {
   const name=sourceInspectorNames[state.acquireSource]||'來源設定',panel=$(`source-${state.acquireSource}`),active=state.acquireSource==='camera'?$('cameraSettingsInspector'):panel?.querySelector('.source-inspector');
   if(active&&!active.id)active.id=`${state.acquireSource}SourceInspector`;
+  $('toggleSourceInspector').hidden=!active||document.querySelector('.source-workspace').classList.contains('inspector-open');
   $('toggleSourceInspector').textContent=`${name} ›`;$('toggleSourceInspector').setAttribute('aria-label',`開啟${name}`);$('toggleSourceInspector').setAttribute('aria-controls',active?.id||'');
   $('toggleImageTools').hidden=state.acquireSource!=='camera'||document.querySelector('.source-workspace').classList.contains('inspector-open');
 }
@@ -406,16 +429,37 @@ function updateProcessingFields() {
 }
 function updateVideoSource() {
   const path=$('videoPath').value.trim();
-  $('videoSourceName').textContent=path?path.split(/[\\/]/).pop():'選擇要取樣的影片';
+  const recording=selectedCameraRecording();
+  $('videoSourceName').textContent=path?(recording?.path===path&&recording.display_name||path.split(/[\\/]/).pop()):'選擇要取樣的影片';
   $('videoSourceName').title=path;
-  $('videoSourceDescription').textContent=path?'設定右側取樣間隔，即可將畫格加入目前專案。':'本地影片與剛完成的相機錄影，都可以擷取成影像。';
-  $('sampleIntervalLabel').textContent=`每 ${$('videoInterval').value||'—'} 秒`;
+  $('videoSourceDescription').textContent=path?'在右側設定取幀間隔並執行。':'選擇本機影片，或從右側選用專案影片。';
+  syncVideoSampling();
 }
+let workspaceLoad=null;
+function beginWorkspaceLoad(title,detail) {
+  workspaceLoad?.finish();
+  const panel=$('workspaceLoading');
+  $('workspaceLoadingTitle').textContent=title;
+  $('workspaceLoadingDetail').textContent=detail;
+  const timer=setTimeout(()=>{panel.hidden=false;},160);
+  const load={
+    update(message){if(workspaceLoad===load)$('workspaceLoadingDetail').textContent=message;},
+    finish(){
+      clearTimeout(timer);
+      if(workspaceLoad===load){panel.hidden=true;workspaceLoad=null;}
+    },
+  };
+  workspaceLoad=load;
+  return load;
+}
+const workspaceStageNames={library:'專案資料庫',acquire:'採集與匯入',annotate:'標註編輯',review:'資料審核',
+  split:'資料準備',train:'模型訓練',models:'評估與模型',export:'資料匯出'};
 async function switchStage(stage) {
   if(state.busy||state.transitioning)return;
   if(stage!=='library'&&!state.project)return;
   if(state.stage==='review')state.reviewScroll=$('review').scrollTop;
   if(stage!=='acquire')setCameraPreviewExpanded(false);
+  const loading=beginWorkspaceLoad('正在切換工作區','正在保存目前的變更…');
   state.transitioning=true;editor.locked=true;updateNavigation();
   try {
     await flushAllEdits();
@@ -423,6 +467,7 @@ async function switchStage(stage) {
       if(editor.messageSource)setAnnotationMessageView(null);
       if(state.editorMode==='cvat')await switchEditor('builtin');
     }
+    loading.update(`正在準備「${workspaceStageNames[stage]}」…`);
     for(const id of ['library','acquire','annotate','review','split','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
@@ -435,15 +480,18 @@ async function switchStage(stage) {
       $('backFromExport').textContent=state.exportReturnStage==='annotate'?'← 返回標註編輯':state.exportReturnStage==='models'?'← 返回評估與模型':'← 返回上一頁';
       await refreshProject();renderExport();
     }
-  } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
+  } finally {loading.finish();state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
 }
 async function openProject(id) {
   if(state.busy||state.transitioning)return;
   if(state.autoCapture?.active&&state.autoCapture.projectId!==id)stopAutoCapture('已切換專案，自動擷取已停止。');
+  const loading=beginWorkspaceLoad('正在開啟專案','正在保存目前的變更…');
   state.transitioning=true;editor.locked=true;updateNavigation();
   try {
     await flushAllEdits();
+    loading.update('正在讀取專案資料…');
     const project=await api(`/api/projects/${id}`);
+    loading.update('正在載入專案設定…');
     clearTimeout(state.trainingTimer);state.trainingTimer=null;state.training=null;state.selectedRun=null;state.selectedModel=null;state.yoloCompatibility=null;state.yoloCompatibilitySignature='';state.reviewYoloCompatibility=null;state.reviewYoloCompatibilityLoading=false;trainingMonitor.reset();trainingParameters.reset();
     await workflowDraft.load(id);
     if(editor.messageSource)setAnnotationMessageView(null);
@@ -458,11 +506,12 @@ async function openProject(id) {
     $('importReport').hidden=true;$('videoReport').hidden=true;$('mergeReport').hidden=true;
     for(const section of ['library','acquire','annotate','review','split','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
+    loading.update(project.assets.length?`已讀取 ${number(project.assets.length)} 張影像，正在準備第一張…`:'正在準備採集工作區…');
     renderAssetList();renderMergeList();renderExport();
     if(project.assets.length)await loadAsset(project.assets[0].id);else await Promise.all([cameraStatus(),loadCameraRecordings({syncSource:state.acquireSource==='video'})]);
     if(project.assets.length)void safe(()=>assistPage.refresh());
     status(`已開啟 ${project.name} · ${number(project.assets.length)} 張影像`);
-  } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
+  } finally {loading.finish();state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
 }
 async function refreshProject() {
   if(!state.project)return;
@@ -474,26 +523,79 @@ async function loadProjects() {
 }
 function renderProjects() {
   const query=$('projectSearch').value.trim().toLowerCase();
-  const projects=state.projects.filter(p=>p.name.toLowerCase().includes(query));
-  $('projectCount').textContent=number(state.projects.length);
-  $('totalImages').textContent=number(state.projects.reduce((n,p)=>n+Number(stats(p).total||0),0));
-  $('totalApproved').textContent=number(state.projects.reduce((n,p)=>n+Number(stats(p).approved||0),0));
-  const grid=$('projectGrid');grid.replaceChildren();
-  for(const p of projects) {
-    const card=element('article',undefined,'project-card'),count=stats(p);
-    const open=button('','project-card-open',()=>safe(()=>openProject(p.id)));
-    card.onclick=event=>{if(event.target===card)safe(()=>openProject(p.id))};
-    open.setAttribute('aria-label',`開啟專案「${p.name}」`);
-    const top=element('div',undefined,'project-card-top');top.append(element('span','▦'),element('span','本地專案','badge'));
-    const footer=element('div',undefined,'project-card-footer');footer.append(element('span',`${number(count.total)} 張影像 · ${number(count.approved)} 已核准`),element('strong','開啟 →'));
-    open.append(top,element('h2',p.name),element('p',`更新於 ${date(p.updated_at||p.created_at)}`),footer);
-    const remove=button('×','project-delete danger',()=>safe(()=>confirmDeleteProject(p)));
-    remove.title=`刪除專案「${p.name}」`;remove.setAttribute('aria-label',remove.title);
-    card.append(open,remove);grid.append(card);
+  const cards=[],summary={total:0,approved:0,pending:0};
+  for(const project of state.projects){
+    const count=stats(project);
+    summary.total+=count.total;
+    summary.approved+=count.approved;
+    summary.pending+=count.pending;
+    if(project.name.toLowerCase().includes(query))cards.push(createProjectCard(project,count));
   }
-  $('libraryEmpty').hidden=!!projects.length;
-  if(query&&!projects.length)$('libraryEmpty').querySelector('h2').textContent='找不到符合的專案';
-  else $('libraryEmpty').querySelector('h2').textContent='建立第一個視覺資料專案';
+  $('projectCount').textContent=number(state.projects.length);
+  $('totalImages').textContent=number(summary.total);
+  $('totalApproved').textContent=number(summary.approved);
+  $('totalPending').textContent=number(summary.pending);
+  $('totalPending').parentElement.classList.toggle('has-pending',summary.pending>0);
+  $('projectGrid').replaceChildren(...cards);
+  const empty=$('libraryEmpty');
+  empty.hidden=cards.length>0;
+  empty.querySelector('h2').textContent=query?'找不到符合的專案':'建立第一個視覺資料專案';
+  empty.querySelector('p').textContent=query?'請試試其他專案名稱。':'可匯入圖片、既有標註資料夾，或從相機開始採集。';
+  $('newProjectEmpty').hidden=Boolean(query);
+}
+function projectReviewStatus({total,pending,approved}){
+  if(!total)return ['empty','尚未匯入'];
+  if(pending)return ['pending',`待審核 ${number(pending)} 張`];
+  if(!approved)return ['excluded','全部已排除'];
+  return ['complete','審核完成'];
+}
+function createProjectCard(project,{total,approved,pending,rejected}){
+  const card=element('article',undefined,'project-card');
+  const openProjectCard=()=>safe(()=>openProject(project.id));
+  const open=button('','project-card-open',openProjectCard);
+  card.onclick=event=>{if(event.target===card)openProjectCard()};
+  open.setAttribute('aria-label',`開啟專案「${project.name}」`);
+  const [statusCode,statusText]=projectReviewStatus({total,approved,pending});
+  const status=element('span',statusText,'project-status');
+  status.dataset.reviewStatus=statusCode;
+  const top=element('div',undefined,'project-card-top');
+  top.append(status);
+  const title=element('h2',project.name);
+  title.title=project.name;
+  const classes=project.classes||[];
+  const classList=element('div',undefined,'project-classes');
+  if(classes.length){
+    classList.title=`標註類別：${classes.join('、')}`;
+    for(const name of classes.slice(0,2)){
+      const chip=element('span',name,'project-class');
+      classList.append(chip);
+    }
+    if(classes.length>2)classList.append(element('span',`+${classes.length-2}`,'project-class project-class-more'));
+  }
+  const footer=element('div',undefined,'project-card-footer');
+  const countText=`${number(total)} 張影像 · ${number(approved)} 已核准 · ${number(rejected)} 已排除`;
+  open.setAttribute('aria-description',`${statusText}。 ${countText}`);
+  if(total){
+    const progress=element('progress',undefined,'project-review-progress');
+    progress.max=total;
+    progress.value=approved+rejected;
+    progress.setAttribute('aria-label',`審核進度 ${number(progress.value)} / ${number(total)}`);
+    footer.append(progress);
+  }
+  const caption=element('div',undefined,'project-card-caption');
+  caption.append(element('span',countText),element('strong','開啟 →'));
+  footer.append(caption);
+  open.append(top,title,element('p',`更新於 ${date(project.updated_at||project.created_at)}`),classList,footer);
+  const remove=button('','project-delete',()=>safe(()=>confirmDeleteProject(project)));
+  remove.append($('projectDeleteIcon').content.cloneNode(true));
+  remove.title=`刪除專案「${project.name}」`;
+  remove.setAttribute('aria-label',remove.title);
+  const backup=button('備份','text-button project-card-backup');
+  backup.disabled=state.busy||state.transitioning;
+  backup.setAttribute('aria-label',`備份專案「${project.name}」`);
+  bindAction(backup,()=>transferProjectBackup(project),{busy:true});
+  card.append(open,backup,remove);
+  return card;
 }
 function updateClassList() {
   const classes = state.project?.classes || [];
@@ -550,15 +652,15 @@ async function formDialog({title,body,confirm='確定',onSubmit,eyebrow='WORKSPA
   });
 }
 async function createProject() {
-  const body=element('div');body.append(element('p','為這份資料設定清楚的名稱，例如產品、場域或檢測任務。'));
+  const body=element('div',undefined,'project-create-fields');
   const name=element('input'),nameLabel=element('label','專案名稱');
   name.id='createProjectName';nameLabel.htmlFor=name.id;
   name.placeholder='零件表面瑕疵';name.maxLength=100;name.required=true;
 
   const classes=element('textarea'),classesLabel=element('label','物件類別（CLS，選填）');
   classes.id='createProjectClasses';classesLabel.htmlFor=classes.id;
-  classes.rows=4;classes.placeholder='hand\nL_grip\nhandlebar';
-  const hint=element('p','每行一個類別，或用「；」「;」分隔。系統會略過空白和重複名稱。','muted');
+  classes.rows=4;classes.spellcheck=false;classes.placeholder='hand\nL_grip\nhandlebar';
+  const hint=element('p','每行一個類別，或用「；」「;」分隔。系統會略過空白和重複名稱。','field-note');
   hint.id='createProjectClassHint';classes.setAttribute('aria-describedby',hint.id);
   const count=element('p',undefined,'muted');
   count.id='createProjectClassCount';count.setAttribute('role','status');
@@ -576,6 +678,79 @@ async function createProject() {
   }});
   if(result){await loadProjects();await openProject(result.id)}
 }
+async function transferProjectBackup(project=null) {
+  const restoring=project===null;
+  const body=element('div',undefined,'project-create-fields');
+  const description=restoring
+    ? '選擇完整專案備份檔。系統會先校驗封裝，再將專案加入資料庫。'
+    : `備份「${project.name}」的原圖、影片、標註、審核紀錄、類別、資料集和模型。`;
+  const input=element('input');
+  input.id='projectTransferPath';
+  input.required=restoring;
+  input.autocomplete='off';
+  input.spellcheck=false;
+  input.placeholder=restoring?'完整備份檔路徑（.vwb-project.zip）':'留空使用預設備份資料夾';
+  const label=element('label',restoring?'備份檔路徑':'備份資料夾');
+  label.htmlFor=input.id;
+  const pathControls=element('div',undefined,'inline');
+  pathControls.append(input);
+  let browse;
+  if(state.system?.desktop){
+    browse=button(restoring?'選擇檔案':'選擇資料夾','secondary',async()=>{
+      browse.disabled=true;
+      try{
+        const [path]=await nativeChoose(restoring?'project-backup':'output');
+        if(path)input.value=path;
+      }finally{browse.disabled=false}
+    });
+    pathControls.append(browse);
+  }
+  const progress=element('progress');
+  progress.max=100;
+  progress.setAttribute('aria-label','專案處理進度');
+  const message=element('p','正在準備…','field-note');
+  message.setAttribute('role','status');
+  const feedback=element('div',undefined,'project-transfer-progress');
+  feedback.hidden=true;
+  feedback.append(progress,message);
+  body.append(element('p',description,'field-note'),label,pathControls,feedback);
+  const title=restoring?'還原專案':'備份專案';
+  const result=await formDialog({title,body,confirm:title,onSubmit:async()=>{
+    const path=input.value.trim().replace(/^"(.*)"$/,'$1').trim();
+    if(restoring&&!path)throw Error('請選擇專案備份檔，或輸入完整路徑。');
+    $('projectTransferResult').hidden=true;
+    feedback.hidden=false;
+    progress.removeAttribute('value');
+    message.textContent='正在準備…';
+    input.disabled=true;
+    if(browse)browse.disabled=true;
+    try{
+      if(project&&state.project?.id===project.id)await flushAllEdits();
+      const endpoint=restoring?'/api/project-restores':`/api/projects/${project.id}/backup`;
+      const payload=restoring?{path}:path?{output_dir:path}:{};
+      return await pollJob(await api(endpoint,'POST',payload),null,current=>{
+        message.textContent=taskStage(current.message||'正在處理…');
+        if(Number.isFinite(current.progress))progress.value=current.progress;
+      });
+    }finally{
+      input.disabled=false;
+      if(browse)browse.disabled=false;
+      feedback.hidden=true;
+    }
+  }});
+  if(!result)return;
+  const receipt=$('projectTransferResult');
+  const summary=element('strong',`${restoring?'還原':'備份'}完成 · ${result.project_name} · ${number(result.files)} 個檔案`);
+  summary.setAttribute('role','status');
+  receipt.replaceChildren(summary);
+  if(restoring){
+    receipt.append(button('開啟已還原專案','text-button',()=>safe(()=>openProject(result.project_id))));
+  }else{
+    receipt.append(element('code',result.path));
+  }
+  receipt.hidden=false;
+  if(restoring)await loadProjects();
+}
 async function confirmDeleteProject(project) {
   if(state.project?.id===project.id) {
     if(state.recording)throw Error('請先停止錄影，再刪除目前專案。');
@@ -584,7 +759,7 @@ async function confirmDeleteProject(project) {
   const count=stats(project),body=element('div');
   body.append(element('p',`確定要刪除「${project.name}」嗎？`));
   const warning=element('div',undefined,'delete-warning');
-  warning.append(element('b',`${number(count.total)} 張影像`),element('span','專案內的原圖副本、標註、審核與修訂紀錄都會一併刪除。已匯出的資料集會保留。'));
+  warning.append(element('b',`${number(count.total)} 張影像`),element('span','這會刪除專案內的原圖副本、影片、標註、審核、訓練產物及匯出檔。'));
   body.append(warning);
   const result=await formDialog({title:'刪除本地專案',body,confirm:'刪除專案',eyebrow:'DELETE PROJECT',
     onSubmit:()=>api(`/api/projects/${project.id}`,'DELETE',{revision:project.revision})});
@@ -1049,7 +1224,7 @@ function renderMergeList() {
   list.onchange=updateAcquisitionControls;updateAcquisitionControls();
 }
 
-const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits});
+const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording, syncVideoSampling, videoSamplingPath}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits,onVideoSelected:useSelectedVideo});
 
 const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,confirmDeleteAssets,
   renderYoloCompatibility:(...args)=>renderYoloCompatibility(...args),checkReviewYoloCompatibility:(...args)=>checkReviewYoloCompatibility(...args)});
@@ -1079,13 +1254,17 @@ const {openSplitManager, renderSplitPage, augmentationProfile, renderAugmentatio
 
 const {estimateTrainingTime,validateTrainingSetup,importExternalModel,invalidateYoloCompatibility, trainingParameters, trainingMonitor, applyTrainingConfigTab, loadTraining, yoloCompatibilitySignature, renderYoloCompatibility, checkReviewYoloCompatibility, checkYoloCompatibility, renderTraining, renderAnnotationModels, createDatasetVersion, startTrainingRun, stopTrainingRun, generatePredictions,startModelTrial,runModelComparison,setTrialFrame,toggleTrialPlayback,drawTrial} = createTrainingPage({$, state, toast, status, api, projectPath, number, stats, date, button, element, settingValue, editor, flushAllEdits, safe, switchStage, formDialog, renderAssetList, loadAsset, selectAsset, pollJob, nativeChoose, registerNativeDrop, augmentationProfile, TrainingParameters, TrainingMonitor, openAnnotationMessages});
 document.querySelectorAll('[data-stage]').forEach(b=>b.onclick=()=>safe(()=>switchStage(b.dataset.stage)));
-document.querySelectorAll('[data-source]').forEach(tab=>{
-  tab.onclick=()=>switchSource(tab.dataset.source);
+const acquisitionGroupTabs=[...document.querySelectorAll('[data-source-group]')];
+document.querySelectorAll('[data-source]').forEach(button=>button.onclick=()=>switchSource(button.dataset.source));
+acquisitionGroupTabs.forEach((tab,index)=>{
+  tab.onclick=()=>switchSourceGroup(tab.dataset.sourceGroup);
   tab.onkeydown=event=>{
     if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||state.busy||state.transitioning)return;
-    event.preventDefault();const tabs=[...document.querySelectorAll('[data-source]')],index=tabs.indexOf(tab);
-    const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
-    switchSource(tabs[next].dataset.source);tabs[next].focus();
+    event.preventDefault();
+    const count=acquisitionGroupTabs.length;
+    const next=event.key==='Home'?0:event.key==='End'?count-1:(index+(event.key==='ArrowRight'?1:-1)+count)%count;
+    switchSourceGroup(acquisitionGroupTabs[next].dataset.sourceGroup);
+    acquisitionGroupTabs[next].focus();
   };
 });
 $('cameraActivity').onclick=()=>switchSource('camera');
@@ -1096,12 +1275,22 @@ $('previewLayout').onchange=()=>updatePreviewLayout();$('showRawFrame').onchange
 $('cameraTargetTool').onchange=updateCameraTargetTool;$('cameraTargetLabel').onchange=()=>{const shape=cameraTargetShape();if(shape)commitCameraTarget({...shape,label:$('cameraTargetLabel').value.trim()})};
 $('cameraTargetUseProcessing').onchange=()=>{if(state.camera&&!state.busy&&!$('applyProcessing').disabled)$('applyProcessing').click()};
 $('clearCameraTarget').onclick=()=>clearCameraTarget();installCameraTargetEvents();
-$('videoPath').oninput=updateVideoSource;$('videoInterval').oninput=updateVideoSource;
+$('videoPath').oninput=()=>{
+  if($('videoPath').value.trim())selectAcquisitionMaterial('video');
+  updateVideoSource();
+};
 $('showImageMaterial').onclick=()=>selectAcquisitionMaterial('image');
 $('showVideoMaterial').onclick=()=>{selectAcquisitionMaterial('video');void loadCameraRecordings();};
 bind('home',()=>switchStage('library'));bind('newProject',createProject);bind('newProjectEmpty',createProject);
-bind('refreshProjects',loadProjects);$('projectSearch').oninput=renderProjects;
+bind('restoreProjectBackup',()=>transferProjectBackup(),{busy:true});
+bind('refreshProjects',async()=>{
+  const loading=beginWorkspaceLoad('正在重新整理','正在讀取專案清單…');
+  try{await loadProjects();}finally{loading.finish();}
+});
+$('projectSearch').oninput=renderProjects;
 bind('projectName',renameProject);bind('manageClasses',manageClasses);
+const openProjectMaterials=createProjectMaterialsDialog({$,api,element,number});
+bind('projectMaterials',()=>{void openProjectMaterials(state.project)});
 bind('openProjectFolder',()=>api('/api/open-folder','POST',{project_id:state.project.id}));
 bind('dataExport',async()=>{
   if(state.stage==='export')return;
@@ -1124,16 +1313,13 @@ bind('chooseImages',async()=>{const paths=await nativeChoose('images');if(paths.
 bind('importFiles',()=>importPaths($('importPaths').value.split(/\r?\n/).map(p=>p.trim().replace(/^"|"$/g,'')).filter(Boolean)),{busy:true,task:'檢查並匯入資料'});
 bind('mergeSelected',async()=>{await flushAllEdits();const ids=[...$('mergeProjects').querySelectorAll('input:checked')].map(i=>i.value);if(!ids.length)throw Error('請選取至少一份來源專案。');const result=await pollJob(await api(projectPath('/merge'),'POST',{project_ids:ids}));await afterAcquisition(result,'mergeReport')},{busy:true,task:'整併專案資料'});
 bind('screenCapture',async()=>{await flushAllEdits();await api(projectPath('/screen'),'POST',{});await afterAcquisition({added:1})},{busy:true,task:'擷取並加入桌面影像'});
-bind('chooseVideo',async()=>{const paths=await nativeChoose('video');if(paths.length){$('videoPath').value=paths[0];updateVideoSource()}});
-bind('extractVideo',async()=>{
-  await flushAllEdits();
-  const path=$('videoPath').value.trim(),interval=Number($('videoInterval').value);
-  if(!path)throw Error('請先選擇影片或輸入完整路徑。');
-  if(!Number.isFinite(interval)||interval<.1)throw Error('取樣間隔至少為 0.1 秒。');
-  const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval}));
-  await loadCameraRecordings({latest:true});
-  await afterAcquisition(result,'videoReport');
-},{busy:true,task:'影片畫格取樣'});
+bind('chooseVideo',async()=>{
+  const [path]=await nativeChoose('video');
+  if(!path)return;
+  $('videoPath').value=path;
+  selectAcquisitionMaterial('video');
+  updateVideoSource();
+});
 bind('findCameras',async()=>{const previous=$('cameraDevice').value,result=await api('/api/camera/devices');$('cameraDevice').replaceChildren();for(const device of result.devices||[])$('cameraDevice').append(new Option(device.name||`相機 ${device.index}`,String(device.index)));if(!result.devices?.length){$('cameraDevice').append(new Option('未偵測到相機','0'));toast('未偵測到相機，請確認連線與其他程式的占用情形。',true)}else{if([...$('cameraDevice').options].some(o=>o.value===previous))$('cameraDevice').value=previous;await loadCameraModes()}},{busy:true,task:'偵測相機與支援模式'});
 $('cameraDevice').onchange=()=>safe(loadCameraModes);
 $('cameraResolution').onchange=updateCameraMode;
@@ -1159,32 +1345,22 @@ function useSelectedVideo() {
   const recording=selectedCameraRecording();
   if(recording){$('videoPath').value=recording.path;updateVideoSource();}
 }
-async function saveProjectVideo(path) {
-  if(!path)throw Error('請先選擇影片或輸入完整路徑。');
-  const recording=await pollJob(await api(projectPath('/recordings/import'),'POST',{path}));
-  await loadCameraRecordings({name:recording.name});
-  useSelectedVideo();
-  selectAcquisitionMaterial('video');
-  toast('影片已保存至本專案。');
-}
-$('cameraRecordingSelect').onchange=()=>{$('cameraVideoReport').hidden=true;useSelectedVideo();};
-bind('importVideoMaterial',async()=>{
-  if(!state.project)return;
-  const [path]=await nativeChoose('video');
-  if(!path)return;
-  await saveProjectVideo(path);
-},{busy:true,task:'匯入影片至專案'});
-bind('saveVideoSource',()=>saveProjectVideo($('videoPath').value.trim()),{busy:true,task:'匯入影片至專案'});
 bind('openVideoMaterials',()=>api('/api/open-folder','POST',{project_id:state.project.id,project_area:'recordings'}));
 bind('extractRecording',async()=>{
   await flushAllEdits();
-  const path=selectedCameraRecording()?.path,interval=Number($('cameraVideoInterval').value);
-  if(!path)throw Error('請先選擇要取幀的相機錄影。');
-  if(!Number.isFinite(interval)||interval<.1)throw Error('取幀間隔至少為 0.1 秒。');
-  const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval,target_shape:cameraTargetPayload()}));
-  await afterAcquisition(result,'cameraVideoReport');
-  toast('錄影畫格已加入目前專案的影像素材。');
-},{busy:true,task:'從錄影擷取畫格'});
+  const path=videoSamplingPath(),interval=Number($('cameraVideoInterval').value);
+  if(!path)throw Error('請先選擇要取幀的影片。');
+  if(!Number.isFinite(interval)||interval<.1||interval>3600)throw Error('取幀間隔須介於 0.1 至 3600 秒。');
+  const fromVideoSource=state.acquireSource==='video';
+  const target=state.acquireSource==='camera'?cameraTargetPayload():null;
+  const videoId=selectedCameraRecording()?.video_id;
+  const source=videoId?{video_id:videoId}:{path};
+  const result=await pollJob(await api(projectPath('/video'),'POST',{...source,interval_seconds:interval,target_shape:target}));
+  await loadCameraRecordings({name:result.video_name,latest:true});
+  if(selectedCameraRecording()?.name===result.video_name)useSelectedVideo();
+  await afterAcquisition(result,fromVideoSource?'videoReport':'cameraVideoReport');
+  toast('影片畫格已加入目前專案的圖片素材。');
+},{busy:true,task:'從專案影片擷取畫格'});
 async function applyProcessing(calibrate=false) {
   const mode=$('processingMode').value,settings={};
   if(mode==='binary') {
@@ -1287,7 +1463,7 @@ bind('help',async()=>{
 $('settings').onclick=()=>safe(()=>openSettings());$('closeSettings').onclick=closeSettings;$('settingsShell').onclick=event=>{if(event.target===$('settingsShell'))closeSettings()};
 document.querySelectorAll('[data-settings-page]').forEach(item=>item.onclick=()=>showSettingsPage(item.dataset.settingsPage));
 $('settingScale').onchange=event=>saveSetting('scale',event.target.value);$('settingDevice').onchange=event=>{saveSetting('device',event.target.value);$('trainingDevice').value=event.target.value;renderTraining()};
-$('modelCatalogSearch').oninput=renderModelCatalog;$('modelCatalogFilter').onchange=renderModelCatalog;$('refreshModelCatalog').onclick=()=>safe(()=>loadModelCatalog(true));
+$('modelCatalogSearch').oninput=renderModelCatalog;$('modelCatalogFilter').onchange=renderModelCatalog;
 $('goModelUpdates').onclick=()=>showSettingsPage('models');$('openDesktopUpdater').onclick=()=>safe(runDesktopUpdate);$('checkGithubVersion').onclick=()=>safe(()=>refreshRemoteVersion(true));
 $('githubUpdateButton').onclick=()=>safe(runRemoteUpdate);
 $('copyDiagnostics').onclick=()=>safe(async()=>{await navigator.clipboard.writeText($('diagnosticSummary').textContent);toast('診斷摘要已複製。')});
@@ -1324,6 +1500,7 @@ $('retryCvat').onclick=()=>safe(async()=>{
 });
 
 async function init() {
+  const loading=beginWorkspaceLoad('正在啟動工作台','正在讀取本機專案清單…');
   try {
     setupCameraInspectors();
     const [system]=await Promise.all([api('/api/system'),loadProjects()]);state.system=system;
@@ -1333,5 +1510,6 @@ async function init() {
     state.nativeBridge=await connectNative();
     updateSourceInspectorLabel();setSourceInspector(false);updateNavigation();updateCameraControls();updateCameraTargetTool();renderExport();status('本機服務已連線 · 選擇專案開始工作');
   }catch(error){toast(error.message,true);status(error.message,true);}
+  finally{loading.finish();$('workspaceLoading').dataset.startup='settled';}
 }
 init();

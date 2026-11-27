@@ -1,3 +1,3 @@
 """Vision Workbench: local vision data and model lifecycle."""
 
-__version__ = "2.21.12"
+__version__ = "2.22.0"

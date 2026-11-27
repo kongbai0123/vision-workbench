@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import Future, ThreadPoolExecutor
 import importlib.util
 import json
 import logging
@@ -18,7 +19,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__
 from .annotation_model_install import annotation_model_catalog, install_annotation_models
+from .hardware import hardware_inventory
 from .jobs import JobManager
+from .materials import MaterialCatalog
 from .project_storage import ProjectStorage
 from .model_uploads import ModelUploadStore
 from .store import ConflictError, ProjectStore, dump
@@ -41,11 +44,19 @@ class WorkbenchService:
         self.incoming.mkdir(exist_ok=True)
         self.model_uploads = ModelUploadStore(self.data_root)
         self.jobs = JobManager()
+        self._project_operations_lock = threading.Lock()
+        self._project_mutations = 0
+        self._project_backup_job_id = None
         from .annotation_assist import AnnotationAssist
         self.annotation_assist = AnnotationAssist(self.data_root, self.store, self.jobs)
         self.training = TrainingWorkspace(self.data_root, self.store)
+        self.materials = MaterialCatalog(self.store)
+        self._material_preparations = {}
         self.dialog = dialog
         self._camera = None
+        self._recording_indexes = {}
+        self._recording_index_lock = threading.Lock()
+        self._recording_index_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recording-index")
         from .camera_profiles import CameraProfiles
         self.camera_profiles = CameraProfiles(self.data_root)
         self._camera_lock = threading.Lock()
@@ -76,8 +87,72 @@ class WorkbenchService:
         with self._camera_lock:
             if self._camera is None:
                 from .acquisition import CameraService
-                self._camera = CameraService(self.incoming)
+                self._camera = CameraService(self.incoming, recording_saved=self.queue_recording_index)
             return self._camera
+
+    def queue_recording_index(self, recording):
+        # Native capture can return immediately after closing the MP4. Hashing a
+        # long recording happens off the capture thread.
+        pid = recording['project_id']
+        with self._recording_index_lock:
+            future = self._recording_index_pool.submit(self.materials.register_video, pid, recording)
+            self._recording_indexes.setdefault(pid, []).append(future)
+
+    def prepare_materials(self, pid):
+        # Only the first use of a project reconciles legacy recordings.
+        # Opening the library itself does not read video files.
+        with self._recording_index_lock:
+            preparation = self._material_preparations.get(pid)
+            needs_reconciliation = preparation is None
+            if needs_reconciliation:
+                preparation = self._material_preparations[pid] = Future()
+        if not needs_reconciliation:
+            return preparation.result()
+        try:
+            result = self.materials.reconcile_recordings(pid)
+            if result['rejected']:
+                logging.warning('Skipped %s invalid legacy recordings in project %s', result['rejected'], pid)
+            recovery = self.materials.recover_shared_recordings(pid, self.incoming / 'recordings')
+            if recovery['recovered']:
+                self.materials.reconcile_recordings(pid)
+            if recovery['rejected']:
+                logging.warning('Skipped %s unverified shared recordings in project %s', recovery['rejected'], pid)
+        except BaseException as error:
+            with self._recording_index_lock:
+                self._material_preparations.pop(pid, None)
+            preparation.set_exception(error)
+            raise
+        else:
+            preparation.set_result(None)
+
+    def wait_for_recording_index(self, pid, *, require_finished=False):
+        with self._recording_index_lock:
+            pending = tuple(self._recording_indexes.get(pid, ()))
+        if require_finished and any(not future.done() for future in pending):
+            raise ConflictError("錄影正在登錄至素材清單，請完成後再備份")
+        for future in pending:
+            try:
+                future.result()
+            finally:
+                with self._recording_index_lock:
+                    current = self._recording_indexes.get(pid, [])
+                    if future in current:
+                        current.remove(future)
+                    if not current:
+                        self._recording_indexes.pop(pid, None)
+
+    def index_recording_status(self, status):
+        recording = status.get('last_recording')
+        if not status.get('recording') and recording:
+            pid = recording['project_id']
+            self.wait_for_recording_index(pid)
+            try:
+                indexed = self.materials.find_recording(pid, path=recording['path'])
+            except FileNotFoundError:
+                indexed = None
+            if indexed:
+                status['last_recording'] = indexed
+        return status
 
     @property
     def cvat(self):
@@ -118,6 +193,7 @@ class WorkbenchService:
         shutil.rmtree(self.data_root / 'model-trials', ignore_errors=True)
         if self._camera:
             self._camera.close()
+        self._recording_index_pool.shutdown(wait=True)
         if self._cvat is not None:
             self._cvat.stop()
         if 'workbench.acquisition' in __import__('sys').modules:
@@ -146,6 +222,64 @@ class WorkbenchService:
             return result
         return self.jobs.submit("import", run)
 
+    def begin_project_mutation(self):
+        # The backup job registers under the same lock, so a write cannot slip
+        # between checking for active work and queueing the snapshot.
+        with self._project_operations_lock:
+            if self._project_backup_job_id:
+                try:
+                    backup = self.jobs.get(self._project_backup_job_id)
+                except FileNotFoundError:
+                    backup = None
+                if backup and backup['state'] not in {'succeeded', 'failed', 'cancelled'}:
+                    raise ConflictError("正在備份專案，請等備份完成再修改專案資料")
+                self._project_backup_job_id = None
+            self._project_mutations += 1
+
+    def end_project_mutation(self):
+        with self._project_operations_lock:
+            self._project_mutations -= 1
+
+    def backup_project(self, project_id, output_dir=None):
+        from .project_backup import create_project_backup
+
+        output = self.data_root / "project-backups"
+        if output_dir is not None:
+            if not isinstance(output_dir, str) or not Path(output_dir.strip()).is_absolute():
+                raise ValueError("請輸入備份資料夾的完整路徑")
+            output = Path(output_dir.strip())
+        if not (self.store.directory(project_id) / "project.sqlite3").is_file():
+            raise FileNotFoundError("找不到專案")
+        def run(progress):
+            self.prepare_materials(project_id)
+            return create_project_backup(self.store, project_id, output, progress=progress)
+
+        with self._project_operations_lock:
+            if self._project_mutations or self.jobs.active():
+                raise ConflictError("請等正在處理的工作完成後再備份專案")
+            active = {'queued', 'preparing', 'running', 'stopping'}
+            if any(run.get('status') in active for run in self.training.list_runs(project_id)):
+                raise ConflictError("此專案正在訓練，請等訓練結束後再備份")
+            if self._camera is not None:
+                camera = self._camera.status()
+                if camera.get('recording') and camera.get('recording_project_id') == project_id:
+                    raise ConflictError("此專案正在錄影，請先完成錄影再備份")
+            self.wait_for_recording_index(project_id, require_finished=True)
+            job = self.jobs.submit("project-backup", run)
+            self._project_backup_job_id = job['id']
+            return job
+
+    def restore_project(self, path):
+        from .project_backup import restore_project_backup
+
+        archive = Path(path.strip())
+        if not archive.is_absolute() or archive.suffix.lower() != '.zip':
+            raise ValueError("請選擇完整的專案備份 ZIP 路徑")
+        if not archive.is_file():
+            raise FileNotFoundError("找不到專案備份檔")
+        return self.jobs.submit(
+            "project-restore", lambda progress: restore_project_backup(self.store, archive, progress=progress))
+
     def pipeline_job(self, pid, action, payload):
         snapshot = self.store.snapshot(pid)
         format_key = payload.get("format", "native")
@@ -164,7 +298,8 @@ class WorkbenchService:
             output = Path(payload.get("output_dir") or project_exports).resolve()
             # Never export over the source or inside its immutable image store.
             if output.is_relative_to(self.store.root) and not output.is_relative_to(project_exports):
-                raise ValueError("專案內的匯出位置必須位於本專案的 exports 資料夾")
+                relative_exports = project_exports.relative_to(self.storage.root(pid)).as_posix()
+                raise ValueError(f"專案內的匯出位置必須位於本專案的 {relative_exports} 資料夾")
             result = export_project(snapshot, output, format_key, payload.get("version", "v1"),
                                     tolerance, payload.get("acknowledge_loss") is True)
             result["project_revision"] = snapshot["revision"]
@@ -348,7 +483,9 @@ class Handler(BaseHTTPRequestHandler):
                     "data_root":str(self.app.data_root), "desktop":self.app.dialog is not None,
                     "capabilities":{"sam2":bool(importlib.util.find_spec("torch") and importlib.util.find_spec("transformers")),
                                     "grabcut":True,"camera":True,"offline":True,
-                                    "training":self.app.training.capabilities()}})
+                                    "training":{"available":True,"catalog_url":"/api/model-catalog"}}})
+            if path == "/api/system/hardware":
+                return self.json(hardware_inventory())
             if path == "/api/projects":
                 return self.json({"projects":self.app.store.list_projects()})
             if path == "/api/model-catalog":
@@ -378,11 +515,17 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "projects"] and len(parts) >= 3:
                 pid = parts[2]
                 if len(parts) == 3:
+                    self.app.prepare_materials(pid)
                     return self.json(self.app.store.get_project(pid))
                 if len(parts) == 4 and parts[3] == "recordings":
-                    self.app.store.get_project(pid, include_assets=False)
-                    directory = self.app.storage.area(pid, "recordings")
-                    return self.json({"recordings": self.app.camera.list_recordings(directory, pid)})
+                    self.app.prepare_materials(pid)
+                    self.app.wait_for_recording_index(pid)
+                    return self.json({"recordings": self.app.materials.list_recordings(pid)})
+                if len(parts) == 4 and parts[3] == "materials":
+                    kind = parse_qs(urlsplit(self.path).query).get("kind", [None])[0]
+                    self.app.prepare_materials(pid)
+                    self.app.wait_for_recording_index(pid)
+                    return self.json({"materials": self.app.materials.list_materials(pid, kind=kind)})
                 if len(parts) == 4 and parts[3] == "classes":
                     return self.json(self.app.store.class_usage(pid))
                 if parts[3:4] == ['annotation-assist']:
@@ -474,6 +617,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def mutate(self, method):
         self._request_body_consumed = False
+        project_mutation = False
         try:
             path = urlsplit(self.path).path
             validate_method(path, method)
@@ -483,8 +627,17 @@ class Handler(BaseHTTPRequestHandler):
             from vision_workbench.contracts import validate_request
             validate_request(path, method, payload)
             parts = path.strip("/").split("/")
+            is_project_api = parts[:2] == ["api", "projects"]
+            is_backup = is_project_api and len(parts) == 4 and parts[3] == "backup"
+            if (is_project_api and not is_backup
+                    or path in {"/api/project-restores", "/api/camera/record/start", "/api/cvat/launch", "/api/cvat/import"}
+                    or parts[:2] == ["api", "predictions"]):
+                self.app.begin_project_mutation()
+                project_mutation = True
             if path == "/api/projects" and method == "POST":
                 return self.json(self.app.store.create_project(payload.get("name"), classes=payload.get("classes")))
+            if path == "/api/project-restores":
+                return self.json(self.app.restore_project(payload["path"]))
             if parts[:2] == ["api", "model-components"] and len(parts) == 4 and parts[3] == "install" and method == "POST":
                 component_id = parts[2]
                 if component_id == "annotation-assist":
@@ -556,12 +709,15 @@ class Handler(BaseHTTPRequestHandler):
                     if item is None:
                         raise FileNotFoundError("找不到匯出記錄")
                     if payload.get("export_archive"):
-                        archive = Path(item.get("zip_path") or "")
-                        if not archive.is_file():
+                        location = item.get("zip_path")
+                        if not location or not Path(location).is_file():
                             raise FileNotFoundError("找不到匯出 ZIP")
-                        folder = archive.parent
+                        folder = Path(location).parent
                     else:
-                        folder = Path(item["path"])
+                        location = item.get("path")
+                        if not location:
+                            raise FileNotFoundError("此匯出記錄的資料夾不在目前專案內")
+                        folder = Path(location)
                 elif payload.get("project_id") and payload.get("project_area") == "recordings":
                     self.app.store.get_project(payload["project_id"], include_assets=False)
                     folder = self.app.storage.area(payload["project_id"], "recordings")
@@ -586,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/camera/profiles":
                 return self.json({"profiles": self.app.camera_profiles.save(payload.get("device"), payload.get("name"), payload.get("settings"))})
             if path == "/api/camera/stop":
-                return self.json(self.app.camera.stop())
+                return self.json(self.app.index_recording_status(self.app.camera.stop()))
             if path == "/api/camera/processing":
                 return self.json(self.app.camera.set_processing(payload.get("mode", "original"), payload.get("settings")))
             if path == "/api/camera/record/start":
@@ -595,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
                 directory = self.app.storage.area(pid, "recordings")
                 return self.json(self.app.camera.start_recording(pid, directory=directory))
             if path == "/api/camera/record/stop":
-                return self.json(self.app.camera.stop_recording())
+                return self.json(self.app.index_recording_status(self.app.camera.stop_recording()))
             if parts[:2] == ["api", "predictions"] and len(parts) == 4 and parts[3] == "accept" and method == "POST":
                 return self.json(self.app.training.accept_predictions(parts[2], payload.get("asset_ids")))
             if parts[:2] != ["api", "projects"] or len(parts) < 3:
@@ -605,8 +761,13 @@ class Handler(BaseHTTPRequestHandler):
                 from .acquisition import import_project_video
                 self.app.store.get_project(pid, include_assets=False)
                 directory = self.app.storage.area(pid, "recordings")
-                return self.json(self.app.jobs.submit(
-                    "video-import", lambda progress: import_project_video(payload.get("path"), directory, pid, progress)))
+
+                def import_recording(progress):
+                    self.app.prepare_materials(pid)
+                    self.app.wait_for_recording_index(pid)
+                    return import_project_video(payload.get("path"), directory, pid, progress, catalog=self.app.materials)
+
+                return self.json(self.app.jobs.submit("video-import", import_recording))
             if len(parts) == 3 and method == "PATCH":
                 return self.json(self.app.store.update_project(pid,name=payload.get("name"),classes=payload.get("classes")))
             if len(parts) == 3 and method == "DELETE":
@@ -634,3 +795,6 @@ class Handler(BaseHTTPRequestHandler):
             return dispatch_project_action(self, pid, parts[3], payload)
         except Exception as exc:
             self.handle_error(exc)
+        finally:
+            if project_mutation:
+                self.app.end_project_mutation()

@@ -10,19 +10,23 @@ Shape schema is the existing annotation studio native schema: `{id,type,label,hi
 
 DatasetVersion: immutable `{dataset_version_id,project_id,project_revision,classes,class_mapping,assets:[{asset_id,image_file,sha256,annotation_revision,annotation_sha256,split,batch_id,shapes,objects}]}`. Each image is hash checked and hard-linked to the immutable project image when supported, otherwise copied, before atomic publication.
 
-TrainingRun: persistent `{run_id,project_id,dataset_version_id,model_version_id,engine,config,status,progress,metrics?,evaluation?}`. Active states are `queued|preparing|running|stopping`; terminal states are `completed|failed|stopped`. A worker writes metrics, logs, evaluation and artifact manifest below the owning project at `runs/{run_id}`.
+TrainingRun: persistent `{run_id,project_id,dataset_version_id,model_version_id,engine,config,status,progress,metrics?,evaluation?}`. Active states are `queued|preparing|running|stopping`; terminal states are `completed|failed|stopped`. A worker writes metrics, logs, evaluation and artifact manifest below the owning project at `artifacts/runs/{run_id}`.
 
-ModelVersion: immutable model metadata and artifacts below the owning project at `models/{model_id}`. A ModelExport is an atomic ZIP at `model-exports/{export_id}` containing model artifacts, run/evaluation/metric lineage and SHA-256 metadata, without dataset images. PredictionCandidate keeps model/run lineage, the source asset revision and native shapes. Accepting a candidate uses the normal revision check and resets the image to `pending` only when shapes changed. SQLite indexes these filesystem artifacts through foreign-keyed DatasetVersion, TrainingRun, ModelVersion, ModelExport and PredictionCandidate tables; stored paths are project-relative.
+Project layout: `inputs/{images,videos,annotations}` contain project materials. `artifacts/{datasets,runs,models,predictions}` contain processing results. `outputs/{datasets,models}` contain deliverables. `work/scratch` contains temporary files. The project database and archived references resolve inside the owning project. Historical references retain their original values after migration.
+
+ModelVersion: immutable model metadata and artifacts below the owning project at `artifacts/models/{model_id}`. A ModelExport is an atomic ZIP at `outputs/models/{export_id}` containing model artifacts, run/evaluation/metric lineage and SHA-256 metadata, without dataset images. PredictionCandidate keeps model/run lineage, the source asset revision and native shapes. Accepting a candidate uses the normal revision check and resets the image to `pending` only when shapes changed. SQLite indexes these filesystem artifacts through foreign-keyed DatasetVersion, TrainingRun, ModelVersion, ModelExport and PredictionCandidate tables. Stored paths are project-relative.
 
 ## HTTP API for web UI
 
 GET `/api/projects` => `{projects:[{id,name,...stats}]}`
 POST `/api/projects` `{name}` => full project (asset metadata only)
 GET `/api/projects/{pid}` => project
+GET `/api/projects/{pid}/materials?kind=image|video|annotation` => `{materials}` from the project database. Omit the filter to list every kind. Entries have a stable ID, kind, project-relative path, SHA-256, state and metadata. Image metadata includes video source IDs, frame indices, timestamps and time methods. Original annotation file metadata lists the images and annotation revisions it was used with.
 GET `/api/projects/{pid}/training` => readiness, DatasetVersions, Runs, ModelVersions, ModelExports, PredictionCandidates and engine capabilities
 GET `/api/projects/{pid}/training-runs/{rid}/metrics` => persistent run and metric rows
 PATCH `/api/projects/{pid}` `{name?,classes?}` => project
 POST `/api/projects/{pid}/import` `{paths:[absolute paths]}` => job
+POST `/api/projects/{pid}/video` `{video_id,interval_seconds}` => sampling job. Use `{path,interval_seconds}` to use a local external file or an older caller. Existing clips are resolved from the project catalog, and source hashes are verified before storing frame relationships.
 POST `/api/projects/{pid}/merge` `{project_ids:[ids]}` => job
 GET `/api/projects/{pid}/assets/{aid}` => full asset
 GET `/api/projects/{pid}/assets/{aid}/image` => original bytes
@@ -30,6 +34,8 @@ PUT `/api/projects/{pid}/assets/{aid}` `{shapes,revision}` => full asset (409 st
 POST `/api/projects/{pid}/review` `{asset_ids:[ids],state:'approved'|'pending'|'rejected'}` => project
 POST `/api/projects/{pid}/validate` `{format:'native'|'coco'|'yolo_detection'|'yolo_segmentation'|'labelme',tolerance:0}` => job
 POST `/api/projects/{pid}/export` `{format,version,output_dir?,tolerance:0,acknowledge_loss:false}` => job
+POST `/api/projects/{pid}/backup` `{output_dir?:absolute path}` => full project backup job. Default output is `project-backups` under the local data root. Result includes archive path, project ID, name, file count and bytes.
+POST `/api/project-restores` `{path:absolute archive path}` => verified restore job. Preserves project ID, rejects duplicates and publishes the project only after validating the staged database and files.
 POST `/api/projects/{pid}/ai` `{asset_id,revision,engine:'sam2'|'grabcut',label,points:[[x,y]],negative_points:[[x,y]],box:[x1,y1,x2,y2]}` => job. AI returns candidate shape in result; UI accepts via normal PUT (not automatically approved).
 POST `/api/projects/{pid}/dataset-versions` => create immutable approved training snapshot
 POST `/api/projects/{pid}/training-runs` `{dataset_version_id,config:{engine,epochs,seed,device}}` => start isolated worker
@@ -38,7 +44,7 @@ POST `/api/projects/{pid}/model-exports` `{model_version_id}` => atomic portable
 POST `/api/projects/{pid}/predictions` `{model_version_id,asset_ids?}` => prediction job
 POST `/api/predictions/{candidate_id}/accept` `{asset_ids?}` => append candidates through revision-checked project store
 GET `/api/jobs/{id}` => `{id,kind,state:'queued'|'running'|'succeeded'|'failed',message,progress:0..100|null,result?,error?}`
-GET `/api/system` => app/version/capabilities/default export path.
+GET `/api/system` => app/version/capabilities/default export path. Training reports feature availability and the model catalog URL without probing optional installations.
 GET `/api/model-catalog?refresh=1` => all ready/unavailable/planned model entries plus component state; entries remain visible when unavailable.
 POST `/api/model-components/{component_id}/install` => bounded background install job for components whose Workbench adapter is ready; currently `torchvision` and `ultralytics`.
 GET `/api/camera/devices` => `{devices:[{index,name}]}`

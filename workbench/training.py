@@ -3,12 +3,13 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
-from hashlib import sha256
+from hashlib import file_digest, sha256
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+from tempfile import TemporaryDirectory
 import threading
 import time
 import uuid
@@ -51,6 +52,17 @@ def _safe_id(value, prefix):
     if not isinstance(value, str) or not value.startswith(prefix) or not value[len(prefix):].isdigit():
         raise ValueError(f"{prefix} 版本 ID 無效")
     return value
+
+
+def _model_trial_directory(workspace, session_id, project_id=None):
+    if not isinstance(session_id, str) or len(session_id) != 32 or not session_id.isalnum():
+        raise ValueError("模型試跑 ID 無效")
+    project_id = project_id or getattr(workspace, "_model_trial_projects", {}).get(session_id)
+    root = workspace.storage.area(project_id, "scratch") if project_id else workspace.root
+    directory = root / "model-trials" / session_id
+    if directory.resolve() != directory:
+        raise ValueError("模型試跑路徑無效")
+    return directory
 
 
 def _link_or_copy(source: Path, destination: Path) -> None:
@@ -135,6 +147,7 @@ class TrainingWorkspace:
         self.python = str(self.registry.training_python)
         self.lock = threading.RLock()
         self.processes = {}
+        self._model_trial_projects = {}
         self._closed = False
         from .artifact_repository import ArtifactRepository
         self.artifacts = ArtifactRepository()
@@ -851,8 +864,9 @@ class TrainingWorkspace:
                     raise FileNotFoundError("模型描述檔不存在")
                 artifacts = []
                 for path, archive_name in sources:
-                    raw = path.read_bytes()
-                    artifacts.append({"path": archive_name, "sha256": sha256(raw).hexdigest(), "bytes": len(raw)})
+                    with path.open("rb") as source:
+                        checksum = file_digest(source, "sha256").hexdigest()
+                    artifacts.append({"path": archive_name, "sha256": checksum, "bytes": path.stat().st_size})
                 created_at = timestamp()
                 manifest = {"schema_version": 1, "format": "vision-workbench-model-bundle",
                             "export_id": export_id, "created_at": created_at,
@@ -868,9 +882,11 @@ class TrainingWorkspace:
                         archive.write(source, archive_name)
                     archive.writestr("export-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
                     archive.writestr("README.txt", "Vision Workbench model bundle\nOpen export-manifest.json to verify lineage and SHA-256 values.\n")
-                raw = bundle.read_bytes()
-                record = {**manifest, "path": str((target / bundle.name).resolve()),
-                          "directory": str(target.resolve()), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+                with bundle.open("rb") as source:
+                    checksum = file_digest(source, "sha256").hexdigest()
+                # The current absolute location is derived from record.json
+                # when opening a bundle, including after project rename/restore.
+                record = {**manifest, "path": bundle.name, "bytes": bundle.stat().st_size, "sha256": checksum}
                 atomic_json(temporary / "record.json", record)
                 temporary.replace(target)
                 progress("模型封裝已完成並驗證", 100)
@@ -880,16 +896,29 @@ class TrainingWorkspace:
         self._sync_catalog(project_id)
         return self.model_export(project_id, export_id)
 
+    @staticmethod
+    def _read_model_export(path):
+        record = read_json(path)
+        if stored_path := record.get("path"):
+            # Older writers saved a Windows or POSIX absolute path. Every
+            # published bundle lives beside its record, regardless of that prefix.
+            filename = stored_path.replace("\\", "/").rsplit("/", 1)[-1]
+            if not filename or filename in {".", ".."} or ":" in filename:
+                raise ValueError("模型封裝檔名無效")
+            record["path"] = str(path.parent / filename)
+        record["directory"] = str(path.parent)
+        return record
+
     def model_export(self, project_id, export_id):
         export_id = _safe_id(export_id, "E")
         path = self.model_exports_dir(project_id) / export_id / "record.json"
         if not path.is_file():
             raise FileNotFoundError("找不到模型匯出版本")
-        return read_json(path)
+        return self._read_model_export(path)
 
     def list_model_exports(self, project_id):
         parent = self.model_exports_dir(project_id)
-        rows = [read_json(item / "record.json") for item in parent.iterdir()
+        rows = [self._read_model_export(item / "record.json") for item in parent.iterdir()
                 if item.is_dir() and (item / "record.json").is_file()] if parent.is_dir() else []
         return sorted(rows, key=lambda row: row.get("created_at", ""), reverse=True)
 
@@ -916,31 +945,23 @@ class TrainingWorkspace:
         from .engine_specs import engine_spec
         external_worker = engine_spec(model["engine"]).predict_module
         if external_worker:
-            if not definition.get("predict"):
-                raise RuntimeError(definition.get("unavailable_reason") or "模型執行環境不可用")
-            token = uuid.uuid4().hex
-            prediction_dir = self.predictions_dir(project_id, create=True)
-            request_path = prediction_dir / f".{token}.request.json"
-            output_path = prediction_dir / f".{token}.output.json"
-            stderr_path = prediction_dir / f".{token}.stderr.log"
-            atomic_json(request_path, {"model_path": str(self._model_path(project_id, model_id)), "device": "auto",
-                        "assets": [{"asset_id": asset["id"], "image_path": asset["image_path"],
-                                    "width": asset["width"], "height": asset["height"]} for asset in selected]})
-            try:
-                from .engine_specs import engine_spec
-                worker = engine_spec(model['engine']).predict_module
-                worker_python = str(self.registry.component_python(definition["component"]))
-                from .resources import accelerator_lease
-                from .process_control import run_controlled
+            from .resources import accelerator_lease
+            from .process_control import run_controlled
+            scratch = self.storage.area(project_id, "scratch", create=True)
+            worker_python = str(self.registry.component_python(definition["component"]))
+            with TemporaryDirectory(prefix="prediction-", dir=scratch) as directory:
+                request_path = Path(directory) / "request.json"
+                output_path = Path(directory) / "result.json"
+                atomic_json(request_path, {"model_path": str(self._model_path(project_id, model_id)), "device": "auto",
+                            "assets": [{"asset_id": asset["id"], "image_path": asset["image_path"],
+                                        "width": asset["width"], "height": asset["height"]} for asset in selected]})
                 with accelerator_lease(self.root, checkpoint=lambda: progress('等待運算資源')):
-                    run_controlled([worker_python, "-m", worker, "--request", str(request_path),
+                    run_controlled([worker_python, "-m", external_worker, "--request", str(request_path),
                                     "--output", str(output_path)], progress,
                                    cwd=Path(__file__).resolve().parents[1], timeout=1800)
                 if not output_path.is_file():
                     raise RuntimeError('推論程序未產生結果')
                 generated = {row["asset_id"]: row["shapes"] for row in read_json(output_path)["assets"]}
-            finally:
-                request_path.unlink(missing_ok=True); output_path.unlink(missing_ok=True); stderr_path.unlink(missing_ok=True)
         records = []
         for asset in selected:
             if external_worker:
@@ -973,11 +994,14 @@ class TrainingWorkspace:
             path=Path(raw).expanduser().resolve()
             if not path.is_file() or path.suffix.lower() not in allowed: raise ValueError(f'試跑檔案不存在或格式不支援：{path.name}')
             sources.append(path)
-        session=uuid.uuid4().hex;session_dir=self.root/'model-trials'/session;session_dir.mkdir(parents=True)
-        request_path=session_dir/'request.json';output_path=session_dir/'result.json'
-        atomic_json(request_path,{'model_path':str(self._model_path(project_id,model_id)),'predict_module':worker,'paths':[str(p) for p in sources],
-                                  'output_dir':str(session_dir/'media'),'device':'auto'})
+        session = uuid.uuid4().hex
+        session_dir = _model_trial_directory(self, session, project_id)
+        session_dir.mkdir(parents=True)
+        request_path = session_dir / 'request.json'
+        output_path = session_dir / 'result.json'
         try:
+            atomic_json(request_path,{'model_path':str(self._model_path(project_id,model_id)),'predict_module':worker,'paths':[str(p) for p in sources],
+                                      'output_dir':str(session_dir/'media'),'device':'auto'})
             from .resources import accelerator_lease
             from .process_control import run_controlled
             python=str(self.registry.component_python(definition['component']))
@@ -985,13 +1009,17 @@ class TrainingWorkspace:
                 run_controlled([python,'-m','workbench.model_trial_worker','--request',str(request_path),'--output',str(output_path)],progress,
                                cwd=Path(__file__).resolve().parents[1],timeout=None,idle_timeout=1800)
             result=read_json(output_path);result.update(session_id=session,model_version_id=model_id,engine=model['engine'],classes=model.get('classes',[]))
-            atomic_json(output_path,result);return result
+            atomic_json(output_path, result)
+            with self.lock:
+                if self._closed:
+                    raise RuntimeError("工作站已關閉")
+                self._model_trial_projects[session] = project_id
+            return result
         except BaseException:
             shutil.rmtree(session_dir,ignore_errors=True);raise
 
     def model_trial(self, session_id):
-        if not isinstance(session_id,str) or len(session_id)!=32 or not session_id.isalnum(): raise ValueError('模型試跑 ID 無效')
-        path=self.root/'model-trials'/session_id/'result.json'
+        path=_model_trial_directory(self, session_id)/'result.json'
         if not path.is_file(): raise FileNotFoundError('找不到模型試跑結果')
         return read_json(path)
 
@@ -1028,13 +1056,16 @@ class TrainingWorkspace:
                               'recall':round(recall,6) if recall is not None else None,
                               'f1':round(2*precision*recall/(precision+recall),6) if precision is not None and recall is not None and precision+recall else None,
                               'scope':'box_iou_per_prediction_at_model_score_threshold'}
-        atomic_json(self.root/'model-trials'/result['session_id']/'result.json',result);return result
+        atomic_json(_model_trial_directory(self, result['session_id'])/'result.json', result)
+        return result
 
     def model_trial_image(self, session_id, index):
         result=self.model_trial(session_id);index=int(index)
         if index<0 or index>=len(result['frames']): raise FileNotFoundError('找不到試跑影格')
-        path=self.root/'model-trials'/session_id/'media'/result['frames'][index]['image']
-        if not path.is_file() or path.parent.resolve()!=(self.root/'model-trials'/session_id/'media').resolve(): raise FileNotFoundError('找不到試跑影格')
+        media = _model_trial_directory(self, session_id) / 'media'
+        path = media / result['frames'][index]['image']
+        if not path.is_file() or path.resolve().parent != media:
+            raise FileNotFoundError('找不到試跑影格')
         return path
 
     def list_predictions(self, project_id):
@@ -1077,6 +1108,7 @@ class TrainingWorkspace:
         """Rebuild the SQL index from authoritative project-owned manifests."""
         if not getattr(self, "_project_scoped", False):
             return
+        root = self.storage.root(project_id)
         issues = []
         datasets, runs, models, exports, predictions = [], [], [], [], []
         dataset_ids, run_ids, model_ids = set(), set(), set()
@@ -1098,7 +1130,7 @@ class TrainingWorkspace:
                     "created_at": str(row["created_at"]),
                     "manifest_sha256": str(row["manifest_sha256"]),
                     "asset_count": len(row.get("assets", [])),
-                    "relative_path": f"datasets/{dataset_id}/manifest.json",
+                    "relative_path": path.relative_to(root).as_posix(),
                     "source_dataset_id": source_id,
                 })
                 dataset_ids.add(dataset_id)
@@ -1129,7 +1161,7 @@ class TrainingWorkspace:
                     "status": str(row["status"]),
                     "created_at": created,
                     "updated_at": float(row.get("updated_at", created)),
-                    "relative_path": f"runs/{run_id}/run.json",
+                    "relative_path": path.relative_to(root).as_posix(),
                 })
                 run_ids.add(run_id)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
@@ -1153,7 +1185,7 @@ class TrainingWorkspace:
                 models.append({
                     "id": model_id, "run_id": run_id, "dataset_version_id": dataset_id,
                     "engine": str(row["engine"]), "created_at": float(created),
-                    "relative_path": f"models/{model_id}/model.json",
+                    "relative_path": path.relative_to(root).as_posix(),
                 })
                 model_ids.add(model_id)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
@@ -1175,7 +1207,7 @@ class TrainingWorkspace:
                     "id": export_id, "model_version_id": model_id, "run_id": run_id,
                     "dataset_version_id": dataset_id, "created_at": str(row["created_at"]),
                     "sha256": str(row["sha256"]), "byte_count": int(row["bytes"]),
-                    "relative_path": f"model-exports/{export_id}/record.json",
+                    "relative_path": path.relative_to(root).as_posix(),
                 })
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 issues.append({"path": str(path), "message": str(error)})
@@ -1194,7 +1226,7 @@ class TrainingWorkspace:
                     "created_at": str(row["created_at"]),
                     "candidate_count": sum(item.get("status") == "candidate" for item in assets),
                     "accepted_count": sum(item.get("status") == "accepted" for item in assets),
-                    "relative_path": f"predictions/{path.name}",
+                    "relative_path": path.relative_to(root).as_posix(),
                 })
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 issues.append({"path": str(path), "message": str(error)})
@@ -1224,3 +1256,11 @@ class TrainingWorkspace:
         with self.lock:
             self._closed = True
             self.processes.clear()
+            trials = self._model_trial_projects
+            self._model_trial_projects = {}
+        for session_id, project_id in trials.items():
+            try:
+                directory = _model_trial_directory(self, session_id, project_id)
+            except (FileNotFoundError, ValueError):
+                continue
+            shutil.rmtree(directory, ignore_errors=True)

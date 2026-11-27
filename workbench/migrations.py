@@ -7,23 +7,25 @@ from contextlib import closing
 from .file_lock import exclusive_file_lock
 
 
-def migrate(db):
+def migrate(db, *, through=None, backup_existing=True):
     database = db.execute('PRAGMA database_list').fetchone()[2]
     if database:
         with exclusive_file_lock(Path(database).with_suffix('.migration.lock')):
-            return _migrate(db)
-    return _migrate(db)
+            return _migrate(db, through=through, backup_existing=backup_existing)
+    return _migrate(db, through=through, backup_existing=backup_existing)
 
 
-def _migrate(db):
+def _migrate(db, *, through, backup_existing):
     paths = sorted(Path(__file__).with_name('migrations').glob('*.sql'))
+    if through is not None:
+        paths = [path for path in paths if int(path.name.split('_')[0]) <= through]
     # SQLite's backup API includes committed WAL content; copying the file does not.
     installed = set()
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'").fetchone():
         installed = {row[0] for row in db.execute('SELECT version FROM schema_migrations')}
     pending = [path for path in paths if int(path.name.split('_')[0]) not in installed]
     database = db.execute('PRAGMA database_list').fetchone()[2]
-    if pending and database and db.execute("SELECT 1 FROM sqlite_master WHERE name='project'").fetchone():
+    if backup_existing and pending and database and db.execute("SELECT 1 FROM sqlite_master WHERE name='project'").fetchone():
         backup = Path(database).with_suffix(f'.before-migration-{pending[-1].name.split("_")[0]}.backup')
         if not backup.exists():
             temporary = backup.with_suffix('.partial')

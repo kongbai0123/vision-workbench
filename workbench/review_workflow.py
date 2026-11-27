@@ -43,7 +43,7 @@ class ReviewWorkflow:
         progress('建立縮圖與分析清晰度', 0, phase='quality')
         for index, record in enumerate(parsed['records']):
             quality = image_quality(record['path'])
-            record['expected_import_sha'] = _sha(record['path'])
+            record.setdefault('expected_import_sha', _sha(record['path']))
             record['source'] = {**record.get('source', {}), 'quality': {k:v for k,v in quality.items() if k != 'thumbnail'}}
             items.append({'id': str(index), 'name': record['name'], 'shape_count': len(record['shapes']), **quality})
             progress(f'縮圖、清晰度與雜湊 {index+1} / {len(parsed["records"])}', (index+1)/len(parsed['records'])*100)
@@ -70,7 +70,7 @@ class ReviewWorkflow:
             records = [dict(valid[i]) for i in dict.fromkeys(selected)]
             progress('確認來源圖片未變更', 0, phase='verify')
             for index, record in enumerate(records):
-                if _sha(record['path']) != record.pop('expected_import_sha'):
+                if _sha(record['path']) != record['expected_import_sha']:
                     raise ConflictError('預覽後來源圖片已變更，請重新預覽')
                 progress(f'來源完整性 {index+1} / {len(records)}', (index+1)/len(records)*100)
             progress('保存原圖與標註', phase='save')

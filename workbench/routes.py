@@ -4,6 +4,8 @@ import re
 MUTATIONS = [
     (r'/api/projects/[^/]+/maintenance', {'POST'}),
     (r'/api/projects', {'POST'}),
+    (r'/api/project-restores', {'POST'}),
+    (r'/api/projects/[^/]+/backup', {'POST'}),
     (r'/api/projects/[^/]+', {'PATCH', 'DELETE'}),
     (r'/api/projects/[^/]+/assets/[^/]+', {'PUT', 'DELETE'}),
     (r'/api/projects/[^/]+/assets', {'DELETE'}),

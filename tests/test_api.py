@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import tempfile
+from threading import Event
 import time
 import unittest
 from urllib.request import Request, urlopen
@@ -74,7 +75,7 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 400)
 
     def test_create_project_saves_initial_classes_in_input_order(self):
-        invalid = (["hand", ""], ["x" * 201], ["hand", 1], "hand")
+        invalid = (["hand", ""], ["x" * 201], ["hand", 1], "hand", None, ["hand", "a\nb"])
         for classes in invalid:
             with self.subTest(classes=classes), self.assertRaises(HTTPError) as error:
                 self.call('/api/projects', {'name': '無效類別', 'classes': classes})
@@ -87,6 +88,74 @@ class ApiWorkflowTests(unittest.TestCase):
         self.assertEqual(project['revision'], 1)
         self.assertEqual(self.call(f"/api/projects/{project['id']}")['classes'], expected)
         self.assertEqual(self.call('/api/projects', {'name': '空白專案'})['classes'], [])
+
+    def test_create_project_with_initial_classes_preserves_order_and_merges_imported_labels(self):
+        project = self.call('/api/projects', {'name': '預先定義類別', 'classes': [' grip ', '把手', 'grip', 'grip_done']})
+        names = ['grip', '把手', 'grip_done']
+        self.assertEqual(project['revision'], 1)
+        self.assertEqual(project['classes'], names)
+        self.assertEqual(self.call('/api/projects')['projects'][0]['classes'], names)
+
+        project_path = f"/api/projects/{project['id']}"
+        usage = self.call(f'{project_path}/classes')
+        self.assertEqual(usage['classes'], [
+            {'name': name, 'object_count': 0, 'image_count': 0} for name in names
+        ])
+        self.job(self.call(f'{project_path}/import', {'paths': [str(self.source)]}))
+        self.assertEqual(self.call(project_path)['classes'], names + ['part'])
+
+    def test_backup_keeps_reads_available_and_excludes_project_mutations(self):
+        project = self.call('/api/projects', {'name': '備份測試'})
+        project_path = f"/api/projects/{project['id']}"
+        started, release = Event(), Event()
+
+        def blocking_backup(store, project_id, output_dir, *, progress):
+            started.set()
+            if not release.wait(10):
+                raise AssertionError("Backup test was not released")
+            return {"project_id": project_id, "path": str(output_dir)}
+
+        with patch("workbench.project_backup.create_project_backup", side_effect=blocking_backup):
+            job = self.call(f'{project_path}/backup', {})
+            try:
+                self.assertTrue(started.wait(5))
+                self.assertEqual(self.call(project_path)['name'], '備份測試')
+                with self.assertRaises(HTTPError) as mutation:
+                    self.call(project_path, {'name': '改名'}, method='PATCH')
+                self.assertEqual(mutation.exception.code, 409)
+                with self.assertRaises(HTTPError) as backup:
+                    self.call(f'{project_path}/backup', {})
+                self.assertEqual(backup.exception.code, 409)
+            finally:
+                release.set()
+            self.assertEqual(self.job(job)['project_id'], project['id'])
+        updated = self.call(project_path, {'name': '改名'}, method='PATCH')
+        self.assertEqual(updated['name'], '改名')
+
+    def test_system_summary_does_not_probe_optional_model_runtime(self):
+        with patch.object(self.service.training, "capabilities", side_effect=AssertionError("unexpected runtime probe")) as probe:
+            summary = self.call("/api/system")
+        self.assertTrue(summary["capabilities"]["camera"])
+        self.assertEqual(summary["capabilities"]["training"]["catalog_url"], "/api/model-catalog")
+        probe.assert_not_called()
+
+    def test_hardware_inventory_is_lazy_authenticated_and_independent_of_training(self):
+        inventory = {
+            "cpu": {"name": "CPU fixture", "logical_cores": 12},
+            "memory": {"total_bytes": 32 * 1024**3},
+            "gpus": [{"name": "Integrated GPU fixture", "memory_bytes": None}],
+        }
+        with (
+            patch("workbench.server.hardware_inventory", return_value=inventory) as probe,
+            patch.object(self.service.training, "capabilities", side_effect=AssertionError("unexpected runtime probe")),
+        ):
+            self.call("/api/system")
+            with self.assertRaises(HTTPError) as error:
+                self.call("/api/system/hardware", headers={"X-Workbench-Token": "incorrect"})
+            self.assertEqual(error.exception.code, 403)
+            probe.assert_not_called()
+            self.assertEqual(self.call("/api/system/hardware"), inventory)
+            probe.assert_called_once_with()
 
     def test_local_crawler_policy_covers_static_and_denied_responses(self):
         policy = 'noindex, nofollow, nosnippet'

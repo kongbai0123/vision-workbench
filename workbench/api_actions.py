@@ -9,6 +9,10 @@ def action_maintenance(self, pid, payload, action):
     return self.json(orphan_images(self.app.store, pid, quarantine=payload.get('quarantine', False)))
 
 
+def action_backup(self, pid, payload, action):
+    return self.json(self.app.backup_project(pid, payload.get('output_dir')))
+
+
 def action_import_preview(self, pid, payload, action):
     return self.json(self.app.jobs.submit('import-preview', lambda progress: self.app.review_workflow.preview(pid, payload.get('paths'), progress=progress)))
 
@@ -175,25 +179,36 @@ def action_video(self, pid, payload, action):
         target = payload.get("target_shape")
         if target is not None:
             self.app.store.require_class(pid, target.get("label"))
-        project_root = self.app.storage.root(pid)
-        source = import_project_video(payload.get("path"), self.app.storage.area(pid, "recordings"), pid,
-                                      lambda message, percent: progress(message, round(percent * .2)))
+        self.app.prepare_materials(pid)
+        self.app.wait_for_recording_index(pid)
+        if video_id := payload.get("video_id"):
+            source = self.app.materials.find_recording(pid, video_id=video_id)
+            if source is None:
+                raise FileNotFoundError("找不到專案素材清單中的來源影片")
+        else:
+            source = import_project_video(payload.get("path"), self.app.storage.area(pid, "recordings"), pid,
+                                          lambda message, percent: progress(message, round(percent * .2)),
+                                          catalog=self.app.materials)
         clip = Path(source["path"])
         progress("從影片擷取影格")
         with TemporaryDirectory(prefix="video-", dir=self.app.storage.area(pid, "scratch", create=True)) as folder:
             records = extract_video(clip, folder, payload.get("interval_seconds", 1),
                                     source_name=source.get("display_name"),
+                                    expected_sha256=source["sha256"],
                                     progress=lambda percent: progress("從影片擷取影格", 20 + round(float(percent) * .6)))
             for record in records:
-                record["source"]["video"] = clip.relative_to(project_root).as_posix()
+                record["source"].update(video=source["relative_path"], video_id=source["video_id"])
+                record["video_material"] = True
                 if target is not None:
                     record["shapes"] = [target]
-            return self.app.store.add_assets(
+            result = self.app.store.add_assets(
                 pid, records, progress=lambda n, total: progress(f"保存影格 {n} / {total}", 80 + round(n / total * 15)))
+            return {**result, "video_name": source["name"], "video_id": source["video_id"]}
     return self.json(self.app.jobs.submit("video",run))
 
 
 PROJECT_ACTIONS = {
+    'backup': action_backup,
     'maintenance': action_maintenance,
     'import-preview': action_import_preview,
     'import-confirm': action_import_confirm,

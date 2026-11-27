@@ -63,14 +63,47 @@ class ModelImportTests(unittest.TestCase):
         Image.new('RGB', (10, 10)).save(image)
         self.store.update_project(self.pid, classes=['part'])
         self.store.add_assets(self.pid, [{'path': str(image), 'name': image.name}])
+        scratch = self.store.directory(self.pid) / 'work' / 'scratch'
         def predict(command, *_args, **_kwargs):
-            request = read_json(Path(command[command.index('--request')+1]))
+            request_path = Path(command[command.index('--request') + 1])
+            self.assertEqual(request_path.parent.parent, scratch)
+            request = read_json(request_path)
             atomic_json(Path(command[command.index('--output')+1]), {'assets': [
                 {'asset_id': asset['asset_id'], 'shapes': []} for asset in request['assets']]})
         with patch('workbench.process_control.run_controlled', predict):
             candidates = self.workspace.create_predictions(self.pid, model['model_version_id'])
         self.assertIsNone(candidates['run_id'])
+        self.assertEqual(list(scratch.iterdir()), [])
+        self.assertTrue((self.store.directory(self.pid) / 'artifacts' / 'predictions' /
+                         (candidates['candidate_id'] + '.json')).is_file())
         self.assertEqual(self.workspace.catalog_issues[self.pid], [])
+
+    def test_model_trial_is_project_scratch_and_remains_readable_by_session_id(self):
+        from PIL import Image
+
+        with patch('workbench.process_control.run_controlled', self.inspect):
+            model = self.workspace.import_model(self.pid, str(self.checkpoint), trusted=True)
+        image = self.root / 'sample.png'
+        Image.new('RGB', (10, 10)).save(image)
+
+        def trial_worker(command, *_args, **_kwargs):
+            request = read_json(Path(command[command.index('--request') + 1]))
+            media = Path(request['output_dir'])
+            media.mkdir()
+            Image.new('RGB', (10, 10)).save(media / 'preview.jpg')
+            atomic_json(Path(command[command.index('--output') + 1]), {
+                'frames': [{'image': 'preview.jpg'}],
+            })
+
+        with patch('workbench.process_control.run_controlled', trial_worker):
+            result = self.workspace.create_model_trial(self.pid, model['model_version_id'], [str(image)])
+        session = result['session_id']
+        directory = self.store.directory(self.pid) / 'work' / 'scratch' / 'model-trials' / session
+        self.assertEqual(self.workspace.model_trial(session), result)
+        self.assertEqual(self.workspace.model_trial_image(session, 0), directory / 'media' / 'preview.jpg')
+        self.assertFalse((self.root / 'model-trials').exists())
+        self.workspace.close()
+        self.assertFalse(directory.exists())
 
     def test_failed_worker_leaves_no_model_or_partial_import(self):
         with patch('workbench.process_control.run_controlled', side_effect=RuntimeError('invalid checkpoint')):

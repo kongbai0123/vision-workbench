@@ -182,13 +182,15 @@ def main():
             click('#stopRecording')
             wait("document.querySelector('#cameraRecordingCount').textContent==='1' && !window.workbenchState().busy")
             recording = camera.status()['last_recording']
-            assert Path(recording['path']).parent == service.store.directory(recording['project_id']) / 'recordings'
+            assert Path(recording['path']).parent == service.store.directory(recording['project_id']) / 'inputs/videos'
             assert js("document.querySelector('#recordedFrameTools').contains(document.querySelector('#startRecording'))")
             assert js("document.querySelectorAll('#acquiredAssets .acquired-item').length===0")
-            click("[data-source='files']")
+            click('#tab-import')
+            wait("!document.querySelector('#source-files').hidden && document.querySelector('#tab-import').getAttribute('aria-selected')==='true'")
             wait("document.querySelector('#recordedFrameTools').hidden")
             click("[data-source='video']")
-            wait("!document.querySelector('#recordedFrameTools').hidden && document.querySelector('#cameraRecordingActions').hidden && document.querySelector('#videoPath').value.endsWith('.mp4')")
+            wait("!document.querySelector('#recordedFrameTools').hidden && document.querySelector('#cameraRecordingActions').hidden && document.querySelector('#videoPath').value.endsWith('.mp4') && document.querySelector('#toggleSourceInspector').hidden")
+            assert js("['#cameraRecordingList','#cameraVideoInterval','#extractRecording'].every(selector=>document.querySelector(selector).getClientRects().length>0)")
             external = Path(folder) / 'external-source.avi'
             writer = cv2.VideoWriter(str(external), cv2.VideoWriter_fourcc(*'MJPG'), 10, (64,48))
             assert writer.isOpened()
@@ -196,33 +198,61 @@ def main():
                 writer.write(np.full((48,64,3), index * 16, np.uint8))
             writer.release()
             source_bytes = external.read_bytes()
-            js(f"document.querySelector('#videoPath').value={json.dumps(str(external))}")
-            click('#saveVideoSource')
-            wait("document.querySelector('#cameraRecordingCount').textContent==='2' && !window.workbenchState().busy")
+            js(f"document.querySelector('#videoPath').value={json.dumps(str(external))};document.querySelector('#videoPath').dispatchEvent(new Event('input'))")
+            assert js("document.querySelector('#cameraRecordingList .selected').textContent.includes('external-source.avi')")
+            click('#extractRecording')
+            wait("!document.querySelector('#acquiredAssets').hidden && document.querySelector('#cameraRecordingCount').textContent==='2' && !window.workbenchState().busy")
             assert external.read_bytes() == source_bytes
             assert js("document.querySelector('#videoPath').value.includes('recording_import_')")
-            click('#saveVideoSource')
-            wait("!window.workbenchState().busy")
-            assert js("document.querySelector('#cameraRecordingCount').textContent==='2'")
-            js("document.querySelector('#cameraRecordingSampling').open=true")
+            click('#showVideoMaterial')
+            assert js("['#cameraRecordingList','#cameraVideoInterval','#extractRecording'].every(selector=>document.querySelector(selector).getClientRects().length>0)")
+            assert js("document.querySelector('#cameraRecordingList input:checked').value.endsWith('.avi')")
+            js("document.querySelector('#cameraVideoInterval').value='0.5'")
             click('#extractRecording')
-            wait("document.querySelectorAll('#acquiredAssets .acquired-item').length>=1 && document.querySelector('#cameraRecordingCount').textContent==='2' && !document.querySelector('#acquiredAssets').hidden")
+            wait("document.querySelectorAll('#acquiredAssets .acquired-item').length===3 && document.querySelector('#cameraRecordingCount').textContent==='2' && !document.querySelector('#acquiredAssets').hidden && !window.workbenchState().busy")
             project_root = service.store.directory(recording['project_id'])
             sampled = service.store.get_project(recording['project_id'])['assets']
             assert all((project_root / asset['source']['video']).is_file() for asset in sampled)
-            assert all(asset['source']['video'].startswith('recordings/') for asset in sampled)
-            assert not any((project_root / 'scratch').iterdir())
-            js("document.querySelector('#cameraRecordingSampling').open=false")
-            click("[data-source='camera']")
+            assert all(asset['source']['video'].startswith('inputs/videos/') for asset in sampled)
+            video_ids = {clip['video_id'] for clip in service.materials.list_recordings(recording['project_id'])}
+            assert all(asset['source']['video_id'] in video_ids for asset in sampled)
+            assert not any((project_root / 'work/scratch').iterdir())
+            for index in range(10):
+                fixture = project_root / 'inputs/videos' / f'recording_fixture_{index:02d}.avi'
+                fixture.write_bytes(source_bytes)
+                fixture.with_suffix('.json').write_text(json.dumps({
+                    'project_id': recording['project_id'], 'extension': '.avi', 'duration_seconds': 1.2,
+                    'width': 64, 'height': 48,
+                }), encoding='utf-8')
+            service.materials.reconcile_recordings(recording['project_id'])
+            view.resize(1280,720)
+            click('#showVideoMaterial')
+            wait("document.querySelectorAll('#cameraRecordingList .video-recording-row').length===12")
+            assert js("""(()=>{
+                const list=document.querySelector('#cameraRecordingList'),tray=document.querySelector('.acquired-tray');
+                const action=document.querySelector('#extractRecording');
+                return list.scrollHeight>list.clientHeight && list.clientHeight>=56 &&
+                    action.getBoundingClientRect().bottom<=tray.getBoundingClientRect().bottom+1
+            })()"""), 'The video list should scroll while the sampling action remains visible'
+            js("document.querySelector('#cameraRecordingList').scrollTop=100000")
+            click('#cameraRecordingList .video-recording-row:last-child input')
+            assert js("""(()=>{
+                const list=document.querySelector('#cameraRecordingList');
+                const last=list.lastElementChild;
+                return list.scrollTop>0 && last.querySelector('input').checked &&
+                    document.querySelector('#videoPath').value.endsWith(last.dataset.recordingName)
+            })()"""), 'A video reached by scrolling should remain selected'
+            view.resize(1440,900)
+            click('#tab-capture')
             QTest.qWait(350);view.grab().save(str(output/'running.png'))
             control['frame_error']=True
             wait("document.querySelector('#cameraStatus').innerText.includes('正在重試')")
             control['frame_error']=False;running()
-            click("[data-source='files']");QTest.qWait(300)
+            click('#tab-import');QTest.qWait(300)
             count=control['requests'];QTest.qWait(850);assert control['requests']==count
             device.disconnect=True
             wait("document.querySelector('#cameraStatus').innerText.includes('相機已中斷')")
-            click("[data-source='camera']")
+            click('#tab-capture')
             assert not js("document.querySelector('#startCamera').disabled")
             device.disconnect=False;control['fail']=True;click('#startCamera')
             wait("document.querySelector('#cameraEmpty').innerText.includes('模擬裝置啟動失敗')")

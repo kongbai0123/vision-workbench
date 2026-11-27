@@ -12,7 +12,7 @@ FIELD_TYPES = {
     'revisions': dict, 'replacements': dict, 'config': dict, 'options': dict,
     'ratios': dict, 'settings': dict, 'model_checks': dict, 'revision': int, 'history_id': int, 'delta_base': int,
     'name': str, 'state': str, 'reason': str, 'note': str, 'batch_id': str,
-    'split': str, 'project_id': str, 'asset_id': str, 'dataset_version_id': str,
+    'split': str, 'project_id': str, 'asset_id': str, 'video_id': str, 'dataset_version_id': str,
     'model_version_id': str, 'request_id': str, 'format': str, 'version': str,
     'path': str, 'kind': str, 'mode': str, 'engine': str, 'upload_token': str,
     'confirmed': bool, 'confirm': bool, 'acknowledge_loss': bool, 'quarantine': bool, 'trusted': bool,
@@ -20,6 +20,7 @@ FIELD_TYPES = {
 
 REQUIRED = (
     (r'/api/projects', 'POST', ('name',)),
+    (r'/api/project-restores', 'POST', ('path',)),
     (r'/api/projects/[^/]+/assets/[^/]+', 'PUT', ('shapes', 'revision')),
     (r'/api/projects/[^/]+/review', 'POST', ('asset_ids', 'state', 'revisions')),
     (r'/api/projects/[^/]+/annotation-assist', 'POST', ('asset_ids', 'classes')),

@@ -2,6 +2,7 @@
 import json
 from functools import wraps
 from .file_lock import exclusive_file_lock
+from .project_layout import project_area
 
 
 def serialized_images(method):
@@ -14,8 +15,8 @@ def serialized_images(method):
 
 def orphan_images(store, pid, *, quarantine=False):
     folder = store.directory(pid).resolve()
-    images = (folder / 'images').resolve()
-    if images.parent != folder or (folder / 'images').is_symlink():
+    images = project_area(folder, 'images')
+    if images.is_symlink() or not images.resolve().is_relative_to(folder):
         raise ValueError('圖片目錄無效')
     with exclusive_file_lock(folder / '.images.lock'), store.connection(pid) as db:
         used = {r[0] for r in db.execute('SELECT image_file FROM assets')}

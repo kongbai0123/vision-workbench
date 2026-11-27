@@ -5,10 +5,11 @@ function renderExport() {
   renderBatchTable();const list=$('exportHistory');list.replaceChildren();
   for(const record of [...(state.project?.exports||[])].reverse()) {
     const row=element('article',undefined,'export-record'),body=element('div');
-    body.append(element('b',`${record.version||record.name||'匯出版本'} · ${formatNames[record.format]||record.format||''}`),element('p',record.path||record.output_path||''),element('small',date(record.created_at||record.timestamp)));
+    const historicalPath=record.original_paths?.path;
+    body.append(element('b',`${record.version||record.name||'匯出版本'} · ${formatNames[record.format]||record.format||''}`),element('p',record.path||(historicalPath?`來源主機 · ${historicalPath}`:record.output_path||'')),element('small',date(record.created_at||record.timestamp)));
     if(record.zip_path)body.append(element('small',`ZIP：${record.zip_path}`,'export-archive-path'));
     const actions=element('div',undefined,'export-record-actions');
-    actions.append(button('開啟資料夾 ↗','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,export_id:record.id}))));
+    if(record.path)actions.append(button('開啟資料夾 ↗','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,export_id:record.id}))));
     if(record.zip_path)actions.append(button('ZIP 所在資料夾 ↗','secondary',()=>safe(()=>api('/api/open-folder','POST',{project_id:state.project.id,export_id:record.id,export_archive:true}))));
     row.append(body,actions);list.append(row);
   }

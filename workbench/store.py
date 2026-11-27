@@ -25,6 +25,7 @@ from composer_core.geometry import decode_rle, encode_rle
 from composer_core.mask_cleanup import repair_tiny_holes
 from .migrations import migrate
 from .maintenance import serialized_images
+from .project_layout import logical_reference, project_area, project_reference
 
 
 class ConflictError(ValueError):
@@ -49,6 +50,10 @@ def clean_label(value):
     if not isinstance(value, str) or not value.strip() or len(value) > 200 or any(ord(c) < 32 for c in value):
         raise ValueError("類別名稱必須為 1–200 個可見字元")
     return value.strip()
+
+
+def clean_class_names(values):
+    return list(dict.fromkeys(clean_label(value) for value in values))
 
 
 def clean_shapes(shapes, width, height):
@@ -199,11 +204,11 @@ class ProjectStore:
         name = self._name(name)
         if classes is not None and not isinstance(classes, list):
             raise ValueError("初始類別必須為文字陣列")
-        names = list(dict.fromkeys(clean_label(value) for value in (classes or [])))
+        names = clean_class_names(classes or [])
         pid = uuid.uuid4().hex
         folder = self.root / self._folder_name(name, pid)
         folder.mkdir()
-        (folder / "images").mkdir()
+        project_area(folder, "images").mkdir(parents=True)
         db = sqlite3.connect(folder / "project.sqlite3")
         try:
             db.execute("PRAGMA journal_mode=WAL")
@@ -220,9 +225,7 @@ class ProjectStore:
     def _catalog_relative_path(value):
         if not isinstance(value, str) or not value or "\\" in value:
             raise ValueError("資產索引必須使用專案內的相對 POSIX 路徑")
-        path = Path(value)
-        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-            raise ValueError("資產索引路徑超出專案資料夾")
+        logical_reference(value)
         return value
 
     def replace_artifact_catalog(self, project_id, catalog):
@@ -361,7 +364,7 @@ class ProjectStore:
         if detail:
             asset["shapes"] = shapes
         if internal:
-            asset["image_path"] = str(self.directory(pid) / "images" / image_file)
+            asset["image_path"] = str(project_reference(self.directory(pid), f"images/{image_file}"))
         return asset
 
     def get_project(self, project_id, *, include_assets=True, internal=False, delta_base=None, changed_ids=None):
@@ -429,7 +432,7 @@ class ProjectStore:
             if classes is not None:
                 if not isinstance(classes, list):
                     raise ValueError("類別清單無效")
-                names = list(dict.fromkeys(clean_label(s) for s in classes))
+                names = clean_class_names(classes)
                 used = set()
                 for row in db.execute("SELECT shapes FROM assets"):
                     for shape in json.loads(row[0]):
@@ -472,7 +475,7 @@ class ProjectStore:
         """Persist classes and resolve every used removal by relabeling or deletion."""
         if not isinstance(classes, list) or not isinstance(replacements, dict) or not isinstance(delete_objects or [], list):
             raise ValueError("類別管理內容無效")
-        names = list(dict.fromkeys(clean_label(value) for value in classes))
+        names = clean_class_names(classes)
         delete_set = {clean_label(value) for value in (delete_objects or [])}
         if delete_set.intersection(names):
             raise ValueError("保留的類別不能同時刪除其標註物件")
@@ -629,14 +632,14 @@ class ProjectStore:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='review_trash'").fetchone():
                 retained.update(json.loads(r[0])['image_file'] for r in db.execute('SELECT data FROM review_trash'))
             self._touch(db)
-        images = (self.directory(project_id) / 'images').resolve()
+        root = self.directory(project_id)
         for image_file in set(image_files) - retained:
-            image = images / image_file
-            if image.resolve().parent == images and not image.is_symlink():
-                try:
+            try:
+                image = project_reference(root, f'images/{image_file}')
+                if not image.is_symlink():
                     image.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            except (OSError, ValueError):
+                pass
         return dict(deleted=len(ids), asset_ids=ids, project=self.get_project(project_id))
 
     @serialized_images
@@ -646,9 +649,13 @@ class ProjectStore:
         Files can remain unreferenced after an interrupted batch, but a partial
         project/annotation batch is never visible. No original file is changed.
         """
+        from .annotation_materials import preserve_annotation_sources
+        from .materials import record_annotation, record_video_frame
+
         folder = self.directory(project_id)
         if not (folder / "project.sqlite3").is_file():
             raise FileNotFoundError("找不到專案")
+        project_area(folder, "images").mkdir(parents=True, exist_ok=True)
         prepared = []
         default_batch = uuid.uuid4().hex
         for index, record in enumerate(records):
@@ -664,7 +671,9 @@ class ProjectStore:
                 raise ValueError(f"不支援的圖片格式：{path.name}")
             shapes = clean_shapes(record.get("shapes", []), width, height)
             digest = hashlib.sha256(raw).hexdigest()
-            target = folder / "images" / (digest + extension)
+            if record.get('expected_import_sha') and digest != record['expected_import_sha']:
+                raise ConflictError('預覽後來源圖片已變更，請重新預覽')
+            target = project_reference(folder, f"images/{digest}{extension}")
             if target.parent.is_symlink() or target.is_symlink():
                 raise ValueError("圖片儲存路徑不得為連結")
             if target.exists():
@@ -688,27 +697,43 @@ class ProjectStore:
             prepared.append(dict(id=uuid.uuid4().hex, name=record.get("name") or path.name,
                                  width=width, height=height, sha256=digest, image_file=target.name,
                                  batch_id=str(record.get("batch_id") or default_batch), split=split,
-                                 source=dump(source), review_state=state, shapes=shapes))
+                                 source=dump(source), review_state=state, shapes=shapes,
+                                 annotation_files=record.get('annotation_files', ()),
+                                 video_material=record.get('video_material') is True))
             if progress:
                 progress(index+1, len(records))
         added, updated, duplicates, conflicts = [], [], [], []
-        with self.connection(project_id, write=True) as db:
+        with preserve_annotation_sources(folder) as preserve, self.connection(project_id, write=True) as db:
             names = json.loads(db.execute("SELECT classes FROM project").fetchone()[0])
+
+            def link_annotations(image_id, files):
+                if not files:
+                    return
+                revision = db.execute('SELECT revision FROM annotation_revisions WHERE asset_id=?',
+                                      (image_id,)).fetchone()[0]
+                for file in files:
+                    record_annotation(db, project_id, **preserve(file), name=Path(file['path']).name,
+                                      format=file['format'], image_id=image_id, annotation_revision=revision,
+                                      metadata={'original_path': file['path'], 'role': file.get('role', 'labels')})
+
             for asset in prepared:
-                if not (folder / 'images' / asset['image_file']).is_file():
+                if not project_reference(folder, f"images/{asset['image_file']}").is_file():
                     raise ConflictError('匯入期間圖片已被其他操作移除，請重新匯入')
+                incoming_source = json.loads(asset['source'])
                 existing = db.execute("SELECT id,name,shapes,revision,source,split,batch_id FROM assets WHERE sha256=?", (asset["sha256"],)).fetchone()
                 if existing:
+                    if asset['video_material']:
+                        record_video_frame(db, existing['id'], incoming_source)
                     old_shapes = json.loads(existing["shapes"])
                     new_shapes = asset["shapes"]
                     if not old_shapes and new_shapes:
-                        imported_source = json.loads(asset["source"])
-                        source = {**json.loads(existing["source"]), "annotation_import": imported_source}
+                        source = {**json.loads(existing["source"]), "annotation_import": incoming_source}
                         split = existing["split"] or asset["split"]
                         batch_id = asset["batch_id"] if not existing["split"] and asset["split"] else existing["batch_id"]
                         revision = existing["revision"] + 1
                         db.execute("UPDATE assets SET shapes=?,revision=?,review_state='pending',source=?,split=?,batch_id=?,updated_at=? WHERE id=?",
                                    (dump(new_shapes), revision, dump(source), split, batch_id, timestamp(), existing["id"]))
+                        link_annotations(existing['id'], asset['annotation_files'])
                         self._history(db, existing["id"], revision, "import_annotations",
                                       {"shapes": new_shapes, "review_state": "pending", "source": source})
                         for shape in new_shapes:
@@ -722,9 +747,11 @@ class ProjectStore:
                         return [{k:v for k,v in shape.items() if k not in {"id", "hidden"}} for shape in rows]
                     if semantic(old_shapes) != semantic(new_shapes):
                         conflicts.append(f"{asset['name']}：原圖已存在且標註不同，保留已存版本")
+                    else:
+                        link_annotations(existing['id'], asset['annotation_files'])
                     continue
                 now = timestamp()
-                source = json.loads(asset['source'])
+                source = incoming_source
                 for table, key in [('asset_review', 'review'), ('asset_quality', 'quality')]:
                     if key in source:
                         db.execute(f'INSERT OR REPLACE INTO {table} VALUES(?,?)', (asset['id'], dump(source.pop(key))))
@@ -733,6 +760,9 @@ class ProjectStore:
                            (asset["id"], asset["name"], asset["width"], asset["height"], asset["sha256"],
                             asset["image_file"], asset["batch_id"], asset["split"], asset["source"],
                             1, asset["review_state"], dump(asset["shapes"]), now, now))
+                if asset['video_material']:
+                    record_video_frame(db, asset['id'], incoming_source)
+                link_annotations(asset['id'], asset['annotation_files'])
                 self._history(db, asset["id"], 1, "import", {"shapes":asset["shapes"], "review_state":asset["review_state"], "source":json.loads(asset["source"])})
                 for shape in asset["shapes"]:
                     if shape["label"] not in names:
@@ -807,13 +837,21 @@ class ProjectStore:
         return self.save_asset(project_id, asset_id, target["data"]["shapes"], revision)
 
     def _resolve_export_paths(self, project_id, data):
+        root = None
         for key in ("path", "zip_path"):
             value = data.get(key)
-            if isinstance(value, str) and value.startswith("exports/"):
-                root = self.directory(project_id).resolve()
-                path = (root / value).resolve()
-                if path.is_relative_to(root / "exports"):
-                    data[key] = str(path)
+            if not isinstance(value, str):
+                continue
+            try:
+                if Path(value).is_absolute():
+                    root = root or self.directory(project_id).resolve()
+                    value = Path(value).relative_to(root).as_posix()
+                logical = logical_reference(value)
+                if logical == 'exports' or logical.startswith('exports/'):
+                    root = root or self.directory(project_id).resolve()
+                    data[key] = str(project_reference(root, logical))
+            except ValueError:
+                continue
         return data
 
     def record_export(self, project_id, result):
@@ -823,8 +861,10 @@ class ProjectStore:
         for key in ("path", "zip_path"):
             if data.get(key):
                 path = Path(data[key]).resolve()
-                if path.is_relative_to(project_root / "exports"):
-                    data[key] = path.relative_to(project_root).as_posix()
+                if path != project_root and path.is_relative_to(project_root):
+                    logical = logical_reference(path.relative_to(project_root).as_posix())
+                    if logical == 'exports' or logical.startswith('exports/'):
+                        data[key] = logical
         with self.connection(project_id, write=True) as db:
             db.execute("INSERT INTO exports VALUES(?,?,?)", (eid, timestamp(), dump(data)))
             self._touch(db)

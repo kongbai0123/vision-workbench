@@ -1,5 +1,6 @@
 """Transactional trash repository owned by ProjectStore."""
 import json
+from .project_layout import project_reference
 from .store import ConflictError, dump, identifier, timestamp
 
 
@@ -18,7 +19,7 @@ class ReviewRepository:
                     if not saved:
                         raise FileNotFoundError('垃圾桶項目不存在')
                     row = json.loads(saved['data'])
-                    if not (self.store.directory(pid) / 'images' / row['image_file']).is_file():
+                    if not project_reference(self.store.directory(pid), f"images/{row['image_file']}").is_file():
                         raise FileNotFoundError('原圖檔案遺失，請先從備份復原；垃圾桶項目已保留')
                     if db.execute('SELECT 1 FROM assets WHERE id=? OR sha256=?', (aid, row['sha256'])).fetchone():
                         raise ConflictError('專案已有相同圖片，請先處理重複項目後再還原')

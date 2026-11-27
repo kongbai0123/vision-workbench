@@ -1,42 +1,69 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" style="background-color:#10171e;color-scheme:dark">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vision Workbench · 視覺資料工作站</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/acquisition.css"><link rel="stylesheet" href="/training.css"><link rel="stylesheet" href="/split-manager.css"><link rel="stylesheet" href="/review-policy.css"><link rel="stylesheet" href="/review.css"><link rel="stylesheet" href="/annotation-assist.css"></head>
 <body>
 <div class="app-shell">
  <header class="app-header">
   <button id="home" class="brand" title="回到專案資料庫"><span class="brand-mark">V<span>W</span></span><span><strong>VISION WORKBENCH</strong><small>視覺資料工作站</small></span></button>
-  <div class="header-divider"></div><div class="project-identity"><span class="eyebrow">目前專案</span><button id="projectName" class="text-button" disabled>尚未開啟專案</button></div>
+  <div class="header-divider"></div><div class="project-identity"><span class="eyebrow">目前專案</span><button id="projectName" class="text-button" disabled>尚未開啟專案</button><span id="projectRenameHint" hidden>編輯專案名稱</span></div>
   <div class="header-right"><span class="local-pill"><i></i>本機工作空間</span><button id="settings" class="settings-button" title="開啟設定中心"><span id="updateDot" class="update-dot" hidden></span>設定</button><button id="help" class="icon-button" title="快捷鍵與操作說明">?</button></div>
  </header>
- <nav class="phasebar" aria-label="工作流程">
-  <button data-stage="library" class="phase active"><span>01</span>專案資料庫</button><span class="phase-arrow">›</span>
-  <button data-stage="acquire" class="phase" disabled><span>02</span>採集與匯入</button><span class="phase-arrow">›</span>
-  <button data-stage="annotate" class="phase" disabled><span>03</span>標註編輯</button><span class="phase-arrow">›</span>
-  <button data-stage="review" class="phase" disabled><span>04</span>資料審核</button><span class="phase-arrow">›</span>
-  <button data-stage="split" class="phase" disabled><span>05</span>資料準備</button><span class="phase-arrow">›</span>
-  <button data-stage="train" class="phase" disabled><span>06</span>模型訓練</button><span class="phase-arrow">›</span>
-  <button data-stage="models" class="phase" disabled><span>07</span>評估與模型</button>
-  <div class="phase-actions"><button id="dataExport" class="text-button" disabled>資料匯出 ↗</button><button id="openProjectFolder" class="text-button" disabled>開啟資料夾 ↗</button></div>
- </nav>
+ <div class="workflow-navigation">
+  <nav class="phasebar" aria-label="工作流程">
+   <button data-stage="library" class="phase active"><span>01</span>專案資料庫</button><span class="phase-arrow">›</span>
+   <button data-stage="acquire" class="phase" disabled><span>02</span>採集與匯入</button><span class="phase-arrow">›</span>
+   <button data-stage="annotate" class="phase" disabled><span>03</span>標註編輯</button><span class="phase-arrow">›</span>
+   <button data-stage="review" class="phase" disabled><span>04</span>資料審核</button><span class="phase-arrow">›</span>
+   <button data-stage="split" class="phase" disabled><span>05</span>資料準備</button><span class="phase-arrow">›</span>
+   <button data-stage="train" class="phase" disabled><span>06</span>模型訓練</button><span class="phase-arrow">›</span>
+   <button data-stage="models" class="phase" disabled><span>07</span>評估與模型</button>
+   <div class="phase-actions">
+    <button id="projectMaterials" class="text-button" type="button" aria-haspopup="dialog" disabled>素材清單</button>
+    <button id="dataExport" class="text-button" type="button" disabled>匯出資料集 ↗</button>
+    <button id="openProjectFolder" class="text-button" type="button" disabled>專案資料夾 ↗</button>
+   </div>
+  </nav>
+  <p id="libraryWorkflowHint" class="workflow-hint">開啟或建立專案後，即可使用後續流程。</p>
+ </div>
  <main>
+  <div id="workspaceLoading" class="workspace-loading" role="status" aria-live="polite" aria-atomic="true" hidden>
+   <strong id="workspaceLoadingTitle"></strong>
+   <span id="workspaceLoadingDetail"></span>
+   <div id="workspaceLoadingBar" class="workspace-loading-bar" role="progressbar" aria-label="工作區載入進度"></div>
+  </div>
   <section id="library" class="page library-page">
-   <div class="page-heading"><div><span class="eyebrow">PROJECT LIBRARY</span><h1>專案資料庫</h1><p>採集、標註、審核與匯出，共用同一個本地專案。</p></div><button id="newProject" class="primary">＋ 建立專案</button></div>
-   <div class="library-summary"><div><span class="summary-icon">▦</span><div><b id="projectCount">0</b><span>本地專案</span></div></div><div><span class="summary-icon">▧</span><div><b id="totalImages">0</b><span>影像資產</span></div></div><div><span class="summary-icon">✓</span><div><b id="totalApproved">0</b><span>已核准影像</span></div></div><div class="summary-note">原圖保留 · 修訂追溯<br><span>資料只儲存在這台電腦</span></div></div>
-   <div class="section-heading"><h2>所有專案</h2><div class="inline"><input id="projectSearch" type="search" placeholder="搜尋專案名稱" aria-label="搜尋專案"><button id="refreshProjects" class="secondary">重新整理</button></div></div>
+   <div class="page-heading"><div><span class="eyebrow">PROJECT LIBRARY</span><h1>專案資料庫</h1><p>採集、標註、審核與匯出，共用同一個本地專案。</p></div><div class="library-heading-actions"><button id="restoreProjectBackup" class="secondary">還原專案</button><button id="newProject" class="primary">＋ 建立專案</button></div></div>
+   <div class="library-summary">
+    <div><b id="projectCount">0</b><span>本地專案</span></div>
+    <div><b id="totalImages">0</b><span>影像資產</span></div>
+    <div><b id="totalApproved">0</b><span>已核准影像</span></div>
+    <div><b id="totalPending">0</b><span>待審核影像</span></div>
+   </div>
+   <div class="section-heading library-toolbar"><h2>所有專案</h2><div class="inline"><input id="projectSearch" type="search" placeholder="搜尋專案名稱" aria-label="搜尋專案"><button id="refreshProjects" class="secondary">重新整理</button></div></div>
+   <div id="projectTransferResult" class="inline-report project-transfer-result" hidden></div>
    <div id="projectGrid" class="project-grid"></div><div id="libraryEmpty" class="empty-state" hidden><span>▦</span><h2>建立第一個視覺資料專案</h2><p>可匯入圖片、既有標註資料夾，或從相機開始採集。</p><button id="newProjectEmpty" class="primary">建立專案</button></div>
+   <template id="projectDeleteIcon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7"/></svg></template>
   </section>
   <section id="acquire" class="page acquisition-page" hidden>
    <div class="acquisition-heading"><div><h1>採集與匯入</h1><p>選擇來源，將影像加入目前專案。</p></div><button id="cameraActivity" class="camera-activity" hidden><i></i><span>相機運作中 · 返回預覽</span></button></div>
-   <div class="source-tabs" role="tablist" aria-label="影像來源">
-    <button id="tab-camera" data-source="camera" role="tab" aria-controls="source-camera" aria-selected="true" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l2-3h4l2 3h4v14H4V6z"/><circle cx="12" cy="12" r="4"/></svg>相機採集</button>
-    <button id="tab-files" data-source="files" role="tab" aria-controls="source-files" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h7l2 3h9v12H3z"/><path d="M3 10h18"/></svg>檔案匯入</button>
-    <button id="tab-video" data-source="video" role="tab" aria-controls="source-video" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 8l6 4-6 4z"/></svg>影片取樣</button>
-   <button id="tab-screen" data-source="screen" role="tab" aria-controls="source-screen" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17v4m-5 0h10"/></svg>螢幕擷取</button>
-    <button id="tab-merge" data-source="merge" role="tab" aria-controls="source-merge" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v5c0 4 8 1 8 6v6m8-17v5c0 4-8 1-8 6m-4 2 4 4 4-4"/></svg>整併專案</button>
+   <div class="source-tabs">
+    <div class="source-group-tabs" role="tablist" aria-label="取得素材的方式">
+     <button id="tab-capture" data-source-group="capture" role="tab" aria-controls="source-camera" aria-selected="true" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l2-3h4l2 3h4v14H4V6z"/><circle cx="12" cy="12" r="4"/></svg>即時擷取</button>
+     <button id="tab-import" data-source-group="import" role="tab" aria-controls="source-files" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h7l2 3h9v12H3z"/><path d="M3 10h18"/></svg>匯入素材</button>
+     <button id="tab-merge" data-source-group="merge" role="tab" aria-controls="source-merge" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v5c0 4 8 1 8 6v6m8-17v5c0 4-8 1-8 6m-4 2 4 4 4-4"/></svg>整併專案</button>
+    </div>
+    <div class="source-mode-switch" data-source-modes="capture" role="group" aria-label="擷取來源">
+     <button type="button" data-source="camera" aria-controls="source-camera" aria-pressed="true">相機</button>
+     <button type="button" data-source="screen" aria-controls="source-screen" aria-pressed="false">螢幕</button>
+    </div>
+    <div class="source-mode-switch" data-source-modes="import" role="group" aria-label="匯入方式" hidden>
+     <button type="button" data-source="files" aria-controls="source-files" aria-pressed="false">圖片與標註</button>
+     <button type="button" data-source="video" aria-controls="source-video" aria-pressed="false">影片取樣</button>
+    </div>
    </div>
    <div class="source-workspace"><button id="toggleImageTools" class="inspector-toggle image-tools-toggle" type="button" aria-expanded="false" aria-controls="imageToolsInspector">影像工具 ›</button><button id="toggleSourceInspector" class="inspector-toggle" type="button" aria-expanded="false" aria-controls="activeSourceInspector">相機設定 ›</button>
     <div id="acquisitionTask" class="acquisition-task" role="status" aria-live="polite" hidden><div class="task-progress-copy"><b id="acquisitionTaskTitle">正在處理</b><span id="acquisitionTaskMessage">準備中…</span></div><span id="acquisitionTaskElapsed">0.0 秒</span><progress id="acquisitionTaskProgress" max="100"></progress><div class="task-progress-actions"><button id="pauseAcquisitionTask" class="secondary" type="button">暫停</button><button id="stopAcquisitionTask" class="secondary danger" type="button">停止</button></div></div>
-    <div id="source-camera" class="source-view" role="tabpanel" aria-labelledby="tab-camera">
+    <div id="source-camera" class="source-view" role="tabpanel" aria-labelledby="tab-capture">
      <div class="source-main camera-workspace">
       <div class="workspace-toolbar"><h2>即時預覽</h2><span id="cameraReadout">等待連接裝置</span><div class="preview-view-controls"><select id="previewLayout" aria-label="預覽畫面配置"><option value="single">單一畫面</option><option value="compare">分割比較</option></select><label class="check-label"><input id="showRawFrame" type="checkbox">顯示原圖</label><label class="check-label"><input id="showCenterCrosshair" type="checkbox">中心準心</label><button id="togglePreviewFullscreen" class="icon-button preview-expand-button" type="button" aria-label="放大即時預覽" aria-pressed="false" title="放大即時預覽"><svg class="expand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5m11 5h5v-5"/></svg><svg class="restore-icon" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5"/></svg></button></div></div>
       <div id="cameraPreview" class="camera-preview"><div id="cameraRawPane" class="preview-pane raw-pane" hidden><img id="cameraRawFrame" alt="相機原始影像" hidden><canvas id="cameraRawTargetMask" class="target-mask-layer" aria-hidden="true"></canvas><svg id="cameraRawTargetOverlay" class="target-overlay" aria-label="原圖目標區域繪製層"></svg><span class="preview-label">原圖</span></div><div id="cameraOutputPane" class="preview-pane output-pane" hidden><img id="cameraFrame" alt="相機即時預覽" hidden><canvas id="cameraOutputTargetMask" class="target-mask-layer" aria-hidden="true"></canvas><svg id="cameraOutputTargetOverlay" class="target-overlay" aria-label="單一原圖目標區域繪製層"></svg><span id="outputPreviewLabel" class="preview-label">處理輸出</span></div><div id="cameraEmpty"><svg viewBox="0 0 80 64" aria-hidden="true"><path d="M8 16h18l6-9h16l6 9h18v42H8z"/><circle cx="40" cy="35" r="13"/></svg><h3>相機尚未連接</h3><p>在右側選擇裝置，啟動即時預覽</p></div><span id="recordBadge" class="record-badge" hidden>● 錄影中</span></div>
@@ -48,14 +75,14 @@
       <details class="inspector-section" open><summary>設定檔</summary><label for="cameraProfile">此相機的設定檔</label><select id="cameraProfile"><option value="">尚無設定檔</option></select><button id="loadCameraProfile" class="secondary full" disabled>載入設定檔</button><label for="cameraProfileName">設定檔名稱</label><input id="cameraProfileName" maxlength="80" placeholder="例如：工件檢測 · 固定光源"><button id="saveCameraProfile" class="secondary full">儲存目前設定</button><p id="cameraProfileStatus" class="field-note" role="status">設定檔保存於本機，依裝置名稱與索引區分。</p></details>
       <div class="inspector-section camera-capture-section"><h3>自動擷取與錄影</h3><p class="field-note">依自訂間隔連續取幀，或將相機影像錄製成影片。</p><div class="auto-capture-settings"><div><label for="autoCaptureInterval">自動擷取間隔 <span>秒</span></label><input id="autoCaptureInterval" type="number" min="0.5" max="3600" step="0.1" value="2"></div><div><label for="autoCaptureLimit">擷取次數 <span>0＝持續</span></label><input id="autoCaptureLimit" type="number" min="0" max="100000" step="1" value="0"></div></div><button id="startAutoCapture" class="secondary full" disabled>▶ 開始自動擷取</button><button id="stopAutoCapture" class="secondary full" disabled hidden>■ 停止自動擷取</button><p id="autoCaptureStatus" class="field-note" role="status">尚未開始自動擷取。</p><button id="startRecording" class="secondary" disabled><span class="record-dot"></span>開始錄影</button><button id="stopRecording" class="secondary" disabled hidden>■ 停止錄影</button></div>
       <section id="recordedFrameTools" class="inspector-section recorded-frame-tools" aria-label="影片素材" hidden>
-       <div class="camera-video-import"><button id="importVideoMaterial" class="secondary">匯入影片</button><button id="openVideoMaterials" class="secondary" disabled>開啟影片資料夾</button></div>
+       <div class="camera-video-actions"><button id="openVideoMaterials" class="secondary" disabled>開啟影片資料夾</button></div>
        <p id="recordingSummary" class="field-note" role="status">目前專案尚無影片。</p>
-       <details id="cameraRecordingSampling" hidden>
-        <summary>選擇影片並取幀</summary>
-        <label for="cameraRecordingSelect">專案影片</label><select id="cameraRecordingSelect"></select>
-        <div class="camera-recording-sample"><label for="cameraVideoInterval">取幀間隔（秒）</label><input id="cameraVideoInterval" type="number" min="0.1" max="3600" step="0.1" value="1"><button id="extractRecording" class="primary">取幀並加入影像素材</button></div>
+       <div id="cameraRecordingSampling" class="camera-recording-options" hidden>
+        <h3 id="cameraRecordingLabel">取樣來源</h3>
+        <div id="cameraRecordingList" class="video-recording-list" role="radiogroup" aria-labelledby="cameraRecordingLabel"></div>
+        <div class="camera-recording-sample"><label for="cameraVideoInterval">取幀間隔（秒）</label><input id="cameraVideoInterval" type="number" min="0.1" max="3600" step="0.1" value="1"><button id="extractRecording" class="primary">取幀並加入圖片</button></div>
         <div id="cameraVideoReport" class="inline-report" role="status" hidden></div>
-       </details>
+       </div>
       </section>
       <div class="inspector-section camera-target-section"><h3>目標區域</h3><p class="field-note target-intro">相機採集頁可直接用鍵盤切換；ROI 同時供處理與標註使用。</p><select id="cameraTargetTool" hidden aria-label="目前目標繪製工具"><option value="none">關閉繪製</option><option value="rectangle">Bounding Box</option><option value="polygon">Polygon</option><option value="mask">Mask 筆刷</option><option value="mask_erase">Mask 橡皮擦</option></select><div class="target-shortcut-guide" aria-label="目標工具快捷鍵"><span data-target-hint="rectangle"><kbd>Q</kbd> Box</span><span data-target-hint="polygon"><kbd>W</kbd> Polygon</span><span data-target-hint="mask"><kbd>E</kbd> Mask</span><span data-target-hint="mask_erase"><kbd>Shift+E</kbd> 擦除</span><span data-target-hint="none"><kbd>Esc</kbd> 關閉</span></div><div class="target-field-row"><label for="cameraTargetLabel">標註類別</label><select id="cameraTargetLabel"><option value="">請先建立並選擇類別</option></select></div><div id="cameraTargetBrushFields" class="target-field-row" hidden><label for="cameraTargetBrushRadius">筆刷半徑 <span>px</span></label><input id="cameraTargetBrushRadius" type="number" min="1" max="200" value="24"></div><div class="target-option-row"><label class="check-label"><input id="cameraTargetUseProcessing" type="checkbox" checked>限定處理範圍</label><label class="check-label"><input id="cameraTargetAttach" type="checkbox" checked>擷取時建立標註</label></div><div class="target-footer-row"><p id="cameraTargetStatus" class="field-note" role="status">尚未設定目標區域。</p><button id="clearCameraTarget" class="secondary" disabled>清除目標</button></div></div>
       <div class="inspector-section"><h3>影像處理</h3><label for="processingMode">預覽模式</label><select id="processingMode"><option value="original">原始影像</option><option value="binary">固定二值化</option><option value="adaptive">自適應二值化</option><option value="canny">Canny 邊緣</option><option value="mog2">MOG2 背景分離</option><option value="optical_flow">光流移動偵測</option><option value="classical">古典背景分割</option><option value="sam2">SAM 2 分割</option></select><div id="processingParams" class="camera-processing-params" hidden><label for="processingThreshold" id="thresholdLabel">二值閾值</label><input id="processingThreshold" type="number" min="0" max="255" value="128"><label class="check-label"><input id="processingInvert" type="checkbox">反相</label></div><p id="calibrationHint" class="field-note" hidden>請先清空拍攝場景，再進行背景校正。</p><div class="processing-actions"><button id="applyProcessing" class="secondary full">套用預覽</button><button id="calibrateBackground" class="secondary full" hidden>校正背景</button></div><p id="processingStatus" class="field-note" role="status">拍攝與錄影保存原始影像。</p></div>
@@ -64,22 +91,26 @@
      </aside>
      <aside id="imageToolsInspector" class="source-inspector image-tools-inspector" aria-label="影像工具"></aside>
     </div>
-    <div id="source-files" class="source-view" role="tabpanel" aria-labelledby="tab-files" hidden>
+    <div id="source-files" class="source-view" role="tabpanel" aria-labelledby="tab-import" hidden>
      <div class="source-main"><div class="workspace-toolbar"><h2>圖片與標註</h2><span>選擇後自動檢查並匯入</span></div><div id="fileDropZone" class="source-center file-drop-zone" role="region" aria-label="拖曳檔案匯入區"><div class="source-glyph"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M7 15h20l6 7h24v33H7z"/><path d="M7 29h50M25 42h14m-7-7v14"/></svg></div><h2 id="fileDropTitle">將圖片或資料夾拖曳至此</h2><p id="fileDropHint">可選解壓後整份資料集，或選資料集內的圖片自動配對標註；匯入前可預覽標註數。</p><div class="import-actions"><button id="chooseFolder" class="primary">選擇資料夾並匯入</button><button id="chooseImages" class="secondary">選擇圖片</button></div><button id="showManualImport" class="text-button">輸入資料路徑 →</button></div><div class="supported-formats"><span>支援格式</span><b>圖片</b><b>LabelMe</b><b>COCO</b><b>YOLO</b><b>JSONL</b><b>工作台原生</b></div></div>
      <aside class="source-inspector"><div class="inspector-section"><h2>匯入至目前專案</h2><div class="destination-name" data-destination-name>目前專案</div></div><details id="manualImport" class="inspector-section"><summary>手動輸入路徑</summary><label for="importPaths">完整路徑 <span>每行一個</span></label><textarea id="importPaths" rows="3" placeholder="C:\datasets\product-inspection"></textarea><button id="importFiles" class="primary full">檢查並匯入</button></details><div class="inspector-section result-section"><h3>匯入結果</h3><p id="importReportEmpty" class="field-note">完成後顯示匯入數量與資料檢查結果。</p><div id="importReport" class="inline-report" role="status" hidden></div><p class="field-note">圖片：PNG、JPG、BMP、TIFF、WebP。標註：LabelMe／COCO JSON、YOLO TXT／YAML、工作台 JSONL 與原生格式。請保留配對圖片及類別檔；ZIP 須先解壓縮。</p></div></aside>
     </div>
-    <div id="source-video" class="source-view" role="tabpanel" aria-labelledby="tab-video" hidden>
-     <div class="source-main"><div class="workspace-toolbar"><h2>影片畫格擷取</h2><span>固定間隔取樣</span></div><div class="source-center"><div class="source-glyph"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="9" y="12" width="46" height="38" rx="3"/><path d="M28 23l13 8-13 8zM17 12v38m30-38v38"/></svg></div><h2 id="videoSourceName">選擇要取樣的影片</h2><p id="videoSourceDescription">本地影片與剛完成的相機錄影，都可以擷取成影像。</p><button id="chooseVideo" class="primary">選擇影片</button><div class="sampling-sequence" aria-label="影片依設定間隔取樣"><span>影片</span><i></i><span id="sampleIntervalLabel">每 1 秒</span><i></i><span>影像素材</span></div></div></div>
-     <aside class="source-inspector">
-      <div class="inspector-section"><h2>取樣設定</h2><label for="videoPath">來源影片</label><input id="videoPath" placeholder="選擇影片或貼上完整路徑">
-       <button id="saveVideoSource" class="secondary full">將來源影片存入專案</button>
-       <label for="videoInterval">取樣間隔 <span>秒</span></label><input id="videoInterval" type="number" min="0.1" max="3600" step="0.1" value="1">
-       <p class="field-note">間隔越短，產生的圖片越多。</p><button id="extractVideo" class="primary full">擷取畫格並加入專案</button>
+    <div id="source-video" class="source-view" role="tabpanel" aria-labelledby="tab-import" hidden>
+     <div class="source-main">
+      <div class="workspace-toolbar"><h2>影片取樣</h2></div>
+      <div class="source-center">
+       <div class="source-glyph"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="9" y="12" width="46" height="38" rx="3"/><path d="M28 23l13 8-13 8zM17 12v38m30-38v38"/></svg></div>
+       <h2 id="videoSourceName">選擇要取樣的影片</h2>
+       <p id="videoSourceDescription">選擇本機影片，或從右側選用專案影片。取幀間隔在右側設定。</p>
+       <div class="video-source-picker">
+        <label for="videoPath">來源影片</label>
+        <div class="inline"><input id="videoPath" placeholder="貼上影片的完整路徑"><button id="chooseVideo" class="secondary">瀏覽影片</button></div>
+       </div>
+       <div id="videoReport" class="inline-report video-source-report" role="status" hidden></div>
       </div>
-      <div class="inspector-section result-section"><h3>取樣結果</h3><p id="videoReportEmpty" class="field-note">畫格保留來源影片與時間位置。</p><div id="videoReport" class="inline-report" role="status" hidden></div></div>
-     </aside>
+     </div>
     </div>
-    <div id="source-screen" class="source-view" role="tabpanel" aria-labelledby="tab-screen" hidden>
+    <div id="source-screen" class="source-view" role="tabpanel" aria-labelledby="tab-capture" hidden>
      <div class="source-main"><div class="workspace-toolbar"><h2>擷取桌面畫面</h2><span>完整螢幕</span></div><div class="source-center"><div class="source-glyph"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="5" y="8" width="54" height="36" rx="3"/><path d="M32 44v12m-13 0h26M13 17h9m-9 0v9m38 9h-9m9 0v-9"/></svg></div><h2>將目前桌面加入專案</h2><p>擷取後會出現在下方素材列，可直接開啟標註。</p><button id="screenCapture" class="primary">擷取螢幕並加入</button></div></div>
      <aside class="source-inspector"><div class="inspector-section"><h2>擷取設定</h2><label>擷取範圍</label><div class="destination-name">目前桌面畫面</div><label>加入專案</label><div class="destination-name" data-destination-name>目前專案</div></div><div class="inspector-section"><h3>操作提示</h3><p class="field-note">先將要擷取的內容放在螢幕上。擷取範圍包含當下可見的視窗。</p></div></aside>
     </div>
@@ -274,7 +305,7 @@
       <div class="split-batches"><div id="batchTable" class="batch-table"></div></div>
      </div>
     </article>
-   <div class="export-grid release-grid"><article class="panel validation-panel validation-workflow release-step"><div class="release-step-heading"><span class="release-step-number">2</span><div class="panel-title"><span>VALIDATE DATA</span><h2>選擇格式並驗證</h2></div></div><label for="exportFormat">資料格式</label><select id="exportFormat"><option value="native">Vision Workbench 原生格式</option><option value="coco">COCO · 偵測 / 分割</option><option value="yolo_detection">YOLO · 物件偵測</option><option value="yolo_segmentation">YOLO · 實例分割</option><option value="labelme">LabelMe JSON</option><option value="classification">圖片分類 · 類別資料夾</option><option value="jsonl">JSONL · 逐圖標註紀錄</option></select><p id="formatDescription" class="format-description"></p><button id="validateProject" class="secondary full">執行驗證</button><div class="validation-result-heading"><h3>資料檢查結果</h3><span>影像、標註、類別與格式相容性</span></div><div id="validationReport" class="report-empty"><span>✓</span><h3>尚未執行驗證</h3><p>選擇匯出格式後，執行一次完整驗證。</p></div></article><article class="panel export-options release-step"><div class="release-step-heading"><span class="release-step-number">3</span><div class="panel-title"><span>CREATE RELEASE</span><h2>建立匯出版本</h2></div></div><p class="step-note">建立版本時會使用左側所選格式再次驗證，只匯出已核准圖片。</p><label for="exportVersion">版本名稱</label><input id="exportVersion" value="v1" maxlength="80"><label for="outputPath">輸出資料夾 <span>留空使用預設位置</span></label><div class="inline"><input id="outputPath" placeholder="使用目前專案的 exports 資料夾"><button id="chooseOutput" class="secondary">瀏覽</button></div><label class="check-label loss-ack"><input id="acknowledgeLoss" type="checkbox"><span>我已閱讀驗證報告，接受報告所列的格式轉換損失。</span></label><button id="exportProject" class="primary full">建立匯出版本</button></article></div>
+   <div class="export-grid release-grid"><article class="panel validation-panel validation-workflow release-step"><div class="release-step-heading"><span class="release-step-number">2</span><div class="panel-title"><span>VALIDATE DATA</span><h2>選擇格式並驗證</h2></div></div><label for="exportFormat">資料格式</label><select id="exportFormat"><option value="native">Vision Workbench 原生格式</option><option value="coco">COCO · 偵測 / 分割</option><option value="yolo_detection">YOLO · 物件偵測</option><option value="yolo_segmentation">YOLO · 實例分割</option><option value="labelme">LabelMe JSON</option><option value="classification">圖片分類 · 類別資料夾</option><option value="jsonl">JSONL · 逐圖標註紀錄</option></select><p id="formatDescription" class="format-description"></p><button id="validateProject" class="secondary full">執行驗證</button><div class="validation-result-heading"><h3>資料檢查結果</h3><span>影像、標註、類別與格式相容性</span></div><div id="validationReport" class="report-empty"><span>✓</span><h3>尚未執行驗證</h3><p>選擇匯出格式後，執行一次完整驗證。</p></div></article><article class="panel export-options release-step"><div class="release-step-heading"><span class="release-step-number">3</span><div class="panel-title"><span>CREATE RELEASE</span><h2>建立匯出版本</h2></div></div><p class="step-note">建立版本時會使用左側所選格式再次驗證，只匯出已核准圖片。</p><label for="exportVersion">版本名稱</label><input id="exportVersion" value="v1" maxlength="80"><label for="outputPath">輸出資料夾 <span>留空使用預設位置</span></label><div class="inline"><input id="outputPath" placeholder="使用目前專案的 outputs/datasets 資料夾"><button id="chooseOutput" class="secondary">瀏覽</button></div><label class="check-label loss-ack"><input id="acknowledgeLoss" type="checkbox"><span>我已閱讀驗證報告，接受報告所列的格式轉換損失。</span></label><button id="exportProject" class="primary full">建立匯出版本</button></article></div>
     <div class="section-heading export-history-heading"><div><span class="eyebrow">RELEASE HISTORY</span><h2>匯出紀錄</h2></div><button id="refreshExports" class="secondary">重新整理</button></div><div id="exportHistory" class="export-history"></div><div id="releaseDrawer" class="release-drawer-shell" hidden><aside class="release-drawer" role="dialog" aria-modal="true" aria-labelledby="releaseDrawerTitle"><div class="release-drawer-heading"><div><span class="eyebrow">DETAILS</span><h2 id="releaseDrawerTitle">詳細資訊</h2></div><button id="releaseDrawerClose" class="icon-button" type="button" aria-label="關閉詳細資訊">×</button></div><div id="releaseDrawerBody" class="release-drawer-body"></div></aside></div>
   </section>
  </main>
@@ -295,23 +326,61 @@
      <div class="settings-section-heading"><h2>一般與環境</h2><p>偏好設定保存在這台電腦。</p></div>
      <div class="setting-row"><div><b>介面縮放</b><small>調整工作台內容大小。</small></div><select id="settingScale" aria-label="介面縮放"><option value="0.9">90%</option><option value="1">100%</option><option value="1.1">110%</option><option value="1.2">120%</option></select></div>
      <section id="settingsComputeSection" class="settings-subsection" aria-labelledby="settingsComputeTitle">
-      <h3 id="settingsComputeTitle">運算與儲存</h3>
+      <div class="settings-section-with-action">
+       <h3 id="settingsComputeTitle">運算與儲存</h3>
+       <button id="settingsHardwareRefresh" type="button" class="text-button">重新檢查硬體</button>
+      </div>
       <div class="setting-row"><div><b>預設訓練裝置</b><small>新建 Run 時使用，可在訓練頁個別修改。</small></div><select id="settingDevice" aria-label="預設訓練裝置"><option value="auto">自動</option><option value="cuda">NVIDIA CUDA</option><option value="cpu">CPU</option></select></div>
-      <div id="computeSummary" class="settings-facts"></div>
+      <div class="settings-facts">
+       <p id="settingsHardwareStatus" class="field-note" role="status" hidden></p>
+       <div id="settingsHardwareSummary" class="settings-fact-group" hidden>
+        <div class="settings-fact"><span>處理器（CPU）</span><div><b id="settingsHardwareCpuName"></b><small id="settingsHardwareCpuCores"></small></div></div>
+        <div class="settings-fact"><span>系統記憶體（RAM）</span><b id="settingsHardwareMemory"></b></div>
+        <div class="settings-fact"><span>顯示卡（GPU）</span><ul id="settingsHardwareGpus" class="settings-hardware-gpus"></ul></div>
+       </div>
+       <div id="computeSummary" class="settings-fact-group"></div>
+      </div>
      </section>
     </section>
-    <section data-settings-panel="models" hidden>
-     <div class="settings-section-heading settings-section-with-action"><div><h2>模型與元件</h2><p>查看模型用途及本機安裝位置。</p></div><button id="refreshModelCatalog" class="secondary">重新檢查</button></div>
-     <section id="settingsAnnotationModels" class="settings-model-group" aria-labelledby="settingsAnnotationModelsTitle" hidden>
-      <div class="settings-section-with-action"><h3 id="settingsAnnotationModelsTitle">標註輔助模型</h3><button id="startAnnotationModelInstall" type="button" class="secondary" disabled>從資料夾安裝批量模型</button></div>
-      <p id="settingsAnnotationModelLocation"></p>
-      <div id="settingsAnnotationModelList" class="settings-annotation-model-list"></div>
-      <p class="field-note">搬移時請保留完整模型資料夾。開始推論時會另外檢查模型與執行環境。</p>
+    <section data-settings-panel="models" class="settings-models-panel" hidden>
+     <div class="settings-section-heading settings-section-with-action">
+      <h2>模型與元件</h2>
+      <button id="refreshModelCatalog" type="button" class="secondary">重新檢查</button>
+     </div>
+     <div class="settings-model-tabs" role="tablist" aria-label="模型分類">
+      <button id="settingsModelTabTraining" class="secondary" type="button" role="tab" aria-selected="true" aria-controls="settingsTrainingModelsPanel" data-models-tab="training">訓練與專案模型</button>
+      <button id="settingsModelTabAnnotation" class="secondary" type="button" role="tab" aria-selected="false" aria-controls="settingsAnnotationModelsPanel" data-models-tab="annotation" tabindex="-1">標註輔助與互動分割</button>
+     </div>
+     <section id="settingsTrainingModelsPanel" class="model-catalog-layout" role="tabpanel" aria-labelledby="settingsModelTabTraining">
+      <div class="model-catalog-sidebar">
+       <div class="model-catalog-tools">
+        <input id="modelCatalogSearch" type="search" placeholder="搜尋模型或用途" aria-label="搜尋訓練與專案模型">
+        <select id="modelCatalogFilter" aria-label="篩選訓練與專案模型"><option value="all">全部模型</option><option value="ready">本機可用</option><option value="unavailable">尚待準備</option></select>
+        <small id="settingsModelCount" role="status"></small>
+       </div>
+       <div id="settingsModelList" class="settings-model-list" role="region" aria-label="模型清單" tabindex="0"></div>
+      </div>
+      <article id="settingsModelDetail" class="settings-model-detail">
+       <div id="settingsModelDetailBody" class="settings-model-detail-body" role="region" aria-label="模型詳情" tabindex="0">
+        <p class="muted">正在讀取模型清單…</p>
+       </div>
+       <div id="settingsModelActions" class="catalog-actions" hidden></div>
+      </article>
      </section>
-     <section class="settings-model-group" aria-labelledby="settingsTrainingModelsTitle">
-      <h3 id="settingsTrainingModelsTitle">訓練與專案模型</h3>
-      <div class="model-catalog-tools"><input id="modelCatalogSearch" type="search" placeholder="搜尋模型或用途" aria-label="搜尋訓練與專案模型"><select id="modelCatalogFilter" aria-label="篩選訓練與專案模型"><option value="all">全部任務</option><option value="ready">本機可用</option><option value="unavailable">尚待準備</option></select></div>
-      <div class="model-catalog-layout"><div id="settingsModelList" class="settings-model-list"></div><article id="settingsModelDetail" class="settings-model-detail"><div class="report-empty"><span>◇</span><h3>選擇一個模型</h3><p>查看用途、標註需求、執行環境與授權。</p></div></article></div>
+     <section id="settingsAnnotationModelsPanel" class="settings-annotation-panel" role="tabpanel" aria-labelledby="settingsModelTabAnnotation" tabindex="0" hidden>
+      <p id="settingsAnnotationCatalogEmpty" class="muted">正在讀取標註輔助元件…</p>
+      <section id="settingsAnnotationModels" class="settings-annotation-catalog" aria-label="標註輔助與互動分割" hidden>
+       <section class="settings-annotation-group" aria-labelledby="settingsAnnotationModelsTitle">
+        <div class="settings-section-with-action"><h3 id="settingsAnnotationModelsTitle">批量找框</h3><button id="startAnnotationModelInstall" type="button" class="secondary" disabled>從資料夾安裝批量模型</button></div>
+        <p id="settingsAnnotationModelLocation" class="field-note"></p>
+        <div id="settingsAnnotationModelList" class="settings-annotation-model-list"></div>
+        <p class="field-note">搬移時請保留完整模型資料夾。開始推論時會另外檢查模型與執行環境。</p>
+       </section>
+       <section id="settingsInteractiveModelSection" class="settings-annotation-group" aria-labelledby="settingsInteractiveModelsTitle" hidden>
+        <h3 id="settingsInteractiveModelsTitle">互動分割</h3>
+        <div id="settingsInteractiveModelList" class="settings-annotation-model-list"></div>
+       </section>
+      </section>
      </section>
     </section>
     <section data-settings-panel="editors" hidden><div class="settings-section-heading"><h2>編輯器與服務</h2><p>三種編輯器共用同一份專案修訂與審核流程。</p></div><div class="setting-row"><div><b>內建編輯器</b><small>矩形、多邊形、旋轉框與原生遮罩。</small></div><span class="settings-state ready">可使用</span></div><div class="setting-row"><div><b>Labelme</b><small>桌面版內嵌；存檔後同步回工作台。</small></div><span id="settingsLabelmeState" class="settings-state">依桌面環境</span></div><div class="setting-row"><div><b>CVAT</b><small>本機服務；修改讀回後建立待審修訂。</small></div><span class="settings-state">按使用時檢查</span></div></section>
@@ -341,6 +410,25 @@
  </aside>
 </div>
 <div id="toast" class="toast" role="status" popover="manual" hidden></div>
+<dialog id="projectMaterialsDialog" class="project-materials-dialog" aria-labelledby="projectMaterialsTitle">
+ <header class="dialog-heading">
+  <div><h2 id="projectMaterialsTitle">專案素材</h2><p id="projectMaterialProject"></p></div>
+  <form method="dialog"><button id="closeProjectMaterials" class="icon-button" aria-label="關閉素材清單" autofocus>×</button></form>
+ </header>
+ <div class="project-material-toolbar">
+  <div id="projectMaterialFilters" role="group" aria-label="素材類型">
+   <button class="secondary" type="button" data-material-kind="all" aria-pressed="true">全部</button>
+   <button class="secondary" type="button" data-material-kind="image" aria-pressed="false">圖片</button>
+   <button class="secondary" type="button" data-material-kind="video" aria-pressed="false">影片</button>
+   <button class="secondary" type="button" data-material-kind="annotation" aria-pressed="false">標註原檔</button>
+  </div>
+  <input id="projectMaterialSearch" type="search" aria-label="搜尋素材名稱或路徑" placeholder="搜尋素材名稱或路徑">
+ </div>
+ <p id="projectMaterialStatus" role="status" class="field-note"></p>
+ <div id="projectMaterialViewport" class="project-material-viewport" tabindex="0" role="region" aria-label="素材列表">
+  <ul id="projectMaterialList" class="project-material-list"></ul>
+ </div>
+</dialog>
 <dialog id="formDialog"><form id="dialogForm" method="dialog"><div class="dialog-heading"><div><span id="dialogEyebrow" class="eyebrow">WORKSPACE</span><h2 id="dialogTitle"></h2></div><button id="closeDialog" class="icon-button" type="button" aria-label="關閉">×</button></div><div id="dialogBody"></div><div class="dialog-actions"><button id="cancelDialog" type="button" class="secondary">取消</button><button id="confirmDialog" type="submit" class="primary">確定</button></div></form></dialog>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script><script type="module" src="/app.mjs"></script>
 </body></html>
