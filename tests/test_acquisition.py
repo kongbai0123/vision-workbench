@@ -224,6 +224,37 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(fallback.shape[:2], raw.shape[:2])
             camera.stop()
 
+    def test_raw_preview_encoding_does_not_run_in_capture_loop(self):
+        camera = a.CameraService(self.root)
+        with patch.object(camera, "_open_capture", return_value=FakeCamera()), \
+             patch.object(a, "_preview_jpeg", wraps=a._preview_jpeg) as encode:
+            try:
+                camera.start()
+                wait_until(lambda: camera.status()["frame_count"] >= 3)
+                encode.assert_not_called()
+                self.assertTrue(camera.frame_jpeg(processed=True))
+                encode.assert_called_once()
+                self.assertTrue(Path(camera.snapshot()["path"]).is_file())
+                encode.assert_called_once()
+            finally:
+                camera.close()
+
+    def test_optical_flow_limits_working_size_and_restores_roi_alignment(self):
+        frame = np.zeros((720, 1280, 3), np.uint8)
+        state = {}
+        a.process_frame(frame, "optical_flow", state=state)
+        self.assertEqual(state["gray"].shape, (360, 640))
+        roi = {"type": "rectangle", "x": 100, "y": 200, "width": 300, "height": 150}
+        flow = np.ones((150, 300, 2), np.float32)
+        state = {}
+        settings = {"roi_shape": roi}
+        a.process_frame(frame, "optical_flow", state=state, settings=settings)
+        with patch.object(cv2, "calcOpticalFlowFarneback", return_value=flow):
+            output = a.process_frame(frame, "optical_flow", state=state, settings=settings)
+        expected = np.zeros(frame.shape[:2], np.uint8)
+        expected[200:350, 100:400] = 255
+        np.testing.assert_array_equal(output, expected)
+
     def test_slow_processing_does_not_block_camera_capture_or_shutdown(self):
         camera = a.CameraService(self.root)
         entered, release = threading.Event(), threading.Event()

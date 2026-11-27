@@ -376,6 +376,9 @@ class Handler(BaseHTTPRequestHandler):
                 pid = parts[2]
                 if len(parts) == 3:
                     return self.json(self.app.store.get_project(pid))
+                if len(parts) == 4 and parts[3] == "recordings":
+                    directory = self.app.store.directory(pid) / "recordings"
+                    return self.json({"recordings": self.app.camera.list_recordings(directory, pid)})
                 if len(parts) == 4 and parts[3] == "classes":
                     return self.json(self.app.store.class_usage(pid))
                 if parts[3:4] == ['annotation-assist']:
@@ -567,7 +570,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/camera/start":
                 return self.json(self.app.camera.start(index=int(payload.get("index", 0)),width=int(payload.get("width",1280)),
                                   height=int(payload.get("height",720)),fps=float(payload.get("fps",30)),
-                                  pixel_format=payload.get("pixel_format","MJPG"), controls=payload.get("controls")))
+                                  pixel_format=payload.get("pixel_format","MJPG"), controls=payload.get("controls"),
+                                  preview_fps=payload.get("preview_fps", 15)))
+            if path == "/api/camera/preview":
+                return self.json(self.app.camera.set_preview_fps(payload.get("fps")))
             if path == "/api/camera/controls":
                 return self.json(self.app.camera.set_controls(payload.get("values"), payload.get("reset", False)))
             if path == "/api/camera/profiles":
@@ -577,8 +583,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/camera/processing":
                 return self.json(self.app.camera.set_processing(payload.get("mode", "original"), payload.get("settings")))
             if path == "/api/camera/record/start":
-                self.app.store.get_project(payload.get("project_id"), include_assets=False)
-                return self.json(self.app.camera.start_recording(payload["project_id"]))
+                pid = payload.get("project_id")
+                self.app.store.get_project(pid, include_assets=False)
+                directory = self.app.store.directory(pid) / "recordings"
+                return self.json(self.app.camera.start_recording(pid, directory=directory))
             if path == "/api/camera/record/stop":
                 return self.json(self.app.camera.stop_recording())
             if parts[:2] == ["api", "predictions"] and len(parts) == 4 and parts[3] == "accept" and method == "POST":

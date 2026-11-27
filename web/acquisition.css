@@ -121,6 +121,20 @@
 /* Dense target tools: one shortcut rail and three compact control rows. */
 #acquire .camera-target-section{padding-bottom:10px}
 #acquire .camera-target-section .target-intro{margin:5px 0 7px;line-height:1.45;font-size:12px;white-space:nowrap}
+.acquired-tray>.recorded-frame-tools{flex-shrink:0;padding:9px 10px;border-bottom:1px solid var(--acq-line);background:#20262c}
+.camera-recording-actions{display:flex;gap:6px;margin-top:6px}
+#acquire .camera-recording-actions button{width:100%;min-height:32px;height:32px}
+.recorded-frame-tools h3{font-size:12px}
+.recorded-frame-tools h3 span{margin-left:6px;padding:2px 6px;border-radius:3px;background:#343b43}
+.recorded-frame-tools details{margin-top:6px}
+.camera-recording-sample{display:grid;gap:5px;grid-template-columns:minmax(0,1fr) minmax(55px,75px);align-items:center;margin-top:8px}
+#acquire .camera-recording-sample label{margin:0}
+.camera-recording-sample button{grid-column:1/-1}
+#acquire>.acquired-tray{overflow-y:auto}
+#acquire .acquired-assets{min-height:74px}
+#acquire.preview-expanded-layout>.acquired-tray{height:auto;min-height:246px}
+#acquire.preview-expanded-layout .compact-camera-capture{grid-template-columns:120px minmax(245px,340px) minmax(130px,160px) minmax(0,1fr)}
+#acquire.preview-expanded-layout .compact-camera-capture>#autoCaptureStatus{grid-column:4}
 .camera-target-section .target-shortcut-guide{display:flex;gap:4px;margin:0 0 8px}
 .camera-target-section .target-shortcut-guide span{flex:1 1 auto;justify-content:center;gap:4px;padding:4px 5px;min-width:0;height:28px;font-size:12px;white-space:nowrap}
 .camera-target-section .target-shortcut-guide span:nth-child(5){grid-column:auto}

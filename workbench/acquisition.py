@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import importlib.util
 import io
+import json
 import math
 import os
 from pathlib import Path
@@ -167,13 +168,20 @@ def transform_frame(frame: np.ndarray, mode: str = "original", *, threshold: int
         elif mode == "flow":
             if state is None:
                 raise ValueError("Optical Flow 需要持續的預覽狀態")
+            original_size = (gray.shape[1], gray.shape[0])
+            scale = min(1.0, 640 / original_size[0], 360 / original_size[1])
+            if scale < 1:
+                size = tuple(max(1, round(side * scale)) for side in original_size)
+                gray = cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
             previous = state.get("gray")
-            state["gray"] = gray.copy()
+            state["gray"] = gray
             result = np.zeros(gray.shape, np.uint8)
-            if previous is not None and previous.shape == gray.shape:
+            if min(gray.shape) >= 5 and previous is not None and previous.shape == gray.shape:
                 flow = cv2.calcOpticalFlowFarneback(previous, gray, None, .5, 3, 15, 3, 5, 1.2, 0)
-                magnitude = np.sqrt(np.square(flow).sum(axis=2))
-                result[magnitude > 1.0] = 255
+                magnitude = cv2.magnitude(flow[:, :, 0], flow[:, :, 1])
+                result[magnitude > scale] = 255
+            if scale < 1:
+                result = cv2.resize(result, original_size, interpolation=cv2.INTER_NEAREST)
         else:
             raise ValueError(f"未知影像處理模式：{mode}")
     return cv2.bitwise_not(result) if invert else result
@@ -271,6 +279,12 @@ def process_frame(frame: np.ndarray, mode: str = "original", *, settings: dict |
     if mode == "flow":
         mode = "optical_flow"
     roi = _roi_mask(frame, settings.get("roi_shape"))
+    if roi is not None and mode == "optical_flow":
+        x, y, width, height = cv2.boundingRect(roi)
+        output = np.zeros(roi.shape, np.uint8)
+        region = np.s_[y:y + height, x:x + width]
+        output[region] = transform_frame(frame[region], mode, invert=bool(settings.get("invert", False)), state=state)
+        return cv2.bitwise_and(output, output, mask=roi)
     prompt_settings = settings
     if roi is not None and mode in ("classical", "sam2") and settings.get("box") is None:
         prompt_settings = dict(settings, box=_roi_bounds(roi))
@@ -354,7 +368,7 @@ class _PreviewProcessor:
                 self.owner._state["processing_diagnostics"] = diagnostics
 
     def _run(self):
-        state, previous_mode, calibration_token = {}, None, None
+        state, previous_mode, previous_generation, calibration_token = {}, None, None, None
         calibrator, last_sample = None, 0.
         retry_after, failed_generation = 0., None
         while True:
@@ -371,6 +385,9 @@ class _PreviewProcessor:
             if mode == "sam2" and failed_generation == generation and started < retry_after:
                 continue
             try:
+                if generation != previous_generation:
+                    state.pop("gray", None)
+                    previous_generation = generation
                 if mode != previous_mode:
                     state.pop("gray", None)
                     state.pop("mog2", None)
@@ -421,12 +438,15 @@ class CameraService:
         self.storage_root = Path(storage_root).resolve()
         self._lock = threading.RLock()
         self._control = threading.RLock()
+        self._preview_encode = threading.Lock()
         self._stop_event = threading.Event()
         self._commands: queue.Queue[_Command] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._frame: np.ndarray | None = None
         self._frame_time = 0.0
         self._jpeg = b""
+        self._jpeg_source = None
+        self._preview_fps = 15
         self._processed_jpeg = b""
         self._processor = None
         self._processing_generation = 0
@@ -469,7 +489,8 @@ class CameraService:
             if result["last_recording"]:
                 result["last_recording"] = dict(result["last_recording"])
             result["has_frame"] = self._frame is not None and result["running"]
-            result["has_processed_frame"] = bool(self._processed_jpeg) and result["running"]
+            result["has_processed_frame"] = result["running"] and (
+                (self._processing_mode == "original" and self._frame is not None) or bool(self._processed_jpeg))
             result["processing_settings"] = {key: deepcopy(value) for key, value in self._processing_settings.items()
                                              if key not in {"calibration_token", "roi_shape"}}
             result["has_processing_roi"] = self._processing_settings.get("roi_shape") is not None
@@ -485,7 +506,8 @@ class CameraService:
         from .camera_modes import device_modes
         return device_modes(index)
 
-    def start(self, index=0, width=1280, height=720, fps=30, pixel_format="MJPG", controls=None) -> dict:
+    def start(self, index=0, width=1280, height=720, fps=30, pixel_format="MJPG", controls=None, preview_fps=15) -> dict:
+        preview_fps = self._validate_preview_fps(preview_fps)
         values = deepcopy(validate_values(controls if controls is not None else {}))
         if not isinstance(pixel_format,str) or len(pixel_format)!=4 or not pixel_format.isascii():
             raise ValueError("相機像素格式必須是 4 字元 FOURCC")
@@ -503,6 +525,8 @@ class CameraService:
             with self._lock:
                 self._frame = None
                 self._jpeg = b""
+                self._jpeg_source = None
+                self._preview_fps = preview_fps
                 self._processed_jpeg = b""
                 self._processing_generation += 1
                 self._processing_settings.pop("calibration_token", None)
@@ -535,6 +559,7 @@ class CameraService:
                     self._state.update(state="stopped", running=False, recording=False)
                     self._frame = None
                     self._jpeg = b""
+                    self._jpeg_source = None
                     self._processed_jpeg = b""
         return self.status()
 
@@ -573,21 +598,40 @@ class CameraService:
             self._processing_mode = mode
             self._processing_settings = options
             self._processing_generation += 1
-            self._processed_jpeg = self._jpeg if mode == "original" else b""
+            self._processed_jpeg = b""
             self._state.update(processing_mode=mode, processing_state="idle", processing_error=None,
                                processing_ms=0)
         return self.status()
 
+    @staticmethod
+    def _validate_preview_fps(fps):
+        if type(fps) is not int or fps not in (5, 10, 15, 30):
+            raise ValueError("預覽更新率必須為 5、10、15 或 30 FPS")
+        return fps
+
+    def set_preview_fps(self, fps) -> dict:
+        with self._lock:
+            self._preview_fps = self._validate_preview_fps(fps)
+        return self.status()
+
     def frame_jpeg(self, processed: bool = False) -> bytes:
         with self._lock:
-            if not self._state["running"] or not self._jpeg:
-                raise AcquisitionError(self._state["error"] or "相機尚未取得影像")
-            if processed:
-                # A processing algorithm may legitimately need calibration or
-                # model warm-up. Keep the live view usable while its status
-                # explains why the processed result is not ready yet.
-                return self._processed_jpeg or self._jpeg
-            return self._jpeg
+            if self._state["running"] and processed and self._processed_jpeg:
+                return self._processed_jpeg
+        # Wait for preview encoding outside the capture lock. Concurrent
+        # raw/processed fallback requests can reuse the same encoded frame.
+        with self._preview_encode:
+            with self._lock:
+                frame, batch = self._frame, self._batch_id
+                if not self._state["running"] or frame is None:
+                    raise AcquisitionError(self._state["error"] or "相機尚未取得影像")
+                if self._jpeg_source is frame:
+                    return self._jpeg
+            jpeg = _preview_jpeg(frame)
+            with self._lock:
+                if self._state["running"] and batch == self._batch_id:
+                    self._jpeg_source, self._jpeg = frame, jpeg
+            return jpeg
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -619,10 +663,25 @@ class CameraService:
                 raise AcquisitionError(str(command.error)) from command.error
             return self.status()
 
-    def start_recording(self, project_id: str) -> dict:
+    def start_recording(self, project_id: str, *, directory: Path | None = None) -> dict:
         if not isinstance(project_id, str) or not project_id.strip():
             raise ValueError("錄影需要專案識別碼")
-        return self._request("record_start", project_id=project_id)
+        return self._request("record_start", project_id=project_id, directory=directory)
+
+    @staticmethod
+    def list_recordings(directory: Path, project_id: str) -> list[dict]:
+        recordings = []
+        for metadata in sorted(directory.glob("recording_*.json"), reverse=True):
+            path = metadata.with_suffix(".mp4")
+            if not path.is_file():
+                continue
+            try:
+                summary = json.loads(metadata.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(summary, dict) and summary.get("project_id") == project_id:
+                recordings.append({**summary, "path": str(path), "name": path.name})
+        return recordings
 
     def stop_recording(self) -> dict:
         if not self.status()["recording"]:
@@ -657,8 +716,9 @@ class CameraService:
             return capture
         raise AcquisitionError("無法開啟相機。請檢查連接、Windows 相機存取權及其他程式是否占用裝置。")
 
-    def _begin_recording(self, project_id: str, frame: np.ndarray) -> dict:
-        directory = self.storage_root / "recordings"
+    def _begin_recording(self, project_id: str, frame: np.ndarray, directory: Path | None = None) -> dict:
+        project_recording = directory is not None
+        directory = directory if project_recording else self.storage_root / "recordings"
         directory.mkdir(parents=True, exist_ok=True)
         final_path = directory / f"{_identifier('recording')}.mp4"
         working_path = final_path.with_name(final_path.stem + ".part.mp4")
@@ -675,7 +735,7 @@ class CameraService:
         record = {"writer": writer, "working_path": working_path, "path": final_path,
                   "fps": fps, "width": width, "height": height, "encoded_width": encoded_width,
                   "encoded_height": encoded_height, "frames": 0, "started": time.monotonic(),
-                  "project_id": project_id, "batch_id": self._batch_id}
+                  "project_id": project_id, "batch_id": self._batch_id, "project_recording": project_recording}
         with self._lock:
             self._state.update(recording=True, record_frames=0, record_seconds=0,
                                recording_project_id=project_id, error=None)
@@ -710,13 +770,22 @@ class CameraService:
                 probe.release()
             if not ok or first is None:
                 raise AcquisitionError(f"錄影檔案無法解碼，暫存資料保留於：{temporary}")
-            temporary.replace(final_path)
             summary = {"path": str(final_path), "name": final_path.name, "project_id": record["project_id"],
                        "batch_id": record["batch_id"], "fps": record["fps"], "frames": record["frames"],
                        "duration_seconds": record["frames"] / record["fps"], "width": record["width"],
                        "height": record["height"], "encoded_width": record["encoded_width"],
                        "encoded_height": record["encoded_height"], "interrupted": interrupted,
                        "audio": False}
+            metadata = final_path.with_suffix(".json")
+            if record["project_recording"]:
+                stored = {key: value for key, value in summary.items() if key != "path"}
+                metadata.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+            try:
+                temporary.replace(final_path)
+            except OSError:
+                if record["project_recording"]:
+                    metadata.unlink(missing_ok=True)
+                raise
             with self._lock:
                 self._state["last_recording"] = summary
         finally:
@@ -761,6 +830,8 @@ class CameraService:
                 negotiated_fps = round(negotiated_fps)
             failures = 0
             controls_read_at = 0
+            processing_submitted_at = 0.
+            submitted_generation = None
             while not self._stop_event.is_set():
                 ok, frame = capture.read()
                 if not ok or frame is None or frame.size == 0:
@@ -777,23 +848,24 @@ class CameraService:
                     with self._lock:
                         self._state["controls"] = values
                     controls_read_at = now
-                jpeg = _preview_jpeg(frame)
                 with self._lock:
                     self._frame = current_frame.copy()
                     self._frame_time = now
-                    self._jpeg = jpeg
                     self._timestamps.append(now)
                     self._state.update(state="running", running=True, width=frame.shape[1],
                                        height=frame.shape[0], fps=negotiated_fps)
                     self._state["frame_count"] += 1
                     processing_generation = self._processing_generation
                     processing_mode = self._processing_mode
-                    processing_settings = deepcopy(self._processing_settings)
+                    processing_settings = self._processing_settings
+                    preview_fps = self._preview_fps
                     if processing_mode == "original":
-                        self._processed_jpeg = jpeg
                         self._state.update(processing_state="ready", processing_ms=0)
-                if processing_mode != "original":
+                if processing_mode != "original" and (
+                    submitted_generation != processing_generation or now - processing_submitted_at >= 1 / preview_fps
+                ):
                     self._processor.submit(current_frame, processing_generation, processing_mode, processing_settings)
+                    processing_submitted_at, submitted_generation = now, processing_generation
                 while True:
                     try:
                         command = self._commands.get_nowait()
@@ -822,7 +894,8 @@ class CameraService:
                         elif command.kind == "record_start":
                             if record is not None:
                                 raise AcquisitionError("錄影已在進行中")
-                            record = self._begin_recording(command.payload["project_id"], current_frame)
+                            record = self._begin_recording(command.payload["project_id"], current_frame,
+                                                           command.payload["directory"])
                         elif command.kind == "record_stop" and record is not None:
                             closing_record, record = record, None
                             try:
@@ -864,6 +937,7 @@ class CameraService:
                 self._state.update(state="error" if error else "stopped", running=False, recording=False, error=error)
                 self._frame = None
                 self._jpeg = b""
+                self._jpeg_source = None
                 self._processed_jpeg = b""
             while True:
                 try:

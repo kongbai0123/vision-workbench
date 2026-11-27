@@ -316,6 +316,8 @@ function switchSource(source) {
   setSourceInspector(false);
   state.acquireSource=source;
   const compactCapture=document.querySelector('.compact-camera-capture');if(compactCapture)compactCapture.hidden=source!=='camera';
+  $('recordedFrameTools').hidden=source!=='camera';
+  if(source==='camera')void loadCameraRecordings();
   for(const tab of document.querySelectorAll('[data-source]')) {
     const active=tab.dataset.source===source;
     tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;
@@ -343,7 +345,14 @@ function setSourceInspector(open,kind='source') {
 function setupCameraInspectors() {
   const camera=$('source-camera'),settings=camera.querySelector(':scope>.source-inspector:not(#imageToolsInspector)'),tools=$('imageToolsInspector');settings.id='cameraSettingsInspector';
   const target=settings.querySelector('.camera-target-section'),processing=target.nextElementSibling,footnote=settings.querySelector('.inspector-footnote');tools.append(target,processing,footnote);
-  const capture=settings.querySelector('.camera-capture-section');capture.classList.add('compact-camera-capture');capture.hidden=state.acquireSource!=='camera';document.querySelector('.acquired-tray').prepend(capture);
+  const capture=settings.querySelector('.camera-capture-section'),recordings=$('recordedFrameTools'),tray=document.querySelector('.acquired-tray');
+  capture.querySelector('h3').textContent='自動擷取畫格';
+  capture.classList.add('compact-camera-capture');
+  capture.hidden=recordings.hidden=state.acquireSource!=='camera';
+  const actions=element('div',undefined,'camera-recording-actions');
+  actions.append($('startRecording'),$('stopRecording'));
+  recordings.querySelector('h3').after(actions);
+  tray.prepend(recordings,capture);
 }
 function renderAcquisitionAssets() {
   const assets=state.project?.assets||[],list=$('acquiredAssets');
@@ -406,7 +415,7 @@ async function switchStage(stage) {
     for(const id of ['library','acquire','annotate','review','split','train','models','export'])$(id).hidden=id!==stage;
     state.stage=stage;editor.active=stage==='annotate';
     if(stage==='library')await loadProjects();
-    if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await cameraStatus();}
+    if(stage==='acquire'){renderMergeList();renderAcquisitionAssets();await Promise.all([cameraStatus(),loadCameraRecordings()]);}
     if(stage==='annotate'){renderAssetList();requestAnimationFrame(()=>editor.fit(false));}
     if(stage==='review'){await refreshProject();const ids=new Set(state.project.assets.map(a=>a.id));state.reviewSelection=new Set([...state.reviewSelection].filter(id=>ids.has(id)));renderReview();$('review').scrollTop=state.reviewScroll||0;void safe(()=>assistPage.refresh());void checkReviewYoloCompatibility().catch(error=>toast(error.message,true));}
     if(stage==='split'){await refreshProject();await loadTraining();await renderSplitPage();}
@@ -436,7 +445,7 @@ async function openProject(id) {
     for(const section of ['library','acquire','annotate','review','split','train','models','export'])$(section).hidden=section!==(project.assets.length?'annotate':'acquire');
     state.stage=project.assets.length?'annotate':'acquire';editor.active=state.stage==='annotate';
     renderAssetList();renderMergeList();renderExport();
-    if(project.assets.length)await loadAsset(project.assets[0].id);else await cameraStatus();
+    if(project.assets.length)await loadAsset(project.assets[0].id);else await Promise.all([cameraStatus(),loadCameraRecordings()]);
     if(project.assets.length)void safe(()=>assistPage.refresh());
     status(`已開啟 ${project.name} · ${number(project.assets.length)} 張影像`);
   } finally {state.transitioning=false;editor.locked=false;updateNavigation();editor.render();}
@@ -1004,7 +1013,7 @@ function renderMergeList() {
   list.onchange=updateAcquisitionControls;updateAcquisitionControls();
 }
 
-const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits});
+const {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording}=createCameraPage({$,state,decodeMask,shapeNames,toast,brush,encodeMask,api,setSourceInspector,updateAcquisitionControls,renderAssetList,renderAcquisitionAssets,flushAllEdits});
 
 const {filteredReview, reviewPageItems, updateReviewSelection, renderReview, queueReviewPreview, runReviewPreview, drawReviewOverlay, reviewSelection, assignSelected, previewReviewAsset, excludeReview, trashReview, deleteReview, restoreReview}=createReviewPage({$,state,stats,element,number,date,thumbnailURL,reviewNames,button,safe,selectAsset,switchStage,api,projectPath,kind,colorFor,decodeMask,flushAllEdits,updateAssetHeader,toast,formDialog,imageURL,saver,editor,renderAssetList,confirmDeleteAssets,
   renderYoloCompatibility:(...args)=>renderYoloCompatibility(...args),checkReviewYoloCompatibility:(...args)=>checkReviewYoloCompatibility(...args)});
@@ -1086,9 +1095,27 @@ bind('startCamera',()=>cameraCommand('/api/camera/start',cameraConfiguration()),
 bind('stopCamera',async()=>{if(state.recording)throw Error('請先停止錄影，再停止相機。');if(state.autoCapture?.active)stopAutoCapture('相機停止前已結束自動擷取。');await cameraCommand('/api/camera/stop',{})},{busy:true});
 bind('takeSnapshot',async()=>{await flushAllEdits();await api(projectPath('/capture'),'POST',{target_shape:cameraTargetPayload()});await afterAcquisition({added:1})},{busy:true});
 bind('startAutoCapture',startAutoCapture);bind('stopAutoCapture',()=>stopAutoCapture());
-bind('startRecording',async()=>{await api('/api/camera/record/start','POST',{project_id:state.project.id});state.recording=true;updateCameraControls()},{busy:true});
-bind('stopRecording',async()=>{const value=await api('/api/camera/record/stop','POST',{});state.cameraDetails=value;state.recording=false;updateCameraControls();const path=value.path||value.video_path||value.recording_path||value.last_recording?.path;if(path){$('videoPath').value=path;updateVideoSource()}toast('錄影已保存，可直接從相機頁取幀。')},{busy:true});
-bind('extractRecording',async()=>{await flushAllEdits();const recording=state.cameraDetails?.last_recording,path=recording?.path,interval=Number($('cameraVideoInterval').value);if(!path)throw Error('尚無可取幀的相機錄影。');if(!Number.isFinite(interval)||interval<.1)throw Error('取幀間隔至少為 0.1 秒。');const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval,target_shape:cameraTargetPayload()}));await afterAcquisition(result,'cameraVideoReport');toast('錄影畫格已加入目前專案。')},{busy:true,task:'從錄影擷取畫格'});
+bind('startRecording',()=>cameraCommand('/api/camera/record/start',{project_id:state.project.id}),{busy:true});
+bind('stopRecording',async()=>{
+  const previous=state.cameraDetails?.last_recording?.path;
+  await cameraCommand('/api/camera/record/stop',{});
+  const recording=state.cameraDetails?.last_recording;
+  if(recording?.path&&recording.path!==previous){
+    if(recording.project_id===state.project.id){$('videoPath').value=recording.path;updateVideoSource();}
+    toast('錄影已保存至錄影素材。');
+  }
+},{busy:true});
+$('cameraPreviewFPS').onchange=()=>safe(()=>cameraCommand('/api/camera/preview',{fps:Number($('cameraPreviewFPS').value)}));
+$('cameraRecordingSelect').onchange=()=>{$('cameraVideoReport').hidden=true;};
+bind('extractRecording',async()=>{
+  await flushAllEdits();
+  const path=selectedCameraRecording()?.path,interval=Number($('cameraVideoInterval').value);
+  if(!path)throw Error('請先選擇要取幀的相機錄影。');
+  if(!Number.isFinite(interval)||interval<.1)throw Error('取幀間隔至少為 0.1 秒。');
+  const result=await pollJob(await api(projectPath('/video'),'POST',{path,interval_seconds:interval,target_shape:cameraTargetPayload()}));
+  await afterAcquisition(result,'cameraVideoReport');
+  toast('錄影畫格已加入目前專案的影像素材。');
+},{busy:true,task:'從錄影擷取畫格'});
 async function applyProcessing(calibrate=false) {
   const mode=$('processingMode').value,settings={};
   if(mode==='binary') {

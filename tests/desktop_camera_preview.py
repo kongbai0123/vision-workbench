@@ -172,6 +172,23 @@ def main():
             wait("document.querySelector('#confirmDialog').getClientRects().length>0")
             js("document.querySelector('#confirmDialog').click()")
             wait("document.querySelectorAll('#acquiredAssets .acquired-item').length===0 && !document.querySelector('#formDialog').open")
+            click('#startRecording')
+            wait("!document.querySelector('#stopRecording').hidden && !window.workbenchState().busy")
+            QTest.qWait(400)
+            click('#stopRecording')
+            wait("document.querySelector('#cameraRecordingCount').textContent==='1' && !window.workbenchState().busy")
+            recording = camera.status()['last_recording']
+            assert Path(recording['path']).parent == service.store.directory(recording['project_id']) / 'recordings'
+            assert js("document.querySelector('#recordedFrameTools').contains(document.querySelector('#startRecording'))")
+            assert js("document.querySelectorAll('#acquiredAssets .acquired-item').length===0")
+            click("[data-source='files']")
+            wait("document.querySelector('#recordedFrameTools').hidden")
+            click("[data-source='camera']")
+            wait("!document.querySelector('#recordedFrameTools').hidden && document.querySelector('#cameraRecordingSelect').value.endsWith('.mp4')")
+            js("document.querySelector('#cameraRecordingSampling').open=true")
+            click('#extractRecording')
+            wait("document.querySelectorAll('#acquiredAssets .acquired-item').length>=1 && document.querySelector('#cameraRecordingCount').textContent==='1'")
+            js("document.querySelector('#cameraRecordingSampling').open=false")
             QTest.qWait(350);view.grab().save(str(output/'running.png'))
             control['frame_error']=True
             wait("document.querySelector('#cameraStatus').innerText.includes('正在重試')")
@@ -200,7 +217,8 @@ def main():
                           'raw fallback while processing needs calibration','raw/processed split comparison','custom interval auto capture','automatic capture limit',
                           'select visible assets','atomic batch deletion','manual exposure readback',
                           'pixel format linked fps','apply settings and restart','profile persistence and reload',
-                          'persistent footer at 1440 and 1088 widths','native controls owned by capture worker']}
+                          'persistent footer at 1440 and 1088 widths','native controls owned by capture worker',
+                          'project recording survives source switch; only sampled frames enter image assets']}
             (output/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
             print('CAMERA_PREVIEW_LIFECYCLE_OK',flush=True)
         except Exception:

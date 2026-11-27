@@ -174,11 +174,50 @@ function cameraConfiguration() {
     if(!mode)throw Error('此解析度不支援所填 FPS，請依下方鏡頭模式範圍設定。');
     ({width,height,pixel_format}=mode);
   }
-  return {index:Number($('cameraDevice').value),width,height,fps,pixel_format,controls:cameraSettings.controls};
+  return {index:Number($('cameraDevice').value),width,height,fps,pixel_format,controls:cameraSettings.controls,
+    preview_fps:Number($('cameraPreviewFPS').value||15)};
 }
 let cameraStatusTimer=null,cameraStatusRequest=null,cameraMutation=0;
+let recordingProject=null,recordingRequest=0,recordingItems=[];
+function selectedCameraRecording(){
+  if(recordingProject!==state.project?.id)return null;
+  return recordingItems.find(recording=>recording.name===$('cameraRecordingSelect').value)||null;
+}
+async function loadCameraRecordings({latest=false}={}){
+  const pid=state.project?.id,request=++recordingRequest,select=$('cameraRecordingSelect');
+  const previous=recordingProject===pid?select.value:'';
+  if(recordingProject!==pid){
+    recordingProject=pid;
+    recordingItems=[];
+    select.replaceChildren();
+    $('cameraRecordingSampling').open=false;
+    $('cameraRecordingSampling').hidden=true;
+    $('cameraVideoReport').hidden=true;
+    $('cameraRecordingCount').textContent='0';
+  }
+  if(!pid)return;
+  const summary=$('recordingSummary');
+  summary.textContent='正在讀取錄影…';
+  try{
+    const {recordings}=await api(`/api/projects/${encodeURIComponent(pid)}/recordings`);
+    if(request!==recordingRequest||state.project?.id!==pid)return;
+    recordingItems=recordings;
+    select.replaceChildren(...recordings.map(recording=>new Option(
+      `${recording.name} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒`, recording.name)));
+    if(!latest&&recordings.some(recording=>recording.name===previous))select.value=previous;
+    $('cameraRecordingCount').textContent=String(recordings.length);
+    $('cameraRecordingSampling').hidden=!recordings.length;
+    summary.textContent=recordings.length?`最近錄影 · ${Number(recordings[0].duration_seconds||0).toFixed(1)} 秒 · ${recordings[0].frames||0} 幀`:'目前專案尚無錄影。';
+    updateCameraControls();
+  }catch(error){
+    if(request===recordingRequest&&state.project?.id===pid)summary.textContent=error.message;
+  }
+}
 function receiveCameraStatus(value) {
+    const previousRecording=state.cameraDetails?.last_recording?.path;
     state.cameraDetails=value;Object.assign(state,{camera:cameraFlags(value).running,recording:cameraFlags(value).recording});
+    if(value.last_recording?.path!==previousRecording&&value.last_recording?.project_id===state.project?.id)
+      void loadCameraRecordings({latest:true});
     if(state.cameraTarget&&state.camera&&(state.cameraTarget.width!==Number(value.width)||state.cameraTarget.height!==Number(value.height)))clearCameraTarget('相機解析度已改變，請重新繪製目標區域。');
     if(state.autoCapture?.active&&!state.camera&&value?.state!=='starting')stopAutoCapture(value?.error||'相機連線已停止。');
     if(state.camera&&value.state!=='stopping')startPreview();else stopPreview();
@@ -231,7 +270,7 @@ function setCameraPreviewExpanded(expanded) {
   requestAnimationFrame(updateCameraTargetEditingSurface);
 }
 function updateCameraControls() {
-  const details=state.cameraDetails||{},recording=details.last_recording;
+  const details=state.cameraDetails||{},recording=selectedCameraRecording();
   const starting=details.state==='starting',stopping=details.state==='stopping',engaged=state.camera||starting||stopping;
   $('startCamera').disabled=engaged||state.busy||cameraModesLoading;$('stopCamera').disabled=!engaged||stopping||state.busy;
   $('stopCamera').textContent=starting?'取消啟動':stopping?'停止中…':'停止相機';
@@ -259,8 +298,6 @@ function updateCameraControls() {
   $('startRecording').hidden=state.recording;$('stopRecording').hidden=!state.recording;
   $('cameraActivity').hidden=!engaged;$('cameraActivity').classList.toggle('recording',state.recording);
   $('cameraActivity').querySelector('span').textContent=starting?'相機啟動中 · 返回預覽':stopping?'相機停止中 · 返回預覽':state.recording?'錄影中 · 返回預覽':'相機運作中 · 返回預覽';
-  $('recordedFrameTools').hidden=!recording?.path;
-  if(recording?.path)$('recordingSummary').textContent=`${recording.name||'錄影已保存'} · ${Number(recording.duration_seconds||0).toFixed(1)} 秒 · ${recording.frames||0} 幀`;
   const actual=Number(details.measured_fps||0),negotiated=Number(details.fps||0);
   $('cameraReadout').textContent=starting?'正在啟動裝置':state.camera?`${details.width||'—'} × ${details.height||'—'} · 回報 ${details.fps_reported===false?'未知':Number(negotiated.toFixed(2))} FPS · 擷取 ${Number(actual.toFixed(1))} FPS · 預覽 ${Number((state.previewMeasuredFPS||0).toFixed(1))} FPS${details.pixel_format&&details.pixel_format!=='unknown'?' · '+details.pixel_format:''}`:'等待連接裝置';
   $('cameraReadout').title=details.requested?`要求 ${details.requested.width} × ${details.requested.height}，${details.requested.fps} FPS；預覽更新頻率與鏡頭擷取頻率分開。`:'';
@@ -290,8 +327,21 @@ function startPreview() {
     state.previewTimer=setTimeout(next,pending?5000:1000/Number($('cameraPreviewFPS').value||15));
   };
   const schedule=()=>{clearTimeout(state.previewTimer);state.previewTimer=setTimeout(next,1000/Number($('cameraPreviewFPS').value||15));};
-  frame.onload=()=>{const now=performance.now();previewTimes.push(now);previewTimes=previewTimes.filter(t=>now-t<3000);state.previewMeasuredFPS=previewTimes.length>1?(previewTimes.length-1)*1000/(now-previewTimes[0]):0;pending=false;state.previewReady=true;state.previewError='';updateCameraControls();schedule();};
-  frame.onerror=()=>{pending=false;state.previewReady=false;state.previewError='暫時讀不到影像，正在重試。';updateCameraControls();schedule();};
+  frame.onload=()=>{
+    const now=performance.now(),recovered=!state.previewReady||!!state.previewError;
+    previewTimes.push(now);
+    previewTimes=previewTimes.filter(t=>now-t<3000);
+    state.previewMeasuredFPS=previewTimes.length>1?(previewTimes.length-1)*1000/(now-previewTimes[0]):0;
+    pending=false;state.previewReady=true;state.previewError='';
+    if(recovered)updateCameraControls();
+    schedule();
+  };
+  frame.onerror=()=>{
+    const changed=state.previewReady||!state.previewError;
+    pending=false;state.previewReady=false;state.previewError='暫時讀不到影像，正在重試。';
+    if(changed)updateCameraControls();
+    schedule();
+  };
   raw.onload=()=>{rawPending=false;};raw.onerror=()=>{rawPending=false;};
   next();
 }
@@ -324,5 +374,5 @@ async function startAutoCapture() {
   const session={active:true,projectId:state.project.id,batchId:`auto_${Date.now().toString(36)}`,interval,limit,count:0,attempts:0,timer:null};state.autoCapture=session;
   $('autoCaptureStatus').textContent='正在擷取第一張影像…';updateCameraControls();await runAutoCapture(session);
 }
-return {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture};
+return {cameraTargetDimensions, cameraTargetShape, cameraTargetPayload, targetPoint, targetSvgShape, renderTargetMask, renderCameraTarget, updateCameraTargetTool, commitCameraTarget, clearCameraTarget, updateCameraTargetEditingSurface, installCameraTargetEvents, cameraFlags, loadCameraModes, selectedCameraModes, updateCameraMode, cameraConfiguration, receiveCameraStatus, cameraStatus, cameraCommand, stopPreview, updatePreviewLayout, setCameraPreviewExpanded, updateCameraControls, startPreview, stopAutoCapture, runAutoCapture, startAutoCapture, loadCameraRecordings, selectedCameraRecording};
 }
